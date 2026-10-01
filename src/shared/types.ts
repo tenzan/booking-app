@@ -25,6 +25,36 @@ export interface ReservationDTO {
   closeReason: string | null;
   confirmedAt: number | null;
   confirmedBy: { id: number; name: string } | null;
+  /** The open rescheduling proposal, else the latest one closed within the last 7 days; null otherwise. */
+  proposal: ProposalDTO | null;
+}
+
+export type ProposalStatus = "open" | "accepted" | "rejected" | "expired" | "superseded" | "withdrawn";
+
+export interface ProposalDTO {
+  id: string;
+  status: ProposalStatus;
+  message: string | null;
+  createdAt: number;
+  expiresAt: number;
+  resolvedAt: number | null;
+  /** Soonest first. */
+  options: Array<{ id: string; startAt: number; endAt: number; staffId: number; staffName: string }>;
+}
+
+/** A proposal as the customer sees it: no technician fields. */
+export interface CustomerProposalDTO {
+  id: string;
+  status: ProposalStatus;
+  message: string | null;
+  expiresAt: number;
+  options: Array<{ id: string; startAt: number; endAt: number }>;
+}
+
+/** Times a reservation could be proposed for, with the technicians free to take each. */
+export interface ProposalCandidatesDTO {
+  timezone: string;
+  days: Array<{ date: string; slots: Array<{ startAt: number; endAt: number; staff: Array<{ id: number; name: string }> }> }>;
 }
 
 /** What a customer may see of their own reservation: no staff, no provisional technician, no contact email. */
@@ -43,6 +73,8 @@ export interface CustomerReservationDTO {
   issue: string;
   createdAt: number;
   closeReason: string | null;
+  /** Same selection as the staff view's `proposal`, without technician data. */
+  proposal: CustomerProposalDTO | null;
 }
 
 export type TechUnavailableReason = "not_scheduled" | "unavailable" | "busy" | "needed_for_other_request";

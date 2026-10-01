@@ -1,12 +1,87 @@
 import { assignableFor } from "../../domain/matching";
 import { freeStaffAt, windowStaffAt } from "../../domain/slots";
 import { AUDIT_PAGE_SIZE, RESERVATIONS_PAGE_DEFAULT } from "../../shared/schemas";
-import type { AuditEntryDTO, AuditListDTO, AuditRow, CustomerReservationDTO, ReservationDTO, ReservationListDTO, ReservationStatus, TechOption } from "../../shared/types";
+import type {
+  AuditEntryDTO,
+  AuditListDTO,
+  AuditRow,
+  CustomerProposalDTO,
+  CustomerReservationDTO,
+  ProposalDTO,
+  ProposalStatus,
+  ReservationDTO,
+  ReservationListDTO,
+  ReservationStatus,
+  TechOption,
+} from "../../shared/types";
 import type { Env } from "../env";
+import { clock } from "../lib/clock";
 import { decodeCursor, encodeCursor } from "../lib/cursor";
 import { loadScheduleCtx } from "../scheduling/context";
 
-export type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
+export type { AuditRow, CustomerProposalDTO, CustomerReservationDTO, ProposalDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
+
+/** How long a closed proposal stays on the reservation's views. */
+const CLOSED_PROPOSAL_SHOWN_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Each reservation's proposal to show, by reservation id: its latest proposal when that is open (there is at most one
+ * open, and a new one supersedes it, so the open one is always the latest) or was closed within the last 7 days.
+ */
+export async function loadProposals(db: D1Database, reservationIds: string[], now: number): Promise<Map<string, ProposalDTO>> {
+  const out = new Map<string, ProposalDTO>();
+  if (reservationIds.length === 0) return out;
+  const { results: proposals } = await db
+    .prepare(
+      `SELECT p.id, p.reservation_id, p.status, p.message, p.created_at, p.expires_at, p.resolved_at
+       FROM proposals p
+       WHERE p.reservation_id IN (SELECT value FROM json_each(?1))
+         AND p.rowid = (SELECT q.rowid FROM proposals q WHERE q.reservation_id = p.reservation_id ORDER BY q.created_at DESC, q.rowid DESC LIMIT 1)
+         AND (p.status = 'open' OR p.resolved_at >= ?2)`,
+    )
+    .bind(JSON.stringify([...new Set(reservationIds)]), now - CLOSED_PROPOSAL_SHOWN_MS)
+    .all<{ id: string; reservation_id: string; status: ProposalStatus; message: string | null; created_at: number; expires_at: number; resolved_at: number | null }>();
+  if (proposals.length === 0) return out;
+  const { results: options } = await db
+    .prepare(
+      `SELECT o.id, o.proposal_id, o.start_at, o.end_at, o.staff_id, s.name AS staff_name
+       FROM proposal_options o JOIN staff s ON s.id = o.staff_id
+       WHERE o.proposal_id IN (SELECT value FROM json_each(?))
+       ORDER BY o.start_at, o.rowid`,
+    )
+    .bind(JSON.stringify(proposals.map((p) => p.id)))
+    .all<{ id: string; proposal_id: string; start_at: number; end_at: number; staff_id: number; staff_name: string }>();
+  const byId = new Map<string, ProposalDTO>();
+  for (const p of proposals) {
+    const dto: ProposalDTO = {
+      id: p.id,
+      status: p.status,
+      message: p.message,
+      createdAt: p.created_at,
+      expiresAt: p.expires_at,
+      resolvedAt: p.resolved_at,
+      options: [],
+    };
+    byId.set(p.id, dto);
+    out.set(p.reservation_id, dto);
+  }
+  for (const o of options) {
+    byId.get(o.proposal_id)?.options.push({ id: o.id, startAt: o.start_at, endAt: o.end_at, staffId: o.staff_id, staffName: o.staff_name });
+  }
+  return out;
+}
+
+/** The customer's view of a proposal: times only, never who would take them. */
+export const toCustomerProposal = (p: ProposalDTO | null): CustomerProposalDTO | null =>
+  p === null
+    ? null
+    : {
+        id: p.id,
+        status: p.status,
+        message: p.message,
+        expiresAt: p.expiresAt,
+        options: p.options.map((o) => ({ id: o.id, startAt: o.startAt, endAt: o.endAt })),
+      };
 
 const SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at,
     r.customer_id, c.customer_number, c.name AS customer_name, c.active AS customer_active,
@@ -48,7 +123,7 @@ interface Row {
   confirmed_by_name: string | null;
 }
 
-const toDTO = (r: Row): ReservationDTO => ({
+const toDTO = (r: Row, proposal: ProposalDTO | null): ReservationDTO => ({
   id: r.id,
   ref: r.ref,
   status: r.status,
@@ -69,11 +144,18 @@ const toDTO = (r: Row): ReservationDTO => ({
   closeReason: r.close_reason,
   confirmedAt: r.confirmed_at,
   confirmedBy: r.confirmed_by === null ? null : { id: r.confirmed_by, name: r.confirmed_by_name ?? "" },
+  proposal,
 });
+
+/** Staff DTOs for `rows`, each with its proposal (one extra query for all of them). */
+async function withProposals(db: D1Database, rows: Row[]): Promise<ReservationDTO[]> {
+  const proposals = await loadProposals(db, rows.map((r) => r.id), clock.now());
+  return rows.map((r) => toDTO(r, proposals.get(r.id) ?? null));
+}
 
 export async function getReservation(db: D1Database, id: string): Promise<ReservationDTO | null> {
   const row = await db.prepare(`${SELECT} WHERE r.id = ?`).bind(id).first<Row>();
-  return row ? toDTO(row) : null;
+  return row ? (await withProposals(db, [row]))[0]! : null;
 }
 
 /**
@@ -123,7 +205,7 @@ export async function listReservations(
   }
   const sql = `${SELECT}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY r.start_at, r.created_at, r.id LIMIT ?`;
   const { results } = await db.prepare(sql).bind(...binds, limit + 1).all<Row>();
-  const page = results.slice(0, limit).map(toDTO);
+  const page = await withProposals(db, results.slice(0, limit));
   const last = page.at(-1);
   return { reservations: page, nextCursor: results.length > limit && last ? encodeCursor([last.startAt, last.createdAt, last.id]) : null };
 }
@@ -148,7 +230,7 @@ interface CustomerRow {
   close_reason: string | null;
 }
 
-const toCustomerDTO = (r: CustomerRow): CustomerReservationDTO => ({
+const toCustomerDTO = (r: CustomerRow, proposal: CustomerProposalDTO | null): CustomerReservationDTO => ({
   id: r.id,
   ref: r.ref,
   status: r.status,
@@ -162,7 +244,13 @@ const toCustomerDTO = (r: CustomerRow): CustomerReservationDTO => ({
   issue: r.issue,
   createdAt: r.created_at,
   closeReason: r.close_reason,
+  proposal,
 });
+
+async function customerDTOs(db: D1Database, rows: CustomerRow[]): Promise<CustomerReservationDTO[]> {
+  const proposals = await loadProposals(db, rows.map((r) => r.id), clock.now());
+  return rows.map((r) => toCustomerDTO(r, toCustomerProposal(proposals.get(r.id) ?? null)));
+}
 
 /** The customer's view of a staff DTO: no technician, approver or contact-email fields ever cross over. */
 export const toCustomerView = (r: ReservationDTO): CustomerReservationDTO => ({
@@ -179,6 +267,7 @@ export const toCustomerView = (r: ReservationDTO): CustomerReservationDTO => ({
   issue: r.issue,
   createdAt: r.createdAt,
   closeReason: r.closeReason,
+  proposal: toCustomerProposal(r.proposal),
 });
 
 const placeholders = (n: number) => Array.from({ length: n }, () => "?").join(",");
@@ -190,7 +279,7 @@ export async function listCustomerReservations(db: D1Database, accountIds: numbe
     .prepare(`${CUSTOMER_SELECT} WHERE r.customer_id IN (${placeholders(accountIds.length)}) ORDER BY r.start_at DESC, r.created_at DESC, r.id`)
     .bind(...accountIds)
     .all<CustomerRow>();
-  return results.map(toCustomerDTO);
+  return customerDTOs(db, results);
 }
 
 /** One reservation, only when it belongs to one of `accountIds`. */
@@ -200,7 +289,7 @@ export async function getCustomerReservation(db: D1Database, id: string, account
     .prepare(`${CUSTOMER_SELECT} WHERE r.id = ? AND r.customer_id IN (${placeholders(accountIds.length)})`)
     .bind(id, ...accountIds)
     .first<CustomerRow>();
-  return row ? toCustomerDTO(row) : null;
+  return row ? (await customerDTOs(db, [row]))[0]! : null;
 }
 
 /** The reservation an unexpired access token points at (token given as its sha256 hex). */
@@ -209,7 +298,7 @@ export async function getCustomerReservationByAccessToken(db: D1Database, tokenH
     .prepare(`${CUSTOMER_SELECT} JOIN access_tokens t ON t.reservation_id = r.id WHERE t.token_hash = ? AND t.expires_at > ?`)
     .bind(tokenHash, now)
     .first<CustomerRow>();
-  return row ? toCustomerDTO(row) : null;
+  return row ? (await customerDTOs(db, [row]))[0]! : null;
 }
 
 /** The reservation (id and contact email) an unexpired access token points at; the contact is who acts through the link. */

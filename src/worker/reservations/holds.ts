@@ -6,11 +6,17 @@ import { rangeBlocks } from "../../domain/slots";
 export const ELIGIBLE_SQL = `SELECT 1 FROM customers c JOIN customer_contacts k ON k.customer_id = c.id
   WHERE c.id = ? AND c.active = 1 AND k.active = 1 AND k.email = ?`;
 
-/** One statement inserting all of a reservation's 5-minute blocks (epoch minutes) for `staffId`. */
-export function blockInsert(db: D1Database, staffId: number, minutes: number[], ownerId: string): D1PreparedStatement {
+/** One statement inserting all of a hold's 5-minute blocks (epoch minutes) for `staffId`: a reservation's, or a proposal option's. */
+export function blockInsert(
+  db: D1Database,
+  staffId: number,
+  minutes: number[],
+  ownerId: string,
+  ownerKind: "reservation" | "option" = "reservation",
+): D1PreparedStatement {
   return db
-    .prepare("INSERT INTO tech_blocks(staff_id, block_start, owner_kind, owner_id) SELECT ?, value, 'reservation', ? FROM json_each(?)")
-    .bind(staffId, ownerId, JSON.stringify(minutes));
+    .prepare("INSERT INTO tech_blocks(staff_id, block_start, owner_kind, owner_id) SELECT ?, value, ?, ? FROM json_each(?)")
+    .bind(staffId, ownerKind, ownerId, JSON.stringify(minutes));
 }
 
 /** A pending request whose provisional technician changes, with its stored occupied range. */
@@ -60,6 +66,7 @@ export const OBSOLETE_TEMPLATES = [
   "confirmed",
   "assigned",
   "reassigned",
+  "proposal",
 ] as const;
 
 /**

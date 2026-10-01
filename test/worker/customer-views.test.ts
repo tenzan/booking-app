@@ -77,6 +77,7 @@ describe("GET /api/customer/reservations", () => {
       createdAt: at(THU, 8),
       closeReason: null,
       version: 1,
+      proposal: null,
     });
   });
 
@@ -160,7 +161,7 @@ describe("GET /api/customer/reservations/:id", () => {
     expect(text).not.toContain("Test Person");
     expect(text).not.toContain("example.test");
     expect(Object.keys(res.json.reservation).sort()).toEqual(
-      ["accountName", "closeReason", "contactName", "createdAt", "customerNumber", "endAt", "id", "issue", "phone", "ref", "startAt", "status", "version"],
+      ["accountName", "closeReason", "contactName", "createdAt", "customerNumber", "endAt", "id", "issue", "phone", "proposal", "ref", "startAt", "status", "version"],
     );
   });
 });

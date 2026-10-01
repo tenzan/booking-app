@@ -36,7 +36,12 @@ interface ReservationData {
   closer_name: string | null;
   replaces_id: string | null;
   expires_at: number | null;
+  /** The reservation's open proposal, if any. */
+  open_proposal_id: string | null;
 }
+
+/** Selects a reservation's open proposal id as `open_proposal_id` (reservation aliased `r`). */
+const OPEN_PROPOSAL_SQL = "(SELECT p.id FROM proposals p WHERE p.reservation_id = r.id AND p.status = 'open') AS open_proposal_id";
 
 const LOGIN_TOKEN_MS = 15 * 60_000;
 const ACCESS_GRACE_MS = 14 * 86_400_000;
@@ -56,16 +61,23 @@ const VALID_STATUS: Record<string, string[]> = {
   approval_escalation: ["pending"],
   // A reminder is for the confirmed appointment at the start it was queued for.
   appointment_reminder: ["confirmed"],
+  // About the original time, which still stands (proposals are open on pending and confirmed reservations only).
+  proposal: ["pending", "confirmed"],
+  proposal_outcome: ["pending", "confirmed"],
 };
 
 /** Is a job's message still true of the reservation as it is now? `to` is the technician a reassignment notice names. */
 function stillTrue(
   template: string,
-  state: { status: string; assigned_staff_id: number | null; start_at: number },
+  state: { status: string; assigned_staff_id: number | null; start_at: number; open_proposal_id: string | null },
   payload: Record<string, unknown>,
 ): boolean {
   const valid = VALID_STATUS[template];
   if (!valid || !valid.includes(state.status)) return false;
+  // Proposed times are only on offer while that very proposal is open (not superseded, withdrawn or answered).
+  if (template === "proposal") return state.open_proposal_id === payload.proposalId;
+  // An outcome is out of date once another proposal is open: that one's own mail is what the customer needs.
+  if (template === "proposal_outcome") return state.open_proposal_id === null;
   // A reminder for a start the appointment no longer has (it was moved) would name the wrong time.
   if (template === "appointment_reminder") return state.start_at === payload.startAt;
   // A reassignment notice is only true while the appointment is still with the technician it names.
@@ -80,9 +92,9 @@ function stillTrue(
 export async function jobStillValid(env: Env, job: EmailJobRow): Promise<boolean> {
   if (!VALID_STATUS[job.template]) return true;
   if (!job.reservation_id) return false;
-  const r = await env.DB.prepare("SELECT status, assigned_staff_id, start_at FROM reservations WHERE id = ?")
+  const r = await env.DB.prepare(`SELECT r.status, r.assigned_staff_id, r.start_at, ${OPEN_PROPOSAL_SQL} FROM reservations r WHERE r.id = ?`)
     .bind(job.reservation_id)
-    .first<{ status: string; assigned_staff_id: number | null; start_at: number }>();
+    .first<{ status: string; assigned_staff_id: number | null; start_at: number; open_proposal_id: string | null }>();
   return r !== null && stillTrue(job.template, r, parsePayload(job));
 }
 
@@ -91,7 +103,7 @@ function loadReservation(env: Env, id: string): Promise<ReservationData | null> 
     `SELECT r.id, r.ref, r.contact_email, r.contact_name, r.phone, r.issue, r.start_at, r.end_at, r.status, r.close_reason,
             c.name AS account_name, c.customer_number,
             approver.name AS approver_name, tech.name AS tech_name, r.assigned_staff_id, r.closed_by_kind,
-            COALESCE(closer.name, r.closed_by) AS closer_name, r.replaces_id, r.expires_at
+            COALESCE(closer.name, r.closed_by) AS closer_name, r.replaces_id, r.expires_at, ${OPEN_PROPOSAL_SQL}
      FROM reservations r
      JOIN customers c ON c.id = r.customer_id
      LEFT JOIN staff approver ON approver.id = r.confirmed_by
@@ -132,6 +144,29 @@ async function staffNames(env: Env, ids: unknown[]): Promise<Map<number, string>
   return new Map(results.map((s) => [s.id, s.name]));
 }
 
+interface ProposalData {
+  message: string | null;
+  expires_at: number;
+  created_by_name: string | null;
+  options: Array<{ id: string; start_at: number; staff_name: string }>;
+}
+
+async function loadProposal(env: Env, id: unknown): Promise<ProposalData | null> {
+  if (typeof id !== "string") return null;
+  const p = await env.DB.prepare(
+    "SELECT p.message, p.expires_at, s.name AS created_by_name FROM proposals p LEFT JOIN staff s ON s.id = p.created_by WHERE p.id = ?",
+  )
+    .bind(id)
+    .first<Omit<ProposalData, "options">>();
+  if (!p) return null;
+  const { results } = await env.DB.prepare(
+    "SELECT o.id, o.start_at, s.name AS staff_name FROM proposal_options o JOIN staff s ON s.id = o.staff_id WHERE o.proposal_id = ? ORDER BY o.start_at, o.rowid",
+  )
+    .bind(id)
+    .all<ProposalData["options"][number]>();
+  return { ...p, options: results };
+}
+
 function parsePayload(job: EmailJobRow): Record<string, unknown> {
   try {
     const p: unknown = JSON.parse(job.payload);
@@ -168,7 +203,8 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
   if (!r || !stillTrue(job.template, r, payload)) return "skip";
 
   const locale = env.APP_LOCALE || "en-US";
-  const when = `${fmtDateTime(r.start_at, env.APP_TIMEZONE, locale)} ${tzLabel(env.APP_TIMEZONE, r.start_at, locale)}`;
+  const fmt = (ms: number) => `${fmtDateTime(ms, env.APP_TIMEZONE, locale)} ${tzLabel(env.APP_TIMEZONE, ms, locale)}`;
+  const when = fmt(r.start_at);
   const common: Array<[string, string]> = [
     [t("common.account"), r.account_name],
     [t("common.when"), when],
@@ -384,6 +420,85 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           facts: [...common, [t("common.technician"), params.to]],
           actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
           footer: staffFooter,
+        }),
+      };
+    }
+    case "proposal": {
+      const p = await loadProposal(env, payload.proposalId);
+      if (!p) return "skip";
+      const confirmed = r.status === "confirmed";
+      const currentLabel = t(confirmed ? "email.proposal.current" : "email.proposal.requested");
+      if (payload.audience === "team") {
+        return {
+          subject: t("email.proposalTeam.subject", { ref: r.ref, when }),
+          ...renderEmail({
+            ...base,
+            banner: { text: t("email.proposalTeam.banner"), tone: "amber" },
+            paragraphs: [t("email.proposalTeam.intro", { by: p.created_by_name ?? "—" })],
+            facts: [
+              [t("common.account"), r.account_name],
+              [t("common.customerNumber"), r.customer_number],
+              [t("common.contact"), `${r.contact_name} <${r.contact_email}>`],
+              [currentLabel, when],
+              [t("common.reference"), r.ref],
+              ...p.options.map((o, i): [string, string] => [
+                t("email.proposalTeam.option", { n: i + 1 }),
+                t("email.proposalTeam.optionValue", { when: fmt(o.start_at), tech: o.staff_name }),
+              ]),
+              ...(p.message ? [[t("email.proposalTeam.message"), p.message] as [string, string]] : []),
+              [t("email.proposal.answerBy"), fmt(p.expires_at)],
+            ],
+            actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
+            footer: staffFooter,
+          }),
+        };
+      }
+      const viewUrl = `${env.APP_BASE_URL}/r#t=${await mintAccessToken(env, r)}`;
+      const respond = `${viewUrl}&action=proposal`;
+      return {
+        subject: t("email.proposal.subject", { ref: r.ref }),
+        ...renderEmail({
+          ...base,
+          banner: { text: t("email.proposal.banner"), tone: "amber" },
+          paragraphs: [
+            t(confirmed ? "email.proposal.introConfirmed" : "email.proposal.introPending"),
+            ...(p.message ? [t("email.proposal.message", { message: p.message })] : []),
+            t("email.proposal.choose"),
+          ],
+          facts: [
+            [t("common.account"), r.account_name],
+            [currentLabel, when],
+            [t("common.reference"), r.ref],
+            [t("email.proposal.answerBy"), fmt(p.expires_at)],
+          ],
+          actions: [
+            ...p.options.map((o) => ({
+              label: t("email.proposal.option", { when: fmt(o.start_at) }),
+              url: `${respond}&option=${encodeURIComponent(o.id)}`,
+              primary: true,
+            })),
+            ...(confirmed ? [{ label: t("email.proposal.keep"), url: `${respond}&choice=keep` }] : []),
+            { label: t("email.proposal.other"), url: `${respond}&choice=other` },
+          ],
+          after: [t(confirmed ? "email.proposal.expiryConfirmed" : "email.proposal.expiryPending", { expires: fmt(p.expires_at) })],
+          footer: customerFooter,
+        }),
+      };
+    }
+    case "proposal_outcome": {
+      // Task 5 adds the customer's answers and expiry; a withdrawal leaves the original time as it was.
+      if (payload.outcome !== "withdrawn") return "skip";
+      const confirmed = r.status === "confirmed";
+      const viewUrl = `${env.APP_BASE_URL}/r#t=${await mintAccessToken(env, r)}`;
+      return {
+        subject: t("email.proposalOutcome.withdrawn.subject", { ref: r.ref }),
+        ...renderEmail({
+          ...base,
+          banner: confirmed ? { text: t("status.confirmed"), tone: "green" } : { text: t("status.pending"), tone: "amber" },
+          paragraphs: [t(confirmed ? "email.proposalOutcome.withdrawn.confirmed" : "email.proposalOutcome.withdrawn.pending")],
+          facts: common,
+          actions: [{ label: t("common.viewReservation"), url: viewUrl, primary: true }],
+          footer: customerFooter,
         }),
       };
     }

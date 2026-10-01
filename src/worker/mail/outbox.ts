@@ -19,7 +19,9 @@ export type TemplateName =
   | "expired"
   | "approval_reminder"
   | "approval_escalation"
-  | "appointment_reminder";
+  | "appointment_reminder"
+  | "proposal"
+  | "proposal_outcome";
 
 export interface EmailJobRow {
   id: string;
