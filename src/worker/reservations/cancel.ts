@@ -7,21 +7,10 @@ import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { getSettings } from "../repos/settings";
 import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
+import { cancelObsoleteMail, releaseHoldStatements } from "./holds";
 import { getReservation, toCustomerView, type CustomerReservationDTO, type ReservationDTO } from "./queries";
 
 export type CancelActor = { kind: "staff"; staff: StaffPrincipal } | { kind: "customer"; email: string };
-
-/** Queued mail about the reservation that is wrong once it is cancelled: reminders and confirmation-type messages. */
-const OBSOLETE_TEMPLATES = [
-  "appointment_reminder",
-  "approval_reminder",
-  "approval_escalation",
-  "request_received",
-  "new_request",
-  "confirmed",
-  "assigned",
-  "reassigned",
-] as const;
 
 const REASON_MAX = 500;
 
@@ -89,19 +78,10 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
   // A staff actor already knows.
   const involved = current.assignedStaff ? await activeStaffByIds(db, [current.assignedStaff.id]) : [];
   const team = noticeRecipients(await notifyStaff(db), involved, actor.kind === "staff" ? actor.staff.id : undefined);
-  const templates = OBSOLETE_TEMPLATES.map(() => "?").join(",");
 
   await capacityBatch(db, scheduleVersion, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = ? AND version = ?", id, current.status, version),
-    db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
-    // Option blocks before closing their proposal (the subquery finds them through the open proposal).
-    db
-      .prepare(
-        `DELETE FROM tech_blocks WHERE owner_kind = 'option' AND owner_id IN (
-           SELECT o.id FROM proposal_options o JOIN proposals p ON p.id = o.proposal_id WHERE p.reservation_id = ? AND p.status = 'open')`,
-      )
-      .bind(id),
-    db.prepare("UPDATE proposals SET status = 'withdrawn', resolved_at = ? WHERE reservation_id = ? AND status = 'open'").bind(now, id),
+    ...releaseHoldStatements(db, id, now),
     db
       .prepare(
         `UPDATE reservations SET status = 'cancelled', closed_at = ?, closed_by_kind = ?, closed_by = ?, close_reason = ?,
@@ -109,9 +89,7 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
          WHERE id = ? AND status = ? AND version = ?`,
       )
       .bind(now, actor.kind, closedBy, reason, now, id, current.status, version),
-    db
-      .prepare(`UPDATE email_jobs SET status = 'cancelled' WHERE reservation_id = ? AND status = 'queued' AND template IN (${templates})`)
-      .bind(id, ...OBSOLETE_TEMPLATES),
+    cancelObsoleteMail(db, id),
     enqueueEmail(db, { template: "cancelled", to: current.contactEmail, dedupeKey: `cancelled:${id}`, reservationId: id, payload: { audience: "customer" } }),
     ...team.map((s) =>
       enqueueEmail(db, { template: "cancelled", to: s.email, dedupeKey: `cancelled-team:${id}:${s.id}`, reservationId: id, payload: { audience: "team" } }),

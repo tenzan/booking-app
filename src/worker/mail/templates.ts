@@ -33,6 +33,8 @@ interface ReservationData {
   closed_by_kind: string | null;
   /** Staff closer's name, or the raw closer (customer email). */
   closer_name: string | null;
+  replaces_id: string | null;
+  expires_at: number | null;
 }
 
 const LOGIN_TOKEN_MS = 15 * 60_000;
@@ -47,6 +49,10 @@ const VALID_STATUS: Record<string, string[]> = {
   declined: ["declined"],
   cancelled: ["cancelled"],
   reassigned: ["confirmed"],
+  expired: ["expired"],
+  // Reminders are about a decision still open.
+  approval_reminder: ["pending"],
+  approval_escalation: ["pending"],
 };
 
 /** Is a job's message still true of the reservation as it is now? `to` is the technician a reassignment notice names. */
@@ -76,7 +82,7 @@ function loadReservation(env: Env, id: string): Promise<ReservationData | null> 
     `SELECT r.id, r.ref, r.contact_email, r.contact_name, r.phone, r.issue, r.start_at, r.end_at, r.status, r.close_reason,
             c.name AS account_name, c.customer_number,
             approver.name AS approver_name, tech.name AS tech_name, r.assigned_staff_id, r.closed_by_kind,
-            COALESCE(closer.name, r.closed_by) AS closer_name
+            COALESCE(closer.name, r.closed_by) AS closer_name, r.replaces_id, r.expires_at
      FROM reservations r
      JOIN customers c ON c.id = r.customer_id
      LEFT JOIN staff approver ON approver.id = r.confirmed_by
@@ -255,6 +261,62 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           facts: common,
           actions: [{ label: t("email.cancelled.rebook"), url: env.APP_BASE_URL, primary: true }],
           footer: customerFooter,
+        }),
+      };
+    }
+    case "expired": {
+      if (payload.audience === "team") {
+        return {
+          subject: t("email.expiredTeam.subject", { ref: r.ref, when }),
+          ...renderEmail({
+            ...base,
+            banner: { text: t("status.expired"), tone: "red" },
+            paragraphs: [t("email.expiredTeam.intro"), ...(r.replaces_id ? [t("email.expiredTeam.replacement")] : [])],
+            facts: [
+              [t("common.account"), r.account_name],
+              [t("common.customerNumber"), r.customer_number],
+              [t("common.contact"), `${r.contact_name} <${r.contact_email}>`],
+              [t("common.when"), when],
+              [t("common.reference"), r.ref],
+            ],
+            actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
+            footer: staffFooter,
+          }),
+        };
+      }
+      return {
+        subject: t("email.expired.subject", { ref: r.ref }),
+        ...renderEmail({
+          ...base,
+          banner: { text: t("status.expired"), tone: "red" },
+          // A request to change an existing appointment: the appointment itself is untouched.
+          paragraphs: [t("email.expired.intro"), ...(r.replaces_id ? [t("email.expired.replacement")] : [])],
+          facts: common,
+          actions: [{ label: t("email.expired.rebook"), url: env.APP_BASE_URL, primary: true }],
+          footer: customerFooter,
+        }),
+      };
+    }
+    case "approval_reminder":
+    case "approval_escalation": {
+      const key = job.template === "approval_reminder" ? "email.approvalReminder" : "email.approvalEscalation";
+      const deadline = r.expires_at === null ? "—" : `${fmtDateTime(r.expires_at, env.APP_TIMEZONE, locale)} ${tzLabel(env.APP_TIMEZONE, r.expires_at, locale)}`;
+      return {
+        subject: t(`${key}.subject`, { ref: r.ref, when }),
+        ...renderEmail({
+          ...base,
+          banner: { text: t("status.pending"), tone: "amber" },
+          paragraphs: [t(`${key}.intro`)],
+          facts: [
+            [t("common.account"), r.account_name],
+            [t("common.customerNumber"), r.customer_number],
+            [t("common.contact"), `${r.contact_name} <${r.contact_email}>`],
+            [t("common.when"), when],
+            [t("common.reference"), r.ref],
+            [t("common.approvalDeadline"), deadline],
+          ],
+          actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
+          footer: staffFooter,
         }),
       };
     }

@@ -291,6 +291,10 @@ function describe(e: AuditEntryDTO, tz: string, names: Map<number, string>): { k
       return { key: "reservation_declined", params: { ref: refLink(e) } };
     case "reservation.cancelled":
       return { key: "reservation_cancelled", params: { ref: refLink(e) } };
+    case "reservation.expired":
+      return { key: "reservation_expired", params: { ref: refLink(e) } };
+    case "reservation.completed":
+      return { key: "reservation_completed", params: { ref: refLink(e) } };
     case "reservation.reassigned":
       return { key: "reservation_reassigned", params: { ref: refLink(e), from: staffName(d.from), to: staffName(d.to) } };
     case "email.retry": {

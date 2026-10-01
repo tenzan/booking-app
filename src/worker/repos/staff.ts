@@ -53,6 +53,14 @@ export async function notifyStaff(db: D1Database): Promise<Array<{ id: number; e
   return results;
 }
 
+/** Active administrators: the escalation recipients. */
+export async function activeAdmins(db: D1Database): Promise<Array<{ id: number; email: string; name: string }>> {
+  const { results } = await db
+    .prepare("SELECT id, email, name FROM staff WHERE active = 1 AND role = 'admin' ORDER BY id")
+    .all<{ id: number; email: string; name: string }>();
+  return results;
+}
+
 /** The active staff among `ids` (people named by an appointment: they hear about it whatever their notify setting). */
 export async function activeStaffByIds(db: D1Database, ids: number[]): Promise<Array<{ id: number; email: string; name: string }>> {
   const wanted = [...new Set(ids)];

@@ -13,6 +13,7 @@ export const en = {
     viewReservation: "View reservation",
     cancelReservation: "Cancel reservation",
     reason: "Reason",
+    approvalDeadline: "Approval deadline",
   },
   status: {
     pending: "Pending approval — not yet confirmed",
@@ -78,6 +79,25 @@ export const en = {
       subject: "{ref} cancelled — {when}",
       byStaff: "{name} cancelled this reservation.",
       byCustomer: "The customer ({email}) cancelled this reservation.",
+    },
+    expired: {
+      subject: "We couldn't confirm your request in time ({ref})",
+      intro: "We couldn't confirm your requested time before its deadline, so the request has expired and no appointment was booked.",
+      replacement: "Your original appointment stays as it is.",
+      rebook: "Choose another time",
+    },
+    expiredTeam: {
+      subject: "{ref} expired — {when}",
+      intro: "This request expired without approval. The customer has been told we couldn't confirm it in time.",
+      replacement: "It asked to change an existing appointment, which stays as it is.",
+    },
+    approvalReminder: {
+      subject: "Reminder: {ref} still needs approval ({when})",
+      intro: "This request is still waiting for approval. Please approve or decline it before the deadline below.",
+    },
+    approvalEscalation: {
+      subject: "Escalation: {ref} has not been approved yet ({when})",
+      intro: "This request has been waiting for approval for a while and will expire at the deadline below. Please approve or decline it now.",
     },
     reassigned: {
       subject: "{ref} reassigned to {to}",
@@ -434,6 +454,8 @@ export const en = {
           reservation_declined: "Declined",
           reservation_cancelled: "Cancelled",
           reservation_reassigned: "Reassigned",
+          reservation_expired: "Expired without approval",
+          reservation_completed: "Completed",
           email_retry: "Email sent again",
         },
       },
@@ -527,6 +549,8 @@ export const en = {
           reservation_declined: "{actor} declined {ref}",
           reservation_cancelled: "{actor} cancelled {ref}",
           reservation_reassigned: "{actor} reassigned {ref} from {from} to {to}",
+          reservation_expired: "{ref} expired without approval",
+          reservation_completed: "{ref} was completed",
           email_retry: "{actor} sent the “{template}” email again",
           email_retryFor: "{actor} sent the “{template}” email for {ref} again",
           auth_staff_signin: "{actor} signed in",
@@ -612,6 +636,9 @@ export const en = {
           declined: "Request declined",
           cancelled: "Cancellation notice",
           reassigned: "Reassignment notice",
+          expired: "Request expired",
+          approval_reminder: "Approval reminder",
+          approval_escalation: "Approval escalation",
         },
       },
       schedule: {
