@@ -34,7 +34,7 @@ const clientIp = (c: Context<AppEnv>): string | null => c.req.header("cf-connect
 
 /**
  * Shared by request and resend. Always performs the same lookups and never reveals the outcome:
- * a link is sent only when Turnstile passes, no rate limit trips and the address is eligible.
+ * a link is sent only when Turnstile passes (failures return before any bucket is charged), no rate limit trips and the address is eligible.
  */
 async function sendLoginLink(
   c: Context<AppEnv>,
@@ -45,10 +45,11 @@ async function sendLoginLink(
 ): Promise<void> {
   const db = c.env.DB;
   const ip = clientIp(c);
-  const human = turnstile === "skip" ? true : await verifyTurnstile(c.env, turnstile.token, ip);
+  // A failed CAPTCHA must not charge the buckets, or anyone could lock out an address without solving one.
+  if (turnstile !== "skip" && !(await verifyTurnstile(c.env, turnstile.token, ip))) return;
   const emailOk = await rateLimit(db, `login:email:${email}`, 3, WINDOW_MS);
   const ipOk = ip ? await rateLimit(db, `login:ip:${ip}`, 20, WINDOW_MS) : true;
-  const allowed = human && emailOk && ipOk;
+  const allowed = emailOk && ipOk;
 
   let eligible: boolean;
   if (kind === "customer") {

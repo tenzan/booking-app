@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, cookieFrom } from "../helpers";
 import { setNow } from "../../src/worker/lib/clock";
 import { sha256Hex } from "../../src/worker/lib/crypto";
@@ -11,6 +11,7 @@ import { accountIdsForContact, eligibleAccountsForEmail } from "../../src/worker
 import { notifyStaff } from "../../src/worker/repos/staff";
 
 afterEach(() => {
+  vi.restoreAllMocks();
   setNow(null);
   delete env.TURNSTILE_SECRET_KEY;
 });
@@ -248,6 +249,30 @@ describe("customer magic link", () => {
     expect(res.status).toBe(200);
     expect(res.json).toEqual({ ok: true });
     expect(await mailCount("pat@example.test")).toBe(0);
+  });
+
+  it("failed Turnstile checks do not consume the rate-limit buckets", async () => {
+    env.TURNSTILE_SECRET_KEY = "test-secret";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const form = (init as RequestInit).body as FormData;
+      return Response.json({ success: form.get("response") === "good" });
+    });
+    await seedCustomer("pat@example.test");
+    const h = { "cf-connecting-ip": "203.0.113.9" };
+    for (let i = 0; i < 25; i++) {
+      const res = await requestCustomer("pat@example.test", { turnstileToken: "bad" }, h);
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({ ok: true });
+    }
+    expect(await mailCount("pat@example.test")).toBe(0);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM rate_limits").first<{ n: number }>())!.n).toBe(0);
+    await requestCustomer("pat@example.test", { turnstileToken: "good" }, h);
+    expect(await mailCount("pat@example.test")).toBe(1);
+
+    await seedStaff("tom@example.test");
+    for (let i = 0; i < 5; i++) await requestStaff("tom@example.test", { turnstileToken: "bad" });
+    await requestStaff("tom@example.test", { turnstileToken: "good" });
+    expect(await mailCount("tom@example.test")).toBe(1);
   });
 
   it("rejects malformed requests with 400", async () => {
