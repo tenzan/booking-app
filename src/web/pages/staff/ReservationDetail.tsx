@@ -31,10 +31,13 @@ function handledBy(r: ReservationDTO): { name: string; at: number } | null {
 }
 
 /** Where the back link goes: the page that linked here when it said so in history state (e.g. a customer), else the dashboard. */
-function readBack(state: unknown): { to: string; label: string } | null {
-  const back = (state as { back?: { to?: unknown; label?: unknown } } | null)?.back;
+function readBack(state: unknown): { to: string; label: string; state?: object } | null {
+  const back = (state as { back?: { to?: unknown; label?: unknown; state?: unknown } } | null)?.back;
   const to = typeof back?.to === "string" ? safePath(back.to) : null;
-  return to && typeof back?.label === "string" && back.label !== "" ? { to, label: back.label } : null;
+  if (!to || typeof back?.label !== "string" || back.label === "") return null;
+  // History state for the page we return to (e.g. the customer list's search), passed through untouched.
+  const returnState = typeof back.state === "object" && back.state !== null && !Array.isArray(back.state) ? back.state : undefined;
+  return { to, label: back.label, state: returnState };
 }
 
 /** `/staff/r/:id[?action=approve|decline|propose[&assign=me]]` — the links in staff notification emails land here. */
@@ -96,6 +99,7 @@ export default function ReservationDetail() {
   const back = (
     <Link
       to={backTo?.to ?? "/staff"}
+      state={backTo?.state}
       className="-ml-2 inline-flex min-h-11 items-center gap-1 rounded-lg px-2 font-medium text-blue-700 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-slate-800"
     >
       <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">

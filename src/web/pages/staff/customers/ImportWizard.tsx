@@ -274,7 +274,7 @@ function Wizard() {
                 rows={7}
                 value={csv}
                 spellCheck={false}
-                placeholder={"customer_number,name,phone,contact_email,contact_name,active\nC-2001,Example Clinic,+1 555 0100,office@example.test,Jamie Doe,true"}
+                placeholder={w("pastePlaceholder")}
                 onChange={(e) => {
                   setCsv(e.target.value);
                   setMessage(null);
@@ -498,7 +498,7 @@ function Review({
               {(["all", "changes", "errors"] as const).map((f) => (
                 <label
                   key={f}
-                  className="flex min-h-9 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium whitespace-nowrap text-slate-700 has-checked:bg-blue-700 has-checked:text-white has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-blue-600 hover:bg-slate-100 has-checked:hover:bg-blue-700 dark:text-slate-300 dark:has-checked:bg-blue-600 dark:hover:bg-slate-800"
+                  className="flex min-h-11 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-3 lg:min-h-9 text-sm font-medium whitespace-nowrap text-slate-700 has-checked:bg-blue-700 has-checked:text-white has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-blue-600 hover:bg-slate-100 has-checked:hover:bg-blue-700 dark:text-slate-300 dark:has-checked:bg-blue-600 dark:hover:bg-slate-800"
                 >
                   <input type="radio" name={`${id}-filter`} value={f} checked={filter === f} onChange={() => setFilter(f)} className="sr-only" />
                   {w(`filters.${f}`)}
@@ -609,7 +609,13 @@ function PlanTable({ rows }: { rows: ImportRow[] }) {
   const dash = (v: string) => v || "–";
   return (
     <>
-      <div className="hidden max-h-[32rem] overflow-auto rounded-xl border border-slate-200 bg-white sm:block dark:border-slate-700 dark:bg-slate-900">
+      {/* Scrolls on its own: focusable and named so keyboard users can scroll it too. */}
+      <div
+        role="region"
+        aria-label={w("table")}
+        tabIndex={0}
+        className="hidden max-h-[32rem] overflow-auto rounded-xl border border-slate-200 bg-white sm:block dark:border-slate-700 dark:bg-slate-900"
+      >
         <table className="w-full text-left text-sm">
           <caption className="sr-only">{w("table")}</caption>
           <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
@@ -642,7 +648,7 @@ function PlanTable({ rows }: { rows: ImportRow[] }) {
           </tbody>
         </table>
       </div>
-      <ul className="max-h-[32rem] space-y-2 overflow-auto sm:hidden" aria-label={w("table")}>
+      <ul className="max-h-[32rem] space-y-2 overflow-auto rounded-xl sm:hidden" aria-label={w("table")} tabIndex={0}>
         {rows.map((r) => (
           <li key={r.line} className={`rounded-xl border p-3 ${r.action === "error" ? "border-red-300 bg-red-50/60 dark:border-red-400/40 dark:bg-red-400/5" : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"}`}>
             <p className="flex flex-wrap items-baseline justify-between gap-2">

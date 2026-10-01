@@ -3,8 +3,9 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
-// Type-checking runs with the Workers types only (no Node types), so node:fs is loaded untyped here.
+// Type-checking runs with the Workers types only (no Node types), so these Node modules are loaded untyped here.
 const { readFileSync } = (await import("node:fs" as string)) as { readFileSync: (path: URL) => Uint8Array };
+const { fileURLToPath } = (await import("node:url" as string)) as { fileURLToPath: (url: URL) => string };
 
 /**
  * Serves docs/sample-customers.csv (the one copy, also read by `npm run seed` and linked from the docs) at
@@ -19,9 +20,15 @@ function sampleCustomersCsv(): Plugin {
       server.middlewares.use((req, res, next) => {
         const { url, method } = req as unknown as { url?: string; method?: string };
         if (url?.split("?")[0] !== path || (method !== "GET" && method !== "HEAD")) return next();
+        const body = readFileSync(source);
         res.setHeader("content-type", "text/csv; charset=utf-8");
-        res.end(method === "HEAD" ? undefined : readFileSync(source));
+        res.setHeader("content-length", String(body.byteLength));
+        res.end(method === "HEAD" ? undefined : body);
       });
+    },
+    buildStart() {
+      // `vite build --watch` rebuilds when the sample changes.
+      this.addWatchFile(fileURLToPath(source));
     },
     generateBundle() {
       // Only the SPA's assets; the worker bundle has no use for it.

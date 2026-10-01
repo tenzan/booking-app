@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useSearchParams } from "react-router";
+import { CUSTOMER_SEARCH_MAX } from "../../../../shared/schemas";
 import type { CustomerListDTO, CustomerListItemDTO } from "../../../../shared/types";
 import { apiFetch, queryKeys, useMe } from "../../../api";
 import { Button, ButtonLink } from "../../../components/Button";
@@ -47,14 +48,22 @@ export default function CustomersPage() {
   const status = readStatus(params.get("status"));
   const [text, setText] = useState(urlQuery);
   const searchId = useId();
+  /**
+   * The search this page last wrote to the URL. Router navigations are transitions, so the URL can commit an older
+   * search while the person is still typing: only a URL search that this page didn't write (back/forward, a link)
+   * replaces what is in the box.
+   */
+  const written = useRef(urlQuery);
 
-  // Back/forward (or a link) changed the URL: show its search in the box.
   useEffect(() => {
-    setText((current) => (current.trim() === urlQuery ? current : urlQuery));
+    if (urlQuery === written.current) return;
+    written.current = urlQuery;
+    setText(urlQuery);
   }, [urlQuery]);
 
   const writeUrl = (next: { q?: string; status?: Status }) => {
-    const q = (next.q ?? urlQuery).trim();
+    const q = (next.q ?? text).trim();
+    written.current = q;
     const s = next.status ?? status;
     const p = new URLSearchParams();
     if (q) p.set("q", q);
@@ -64,7 +73,7 @@ export default function CustomersPage() {
 
   // Typing searches 300 ms after the last keystroke; Enter searches at once.
   useEffect(() => {
-    if (text.trim() === urlQuery) return;
+    if (text.trim() === written.current) return;
     const id = window.setTimeout(() => writeUrl({ q: text }), DEBOUNCE_MS);
     return () => window.clearTimeout(id);
     // writeUrl reads the current URL; re-arming on every render isn't wanted.
@@ -72,6 +81,7 @@ export default function CustomersPage() {
 
   const list = useCustomerList(urlQuery, status);
   const customers = list.data?.pages.flatMap((p) => p.customers) ?? [];
+  // A new search (or filter) is loading; the list on screen still shows the previous one.
   const searching = list.isFetching && list.isPlaceholderData;
   const pending = text.trim() !== urlQuery;
 
@@ -81,6 +91,7 @@ export default function CustomersPage() {
     queryKey: [...queryKeys.customers, "any"],
     queryFn: () => apiFetch<CustomerListDTO>(listUrl("", "all")),
     enabled: urlQuery === "" && status !== "all" && list.isSuccess && !list.isPlaceholderData && customers.length === 0,
+    retry: 1,
     select: (d) => d.customers.length > 0,
   });
 
@@ -95,24 +106,39 @@ export default function CustomersPage() {
 
   const backState: CustomersBackState = { listSearch: location.search };
 
+  const showEmpty = list.isSuccess && !list.isPlaceholderData && customers.length === 0;
+  /** What an empty list means, for the status line and the empty state: undefined while that is still being worked out. */
+  const emptyKind: EmptyKind | undefined = !showEmpty
+    ? undefined
+    : urlQuery
+      ? "noMatches"
+      : status === "all" || anyAtAll.data === false
+        ? "none"
+        : anyAtAll.data === true
+          ? "filter"
+          : undefined;
+
   let resultText = "";
   if (list.isSuccess && !searching && !pending) {
     const n = customers.length;
-    resultText = urlQuery
-      ? n === 0
-        ? ""
-        : list.hasNextPage
-          ? cu("resultsMatchMore", { n, query: urlQuery })
-          : n === 1
-            ? cu("resultsMatchOne", { query: urlQuery })
-            : cu("resultsMatch", { n, query: urlQuery })
-      : n === 0
-        ? ""
-        : list.hasNextPage
-          ? cu("resultsMore", { n })
-          : n === 1
-            ? cu("resultsOne")
-            : cu("results", { n });
+    if (n === 0) {
+      resultText =
+        emptyKind === "noMatches"
+          ? cu("noMatches", { query: urlQuery })
+          : emptyKind === "none"
+            ? cu("emptyTitle")
+            : emptyKind === "filter"
+              ? cu(`emptyIn.${status}`)
+              : "";
+    } else if (urlQuery) {
+      resultText = list.hasNextPage
+        ? cu("resultsMatchMore", { n, query: urlQuery })
+        : n === 1
+          ? cu("resultsMatchOne", { query: urlQuery })
+          : cu("resultsMatch", { n, query: urlQuery });
+    } else {
+      resultText = list.hasNextPage ? cu("resultsMore", { n }) : n === 1 ? cu("resultsOne") : cu("results", { n });
+    }
   }
 
   return (
@@ -163,7 +189,7 @@ export default function CustomersPage() {
               id={`${searchId}-q`}
               type="search"
               value={text}
-              maxLength={200}
+              maxLength={CUSTOMER_SEARCH_MAX}
               autoComplete="off"
               spellCheck={false}
               enterKeyHint="search"
@@ -183,7 +209,7 @@ export default function CustomersPage() {
             {STATUSES.map((s) => (
               <label
                 key={s}
-                className="flex min-h-9 cursor-pointer items-center justify-center rounded-lg px-3 text-sm font-medium text-slate-700 has-checked:bg-blue-700 has-checked:text-white has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-blue-600 hover:bg-slate-100 has-checked:hover:bg-blue-700 dark:text-slate-300 dark:has-checked:bg-blue-600 dark:hover:bg-slate-800"
+                className="flex min-h-11 cursor-pointer items-center justify-center rounded-lg px-3 lg:min-h-9 text-sm font-medium text-slate-700 has-checked:bg-blue-700 has-checked:text-white has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-blue-600 hover:bg-slate-100 has-checked:hover:bg-blue-700 dark:text-slate-300 dark:has-checked:bg-blue-600 dark:hover:bg-slate-800"
               >
                 <input type="radio" name={`${searchId}-status`} value={s} checked={status === s} onChange={() => writeUrl({ q: text, status: s })} className="sr-only" />
                 {cu(`status.${s}`)}
@@ -214,12 +240,19 @@ export default function CustomersPage() {
             {t("web.common.retry")}
           </Button>
         </Notice>
+      ) : customers.length === 0 && !showEmpty ? (
+        // The previous search found nothing and the next one is still loading.
+        <div aria-busy="true">
+          <Skeleton className="h-48" />
+        </div>
       ) : customers.length === 0 ? (
         <Empty
+          kind={emptyKind}
           query={urlQuery}
           status={status}
           isAdmin={isAdmin}
-          everything={anyAtAll.data}
+          probeFailed={anyAtAll.isError}
+          onRetryProbe={() => void anyAtAll.refetch()}
           onAll={() => writeUrl({ q: text, status: "all" })}
           onClear={() => {
             setText("");
@@ -248,7 +281,7 @@ export default function CustomersPage() {
             </ul>
           </Card>
           {list.isFetchNextPageError && <Notice tone="error">{cu("loadMoreFailed")}</Notice>}
-          {list.hasNextPage && (
+          {list.hasNextPage && !searching && !pending && (
             <div className="flex justify-center">
               <Button
                 variant="secondary"
@@ -304,19 +337,25 @@ function Row({ c, state }: { c: CustomerListItemDTO; state: CustomersBackState }
   );
 }
 
+type EmptyKind = "noMatches" | "none" | "filter";
+
 function Empty({
+  kind,
   query,
   status,
   isAdmin,
-  everything,
+  probeFailed,
+  onRetryProbe,
   onAll,
   onClear,
 }: {
+  /** Undefined while it isn't known yet whether any customer exists at all. */
+  kind: EmptyKind | undefined;
   query: string;
   status: Status;
   isAdmin: boolean;
-  /** For an empty filter without a search: whether any customer exists at all (undefined while checking). */
-  everything: boolean | undefined;
+  probeFailed: boolean;
+  onRetryProbe: () => void;
   onAll: () => void;
   onClear: () => void;
 }) {
@@ -327,7 +366,7 @@ function Empty({
     </svg>
   );
 
-  if (query) {
+  if (kind === "noMatches") {
     return (
       <div className={frame}>
         {icon}
@@ -344,8 +383,21 @@ function Empty({
   }
 
   // No search: either nothing in this filter, or no customers at all yet.
-  if (status !== "all" && everything === undefined) return <Skeleton className="h-48" />;
-  if (status === "all" || everything === false) {
+  if (kind === undefined) {
+    return probeFailed ? (
+      <Notice tone="error" className="flex flex-wrap items-center justify-between gap-3">
+        {cu("loadFailed")}
+        <Button variant="secondary" onClick={onRetryProbe}>
+          {t("web.common.retry")}
+        </Button>
+      </Notice>
+    ) : (
+      <div aria-busy="true">
+        <Skeleton className="h-48" />
+      </div>
+    );
+  }
+  if (kind === "none") {
     return (
       <div className={frame}>
         {icon}

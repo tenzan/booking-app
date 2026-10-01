@@ -1,4 +1,4 @@
-import { CUSTOMERS_PAGE_SIZE } from "../../shared/schemas";
+import { CUSTOMER_RECENT_LIMIT, CUSTOMERS_PAGE_SIZE } from "../../shared/schemas";
 import type {
   CustomerContactDTO,
   CustomerDetailDTO,
@@ -138,7 +138,7 @@ export async function getContact(db: D1Database, customerId: number, contactId: 
 }
 
 /** The customer's newest reservations by start time. */
-export async function recentReservations(db: D1Database, customerId: number, limit = 10): Promise<CustomerReservationSummaryDTO[]> {
+export async function recentReservations(db: D1Database, customerId: number, limit = CUSTOMER_RECENT_LIMIT): Promise<CustomerReservationSummaryDTO[]> {
   const { results } = await db
     .prepare(
       `SELECT id, ref, status, start_at AS startAt, end_at AS endAt, contact_name AS contactName FROM reservations

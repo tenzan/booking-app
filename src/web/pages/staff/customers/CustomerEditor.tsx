@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "react-router";
-import { customerCreateSchema, customerPatchSchema } from "../../../../shared/schemas";
+import { customerCreateSchema, customerPatchSchema, MAX_CUSTOMER_CONTACTS } from "../../../../shared/schemas";
 import type { CustomerDetailDTO } from "../../../../shared/types";
 import { apiFetch, handleSignedOut, isApiError, queryKeys, useMe } from "../../../api";
 import { Button } from "../../../components/Button";
@@ -301,7 +301,7 @@ function CreateForm({ listSearch }: { listSearch: string }) {
               ))}
             </ol>
           )}
-          {contacts.length < 50 && (
+          {contacts.length < MAX_CUSTOMER_CONTACTS && (
             <Button ref={addRef} variant="secondary" onClick={addContact}>
               <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />

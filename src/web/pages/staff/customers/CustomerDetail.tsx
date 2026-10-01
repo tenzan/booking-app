@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
-import { contactInputSchema, contactPatchSchema } from "../../../../shared/schemas";
+import { contactInputSchema, contactPatchSchema, CUSTOMER_RECENT_LIMIT } from "../../../../shared/schemas";
 import type { CustomerContactDTO, CustomerDetailDTO, CustomerDTO, CustomerReservationSummaryDTO } from "../../../../shared/types";
 import { apiFetch, handleSignedOut, isApiError, queryKeys, useMe } from "../../../api";
 import { Button, ButtonLink } from "../../../components/Button";
@@ -16,8 +16,6 @@ import { dateIn, fmtDateWithYear, fmtTimeRange } from "../../../format";
 import { t } from "../../../i18n";
 import { EditCustomerForm } from "./CustomerEditor";
 import { BackLink, contactsSummary, cu, customerErrorText, issueText, LIMITS, StatusChip, TextInput, type CustomersBackState, type Issue } from "./shared";
-
-const RECENT_LIMIT = 10;
 
 /** `/staff/customers/:id` — one customer: details, contacts and recent reservations. Administrators can change them. */
 export default function CustomerDetail() {
@@ -88,7 +86,7 @@ export default function CustomerDetail() {
           {me.data?.staff && !isAdmin && <p className="text-slate-600 dark:text-slate-400">{cu("techNote")}</p>}
           <div className="grid items-start gap-8 lg:grid-cols-5">
             <Contacts detail={q.data} isAdmin={isAdmin} onDone={show} className="lg:col-span-3" />
-            <Reservations customer={q.data.customer} list={q.data.recentReservations} tz={tz} className="lg:col-span-2" />
+            <Reservations customer={q.data.customer} list={q.data.recentReservations} tz={tz} listSearch={listSearch} className="lg:col-span-2" />
           </div>
         </>
       )}
@@ -147,18 +145,28 @@ function Header({ detail, isAdmin, onDone }: { detail: CustomerDetailDTO; isAdmi
 
   if (editing) {
     return (
-      <EditCustomerForm
-        detail={detail}
-        onClose={() => {
-          setEditing(false);
-          focusWhenReady(() => editRef.current);
-        }}
-        onDone={(text) => {
-          setEditing(false);
-          onDone(text);
-          focusWhenReady(() => editRef.current);
-        }}
-      />
+      <div className="space-y-4">
+        {/* The page keeps its h1 while the card is a form (a plain heading: the form's first field has focus). */}
+        <div className="space-y-1">
+          <p className="font-mono text-sm font-medium text-slate-600 dark:text-slate-400">
+            <span className="sr-only">{cu("fields.number")}: </span>
+            {c.customerNumber}
+          </p>
+          <h1 className="text-2xl font-bold tracking-tight break-words sm:text-3xl">{c.name}</h1>
+        </div>
+        <EditCustomerForm
+          detail={detail}
+          onClose={() => {
+            setEditing(false);
+            focusWhenReady(() => editRef.current);
+          }}
+          onDone={(text) => {
+            setEditing(false);
+            onDone(text);
+            focusWhenReady(() => editRef.current);
+          }}
+        />
+      </div>
     );
   }
 
@@ -490,7 +498,7 @@ function ContactItem({
           )}
           {k.hasHistory && (
             <p id={historyNoteId} className="basis-full text-sm text-slate-600 sm:basis-auto sm:pl-2 dark:text-slate-400">
-              {cu("contacts.historyNote")}
+              {k.active ? cu("contacts.historyNote") : cu("contacts.historyNoteInactive")}
             </p>
           )}
         </div>
@@ -739,10 +747,11 @@ function EditContactForm({ customer, contact: k, onClose }: { customer: Customer
 
 // ---- Recent reservations --------------------------------------------------------------------------------------------
 
-function Reservations({ customer, list, tz, className }: { customer: CustomerDTO; list: CustomerReservationSummaryDTO[]; tz: string; className: string }) {
+function Reservations({ customer, list, tz, listSearch, className }: { customer: CustomerDTO; list: CustomerReservationSummaryDTO[]; tz: string; listSearch: string; className: string }) {
   const id = useId();
   const location = useLocation();
-  const state: CustomersBackState = { back: { to: location.pathname, label: customer.name } };
+  // Coming back from the reservation keeps the way back to the same customer search.
+  const state: CustomersBackState = { back: { to: location.pathname, label: customer.name, state: { listSearch } } };
   return (
     <section aria-labelledby={`${id}-title`} className={`min-w-0 space-y-3 ${className}`}>
       <div className="space-y-1">
@@ -785,7 +794,7 @@ function Reservations({ customer, list, tz, className }: { customer: CustomerDTO
               ))}
             </ul>
           </Card>
-          {list.length >= RECENT_LIMIT && <p className="text-sm text-slate-600 dark:text-slate-400">{cu("recent.limited", { n: RECENT_LIMIT })}</p>}
+          {list.length >= CUSTOMER_RECENT_LIMIT && <p className="text-sm text-slate-600 dark:text-slate-400">{cu("recent.limited", { n: CUSTOMER_RECENT_LIMIT })}</p>}
         </>
       )}
     </section>

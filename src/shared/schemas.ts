@@ -180,7 +180,9 @@ export function settingsPatchIssues(current: Settings, patch: Partial<Settings>)
 
 // ---- Staff ------------------------------------------------------------------------------------------------------
 
-export const emailSchema = z.string().trim().max(254).pipe(z.email()).transform((e) => e.toLowerCase());
+/** Longest email address accepted anywhere (RFC 5321 path limit). */
+export const EMAIL_MAX = 254;
+export const emailSchema = z.string().trim().max(EMAIL_MAX).pipe(z.email()).transform((e) => e.toLowerCase());
 const staffNameSchema = z.string().trim().min(1).max(100);
 export const staffRoleSchema = z.enum(["admin", "technician"]);
 
@@ -212,11 +214,24 @@ export const MAX_CUSTOMER_IMPORT_CHARS = 1_000_000;
 /** Request body limit for CSV imports (the JSON around the text included); every other request is capped lower. */
 export const MAX_CSV_BODY_BYTES = 1024 * 1024;
 
-export const customerNumberSchema = z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9._-]+$/, "letters, digits and . _ - only");
-export const customerNameSchema = z.string().trim().min(1).max(200);
-export const phoneSchema = z.string().trim().max(40).regex(/^[0-9+()\- .]*$/, "digits, spaces and + ( ) - . only");
-export const customerNotesSchema = z.string().max(1000);
-export const contactNameSchema = z.string().trim().max(100);
+/** Field bounds, shared with the forms (maxLength and the "too long" messages). */
+export const CUSTOMER_NUMBER_MAX = 40;
+export const CUSTOMER_NAME_MAX = 200;
+export const PHONE_MAX = 40;
+export const CUSTOMER_NOTES_MAX = 1000;
+export const CONTACT_NAME_MAX = 100;
+/** Contacts one create request may carry. */
+export const MAX_CUSTOMER_CONTACTS = 50;
+/** Longest customer search text. */
+export const CUSTOMER_SEARCH_MAX = 200;
+/** Reservations listed on a customer's page (newest first). */
+export const CUSTOMER_RECENT_LIMIT = 10;
+
+export const customerNumberSchema = z.string().trim().min(1).max(CUSTOMER_NUMBER_MAX).regex(/^[A-Za-z0-9._-]+$/, "letters, digits and . _ - only");
+export const customerNameSchema = z.string().trim().min(1).max(CUSTOMER_NAME_MAX);
+export const phoneSchema = z.string().trim().max(PHONE_MAX).regex(/^[0-9+()\- .]*$/, "digits, spaces and + ( ) - . only");
+const customerNotesSchema = z.string().max(CUSTOMER_NOTES_MAX);
+export const contactNameSchema = z.string().trim().max(CONTACT_NAME_MAX);
 
 export const contactInputSchema = z.object({ email: emailSchema, name: contactNameSchema.optional(), phone: phoneSchema.optional() });
 
@@ -226,7 +241,7 @@ export const customerCreateSchema = z
     name: customerNameSchema,
     phone: phoneSchema.optional(),
     notes: customerNotesSchema.optional(),
-    contacts: z.array(contactInputSchema).max(50).default([]),
+    contacts: z.array(contactInputSchema).max(MAX_CUSTOMER_CONTACTS).default([]),
   })
   .refine((c) => new Set(c.contacts.map((x) => x.email)).size === c.contacts.length, { message: "duplicate contact email", path: ["contacts"] });
 
@@ -248,7 +263,7 @@ export const contactPatchSchema = z
 export const customerActiveSchema = z.object({ active: z.boolean() });
 
 export const customerListQuerySchema = z.object({
-  query: z.string().trim().max(200).default(""),
+  query: z.string().trim().max(CUSTOMER_SEARCH_MAX).default(""),
   status: z.enum(["active", "inactive", "all"]).default("active"),
   cursor: z.string().max(300).optional(),
 });

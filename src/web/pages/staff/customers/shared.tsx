@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import { contactNameSchema, customerNameSchema, customerNotesSchema, customerNumberSchema, emailSchema, phoneSchema } from "../../../../shared/schemas";
+import { CONTACT_NAME_MAX, CUSTOMER_NAME_MAX, CUSTOMER_NOTES_MAX, CUSTOMER_NUMBER_MAX, EMAIL_MAX, PHONE_MAX } from "../../../../shared/schemas";
 import { isApiError } from "../../../api";
 import { inputClass } from "../../../components/Field";
+import { PageHeading } from "../../../components/Layout";
 import { t } from "../../../i18n";
 import { actionErrorText } from "../detail/shared";
 
@@ -12,8 +13,8 @@ export const cu = (key: string, params?: Record<string, string | number>) => t(`
 export interface CustomersBackState {
   /** The list's search string ("?q=…&status=…"), for the back link on the detail page. */
   listSearch?: string;
-  /** Read by the staff reservation page: where its back link goes, and what it says. */
-  back?: { to: string; label: string };
+  /** Read by the staff reservation page: where its back link goes, what it says, and the state to go back with. */
+  back?: { to: string; label: string; state?: CustomersBackState };
   /** A confirmation to show once on arrival (after creating a customer). */
   toast?: string;
 }
@@ -54,17 +55,14 @@ export function customerErrorText(e: unknown): string {
 
 export type FieldName = "customerNumber" | "name" | "phone" | "notes" | "email" | "contactName";
 
-const maxOf = (schema: unknown) => (schema as { maxLength: number }).maxLength;
-
-/** Field limits, read from the shared schemas, for maxLength and the "too long" message. */
+/** Field limits from the shared schemas' bounds, for maxLength and the "too long" message. */
 export const LIMITS: Record<FieldName, number> = {
-  customerNumber: maxOf(customerNumberSchema),
-  name: maxOf(customerNameSchema),
-  phone: maxOf(phoneSchema),
-  notes: maxOf(customerNotesSchema),
-  // emailSchema is a pipeline (trim, length, format, lower-case): its first stage holds the bound.
-  email: maxOf((emailSchema as unknown as { in: { in: unknown } }).in.in),
-  contactName: maxOf(contactNameSchema),
+  customerNumber: CUSTOMER_NUMBER_MAX,
+  name: CUSTOMER_NAME_MAX,
+  phone: PHONE_MAX,
+  notes: CUSTOMER_NOTES_MAX,
+  email: EMAIL_MAX,
+  contactName: CONTACT_NAME_MAX,
 };
 
 export interface Issue {
@@ -186,7 +184,7 @@ export function TextInput({
 export function AdminOnly({ text }: { text: string }) {
   return (
     <div className="rounded-2xl border border-dashed border-slate-300 px-6 py-10 text-center dark:border-slate-700">
-      <p className="text-lg font-semibold">{text}</p>
+      <PageHeading className="text-lg sm:text-xl">{text}</PageHeading>
       <Link to="/staff/customers" className="mt-4 inline-flex min-h-11 items-center font-medium text-blue-700 underline underline-offset-2 dark:text-blue-300">
         {cu("backToList")}
       </Link>
