@@ -1,7 +1,9 @@
 import { assignableFor } from "../../domain/matching";
 import { freeStaffAt, windowStaffAt } from "../../domain/slots";
-import type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
+import { AUDIT_PAGE_SIZE, RESERVATIONS_PAGE_DEFAULT } from "../../shared/schemas";
+import type { AuditEntryDTO, AuditListDTO, AuditRow, CustomerReservationDTO, ReservationDTO, ReservationListDTO, ReservationStatus, TechOption } from "../../shared/types";
 import type { Env } from "../env";
+import { decodeCursor, encodeCursor } from "../lib/cursor";
 import { loadScheduleCtx } from "../scheduling/context";
 
 export type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
@@ -74,11 +76,24 @@ export async function getReservation(db: D1Database, id: string): Promise<Reserv
   return row ? toDTO(row) : null;
 }
 
-/** Filters: `from` inclusive / `to` exclusive on the start time; `staffId` matches the assigned or provisional technician. Soonest first. */
+/**
+ * Filters: `from` inclusive / `to` exclusive on the start time; `staffId` matches the assigned technician only
+ * (`orProvisionalStaffId` additionally matches pending requests provisionally on that technician: the calendar's view).
+ * Soonest first (then id), `limit` rows (default 50) after `cursor`.
+ */
 export async function listReservations(
   db: D1Database,
-  f: { status?: ReservationStatus[]; from?: number; to?: number; staffId?: number },
-): Promise<ReservationDTO[]> {
+  f: {
+    status?: ReservationStatus[];
+    from?: number;
+    to?: number;
+    staffId?: number;
+    orProvisionalStaffId?: number;
+    limit?: number;
+    cursor?: string;
+  },
+): Promise<ReservationListDTO> {
+  const limit = f.limit ?? RESERVATIONS_PAGE_DEFAULT;
   const where: string[] = [];
   const binds: unknown[] = [];
   if (f.status && f.status.length > 0) {
@@ -94,12 +109,23 @@ export async function listReservations(
     binds.push(f.to);
   }
   if (f.staffId !== undefined) {
-    where.push("(r.assigned_staff_id = ? OR r.provisional_staff_id = ?)");
-    binds.push(f.staffId, f.staffId);
+    where.push("r.assigned_staff_id = ?");
+    binds.push(f.staffId);
   }
-  const sql = `${SELECT}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY r.start_at, r.created_at, r.id`;
-  const { results } = await db.prepare(sql).bind(...binds).all<Row>();
-  return results.map(toDTO);
+  if (f.orProvisionalStaffId !== undefined) {
+    where.push("(r.assigned_staff_id = ? OR (r.status = 'pending' AND r.provisional_staff_id = ?))");
+    binds.push(f.orProvisionalStaffId, f.orProvisionalStaffId);
+  }
+  if (f.cursor !== undefined) {
+    const [startAt, id] = decodeCursor(f.cursor, ["number", "string"]);
+    where.push("(r.start_at > ? OR (r.start_at = ? AND r.id > ?))");
+    binds.push(startAt, startAt, id);
+  }
+  const sql = `${SELECT}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY r.start_at, r.id LIMIT ?`;
+  const { results } = await db.prepare(sql).bind(...binds, limit + 1).all<Row>();
+  const page = results.slice(0, limit).map(toDTO);
+  const last = page.at(-1);
+  return { reservations: page, nextCursor: results.length > limit && last ? encodeCursor([last.startAt, last.id]) : null };
 }
 
 const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
@@ -180,6 +206,80 @@ export async function getAudit(db: D1Database, reservationId: string): Promise<A
     .bind(reservationId)
     .all<{ at: number; actor_kind: AuditRow["actorKind"]; actor: string | null; action: string; details: string }>();
   return results.map((r) => ({ at: r.at, actorKind: r.actor_kind, actor: r.actor, action: r.action, details: JSON.parse(r.details) }));
+}
+
+/**
+ * The audit log, newest first, a page after `cursor`. `actor` is the stored actor (a staff id, or a customer email);
+ * staff actors are shown by name. `action` ending in "." matches every action with that prefix (`reservation.`), otherwise exactly.
+ */
+export async function listAudit(
+  db: D1Database,
+  f: { reservationId?: string; customerId?: number; actor?: string; action?: string; cursor?: string },
+): Promise<AuditListDTO> {
+  const where: string[] = [];
+  const binds: unknown[] = [];
+  if (f.reservationId !== undefined) {
+    where.push("a.reservation_id = ?");
+    binds.push(f.reservationId);
+  }
+  if (f.customerId !== undefined) {
+    where.push("a.customer_id = ?");
+    binds.push(f.customerId);
+  }
+  if (f.actor !== undefined) {
+    where.push("a.actor = ?");
+    binds.push(f.actor);
+  }
+  if (f.action !== undefined) {
+    if (f.action.endsWith(".")) {
+      where.push("substr(a.action, 1, length(?)) = ?");
+      binds.push(f.action, f.action);
+    } else {
+      where.push("a.action = ?");
+      binds.push(f.action);
+    }
+  }
+  if (f.cursor !== undefined) {
+    const [at, id] = decodeCursor(f.cursor, ["number", "number"]);
+    where.push("(a.at < ? OR (a.at = ? AND a.id < ?))");
+    binds.push(at, at, id);
+  }
+  const { results } = await db
+    .prepare(
+      `SELECT a.id, a.at, a.actor_kind, COALESCE(s.name, a.actor) AS actor, a.action, a.details,
+              a.reservation_id, r.ref AS reservation_ref, a.customer_id
+       FROM audit_log a
+       LEFT JOIN staff s ON a.actor_kind = 'staff' AND CAST(s.id AS TEXT) = a.actor
+       LEFT JOIN reservations r ON r.id = a.reservation_id
+       ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY a.at DESC, a.id DESC LIMIT ?`,
+    )
+    .bind(...binds, AUDIT_PAGE_SIZE + 1)
+    .all<{
+      id: number;
+      at: number;
+      actor_kind: AuditRow["actorKind"];
+      actor: string | null;
+      action: string;
+      details: string;
+      reservation_id: string | null;
+      reservation_ref: string | null;
+      customer_id: number | null;
+    }>();
+  const page = results.slice(0, AUDIT_PAGE_SIZE);
+  const entries: AuditEntryDTO[] = page.map((r) => ({
+    id: r.id,
+    at: r.at,
+    actorKind: r.actor_kind,
+    actor: r.actor,
+    action: r.action,
+    details: JSON.parse(r.details),
+    reservationId: r.reservation_id,
+    reservationRef: r.reservation_ref,
+    customerId: r.customer_id,
+  }));
+  const last = page.at(-1);
+  return { entries, nextCursor: results.length > AUDIT_PAGE_SIZE && last ? encodeCursor([last.at, last.id]) : null };
 }
 
 /**

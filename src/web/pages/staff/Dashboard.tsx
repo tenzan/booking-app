@@ -36,9 +36,9 @@ export default function Dashboard() {
   const now = useNow();
   const today = todayIn(tz, now);
 
-  const pending = useReservations("status=pending");
+  const pending = useReservations("status=pending&limit=200");
   const confirmed = useReservations(
-    `status=confirmed&from=${wallToUtc(today, 0, tz)}&to=${wallToUtc(addDays(today, 1), 0, tz)}`,
+    `status=confirmed&limit=200&from=${wallToUtc(today, 0, tz)}&to=${wallToUtc(addDays(today, 1), 0, tz)}`,
   );
 
   return (

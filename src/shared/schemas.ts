@@ -248,3 +248,54 @@ export const customerListQuerySchema = z.object({
   status: z.enum(["active", "inactive", "all"]).default("active"),
   cursor: z.string().max(300).optional(),
 });
+
+// ---- Operations: reservation list, calendar, audit, email failures -------------------------------------------------
+
+/** Query strings carry "" for a cleared field: treat it as absent. */
+const blankToUndefined = (v: unknown) => (v === "" ? undefined : v);
+const optionalInt = z.preprocess(blankToUndefined, z.coerce.number().int().optional());
+const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().max(max).optional());
+
+export const RESERVATION_STATUSES = ["pending", "confirmed", "declined", "expired", "cancelled", "completed"] as const;
+export const RESERVATIONS_PAGE_DEFAULT = 50;
+export const RESERVATIONS_PAGE_MAX = 200;
+export const CALENDAR_MAX_DAYS = 42;
+export const AUDIT_PAGE_SIZE = 100;
+export const EMAILS_PAGE_SIZE = 50;
+
+/** Comma-separated statuses ("" = no filter). */
+export const statusListSchema = z
+  .preprocess(blankToUndefined, z.string().optional())
+  .transform((s) => (s ? s.split(",") : undefined))
+  .pipe(z.array(z.enum(RESERVATION_STATUSES)).optional());
+
+export const reservationListQuerySchema = z.object({
+  status: statusListSchema,
+  from: optionalInt,
+  to: optionalInt,
+  staffId: optionalInt,
+  limit: z.preprocess(blankToUndefined, z.coerce.number().int().min(1).max(RESERVATIONS_PAGE_MAX).default(RESERVATIONS_PAGE_DEFAULT)),
+  cursor: optionalText(300),
+});
+
+export const calendarQuerySchema = z.object({
+  from: z.coerce.number().int(),
+  to: z.coerce.number().int(),
+  staffId: optionalInt,
+  status: statusListSchema,
+});
+
+export const auditListQuerySchema = z.object({
+  reservationId: optionalText(100),
+  customerId: optionalInt,
+  actor: optionalText(254),
+  action: optionalText(100),
+  cursor: optionalText(300),
+});
+
+export const EMAIL_STATUSES = ["failed", "queued", "sent", "skipped", "cancelled"] as const;
+
+export const emailListQuerySchema = z.object({
+  status: z.preprocess(blankToUndefined, z.enum(EMAIL_STATUSES).default("failed")),
+  cursor: optionalText(300),
+});

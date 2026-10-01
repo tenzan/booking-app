@@ -198,3 +198,72 @@ export interface CustomerDetailDTO {
   contacts: CustomerContactDTO[];
   recentReservations: CustomerReservationSummaryDTO[];
 }
+
+export interface ReservationListDTO {
+  reservations: ReservationDTO[];
+  /** Opaque; pass back as `cursor` for the next page. Null on the last page. */
+  nextCursor: string | null;
+}
+
+/** A reservation on the staff calendar. When the feed is filtered by technician, pending requests only provisionally on that technician are flagged. */
+export interface CalendarReservationDTO extends ReservationDTO {
+  provisionalForFilteredStaff?: boolean;
+}
+
+export interface CalendarSlotDTO {
+  startAt: number;
+  endAt: number;
+  /** Technicians who can take a booking at this start. */
+  staffIds: number[];
+  /** Technicians holding a confirmed appointment or an open proposal option that overlaps the slot. */
+  bookedStaffIds: number[];
+  /** Pending requests whose hold overlaps the slot. */
+  pendingCount: number;
+}
+
+export interface CalendarDTO {
+  timezone: string;
+  reservations: CalendarReservationDTO[];
+  /** More reservations matched than the feed carries; narrow the range or filters. */
+  truncated: boolean;
+  slots: Array<{ date: string; slots: CalendarSlotDTO[] }>;
+}
+
+export interface AuditEntryDTO extends AuditRow {
+  id: number;
+  reservationId: string | null;
+  reservationRef: string | null;
+  customerId: number | null;
+}
+
+export interface AuditListDTO {
+  entries: AuditEntryDTO[];
+  nextCursor: string | null;
+}
+
+export type EmailStatus = "queued" | "sent" | "failed" | "skipped" | "cancelled";
+
+export interface EmailJobDTO {
+  id: string;
+  template: string;
+  /** Masked (`j***@example.test`) for technicians. */
+  to: string;
+  reservationId: string | null;
+  ref: string | null;
+  status: string;
+  attempts: number;
+  lastError: string | null;
+  createdAt: number;
+  sentAt: number | null;
+  sendAfter: number;
+}
+
+export interface EmailListDTO {
+  emails: EmailJobDTO[];
+  nextCursor: string | null;
+}
+
+export interface EmailSummaryDTO {
+  failed: number;
+  queued: number;
+}

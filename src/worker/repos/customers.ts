@@ -8,7 +8,7 @@ import type {
   CustomerReservationSummaryDTO,
   ReservationStatus,
 } from "../../shared/types";
-import { HttpError } from "../lib/http";
+import { decodeCursor, encodeCursor } from "../lib/cursor";
 
 export interface EligibleAccount {
   id: number;
@@ -59,21 +59,6 @@ export async function lastPhonesForEmail(db: D1Database, email: string): Promise
 
 // ---- Administration reads ---------------------------------------------------------------------------------------
 
-const encodeCursor = (number: string, id: number): string =>
-  btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify([number, id])))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-
-function decodeCursor(cursor: string): [string, number] {
-  try {
-    const b64 = cursor.replaceAll("-", "+").replaceAll("_", "/");
-    const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
-    const v: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    if (Array.isArray(v) && v.length === 2 && typeof v[0] === "string" && Number.isInteger(v[1])) return [v[0], v[1] as number];
-  } catch {
-    // fall through
-  }
-  throw new HttpError(400, "invalid_cursor");
-}
-
 interface ListRow {
   id: number;
   customerNumber: string;
@@ -107,7 +92,7 @@ export async function listCustomers(
     binds.push(needle, needle, needle);
   }
   if (f.cursor !== undefined) {
-    const [number, id] = decodeCursor(f.cursor);
+    const [number, id] = decodeCursor(f.cursor, ["string", "number"]);
     where.push("(c.customer_number > ? OR (c.customer_number = ? AND c.id > ?))");
     binds.push(number, number, id);
   }
@@ -124,7 +109,7 @@ export async function listCustomers(
   const page = results.slice(0, CUSTOMERS_PAGE_SIZE);
   const last = page.at(-1);
   const customers: CustomerListItemDTO[] = page.map((r) => ({ ...r, active: r.active === 1 }));
-  return { customers, nextCursor: results.length > CUSTOMERS_PAGE_SIZE && last ? encodeCursor(last.customerNumber, last.id) : null };
+  return { customers, nextCursor: results.length > CUSTOMERS_PAGE_SIZE && last ? encodeCursor([last.customerNumber, last.id]) : null };
 }
 
 export async function getCustomer(db: D1Database, id: number): Promise<CustomerDTO | null> {

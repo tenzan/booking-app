@@ -1,6 +1,8 @@
 import type { Env } from "../env";
 import { clock } from "../lib/clock";
 import { uuid } from "../lib/crypto";
+import { assertSql, audit } from "../lib/db";
+import { HttpError } from "../lib/http";
 import { mailerFor, type Mailer } from "./adapters";
 import { renderJob } from "./templates";
 
@@ -114,6 +116,39 @@ export async function processOutbox(
     }
   }
   return out;
+}
+
+/**
+ * Puts a failed job back in the queue for another full round of attempts, due now. The last error stays visible until the
+ * next attempt overwrites it. Only `failed` jobs: 404 for an unknown id, 409 not_failed otherwise (also when the job
+ * changed state between the read and the write).
+ */
+export async function retryFailedEmail(db: D1Database, id: string, staffId: number): Promise<{ id: string; template: string }> {
+  const job = await db
+    .prepare("SELECT template, status, reservation_id FROM email_jobs WHERE id = ?")
+    .bind(id)
+    .first<{ template: string; status: string; reservation_id: string | null }>();
+  if (!job) throw new HttpError(404, "not_found");
+  if (job.status !== "failed") throw new HttpError(409, "not_failed");
+  try {
+    await db.batch([
+      assertSql(db, "SELECT 1 FROM email_jobs WHERE id = ? AND status = 'failed'", id),
+      db
+        .prepare("UPDATE email_jobs SET status = 'queued', attempts = 0, send_after = ?, locked_until = NULL WHERE id = ? AND status = 'failed'")
+        .bind(clock.now(), id),
+      audit(db, {
+        actorKind: "staff",
+        actor: String(staffId),
+        action: "email.retry",
+        reservationId: job.reservation_id,
+        details: { id, template: job.template },
+      }),
+    ]);
+  } catch (e) {
+    if (String(e instanceof Error ? e.message : e).includes("guard.ok")) throw new HttpError(409, "not_failed");
+    throw e;
+  }
+  return { id, template: job.template };
 }
 
 /** Fire-and-forget delivery after a request has committed. */
