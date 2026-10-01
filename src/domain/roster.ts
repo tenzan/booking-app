@@ -19,6 +19,12 @@ export interface RosterHold {
   staffId: number | null;
   /** Optional creation time (epoch ms): breaks ties between same-start pendings (older first). */
   createdAt?: number;
+  /**
+   * Kept on `staffId` whatever the schedule says (pendings included): a hold that is already in conflict still owns
+   * its blocks, so nothing else may be matched onto its technician. Reported as a conflict when its own technician
+   * is not free (pendings: `alternatives` stay empty).
+   */
+  pinned?: boolean;
 }
 export interface RosterInput {
   holds: RosterHold[];
@@ -41,7 +47,7 @@ export interface RosterConflict {
   reason: ConflictReason;
   /**
    * Only for confirmed/option conflicts: each is an independent option for THIS conflict (confirmed holds take
-   * priority over pendings, so only valid fixed holds are considered), not a joint plan across conflicts.
+   * priority over pendings, so only valid fixed and pinned holds are considered), not a joint plan across conflicts.
    * `displaces` lists the pendings that would become conflicts if this option were chosen. The UI re-previews
    * after each resolution. Always empty for pending conflicts.
    */
@@ -79,22 +85,26 @@ export function rosterImpact(input: RosterInput, budget?: number): RosterImpact 
   });
 
   const conflicts: Verdict[] = [];
-  const validFixed: Hold[] = [];
+  /** Fixed in the matching: valid confirmed/option holds and every pinned hold that has a technician. */
+  const placed: Hold[] = [];
   const fixedConflicts: RosterHold[] = [];
   const pendings: RosterHold[] = [];
 
   for (const h of holds) {
-    if (h.status === "pending") {
+    if (h.status === "pending" && !h.pinned) {
       pendings.push(h);
       continue;
     }
-    if (!windowExistsAt(slotInput, h.slotStart)) conflicts.push({ hold: h, reason: "slot_removed" });
-    else if (h.staffId === null || !free.get(h.id)!.includes(h.staffId)) conflicts.push({ hold: h, reason: "tech_removed" });
-    else {
-      validFixed.push(toHold(h, { fixed: h.staffId }));
-      continue;
+    const reason: ConflictReason | null = !windowExistsAt(slotInput, h.slotStart)
+      ? "slot_removed"
+      : h.staffId === null || !free.get(h.id)!.includes(h.staffId)
+        ? "tech_removed"
+        : null;
+    if (reason !== null) {
+      conflicts.push({ hold: h, reason });
+      if (h.status !== "pending") fixedConflicts.push(h);
     }
-    fixedConflicts.push(h);
+    if (reason === null || (h.pinned && h.staffId !== null)) placed.push(toHold(h, { fixed: h.staffId }));
   }
 
   // Same start: pendings whose provisional technician is still a candidate go first (an untouched pending is not
@@ -127,8 +137,9 @@ export function rosterImpact(input: RosterInput, budget?: number): RosterImpact 
     return { solid, accepted, rejected };
   };
 
-  const main = acceptPendings(validFixed);
+  const main = acceptPendings(placed);
   conflicts.push(...main.rejected);
+  const inConflict = new Set(conflicts.map((c) => c.hold.id));
 
   // Final staff: solve each time-connected group of holds on its own.
   const assignment = new Map<string, number>();
@@ -145,6 +156,7 @@ export function rosterImpact(input: RosterInput, budget?: number): RosterImpact 
       for (const g of group) if (g.fixed !== null) assignment.set(g.id, g.fixed);
     }
   }
+  for (const id of inConflict) assignment.delete(id); // pinned conflicts are placed, but not assigned
 
   const moved = main.accepted
     .filter((h) => assignment.get(h.id) !== h.staffId)
@@ -154,10 +166,11 @@ export function rosterImpact(input: RosterInput, budget?: number): RosterImpact 
   const mainAccepted = new Set(main.accepted.map((h) => h.id));
   const alternativesFor = (h: RosterHold): RosterAlternative[] => {
     const out: RosterAlternative[] = [];
+    const others = placed.filter((p) => p.id !== h.id);
     for (const staffId of free.get(h.id)!) {
       const fixedTo = toHold(h, { fixed: staffId });
-      if (!solveDetailed(component([...validFixed, fixedTo], h.occStart, h.occEnd), budget).ok) continue;
-      const variant = acceptPendings([...validFixed, fixedTo]);
+      if (!solveDetailed(component([...others, fixedTo], h.occStart, h.occEnd), budget).ok) continue;
+      const variant = acceptPendings([...others, fixedTo]);
       const kept = new Set(variant.accepted.map((p) => p.id));
       out.push({ staffId, displaces: [...mainAccepted].filter((id) => !kept.has(id)).sort(cmpId) });
     }

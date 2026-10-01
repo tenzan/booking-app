@@ -2,20 +2,20 @@
 // proposed schedule, and (on apply) commits the change together with the pending requests it moves.
 
 import { rosterImpact, type RosterHold, type RosterImpact } from "../../domain/roster";
-import { rangeBlocks, type SlotCfg, type SlotInput, type Unavail } from "../../domain/slots";
+import type { SlotCfg, SlotInput, Unavail } from "../../domain/slots";
 import type { Settings } from "../../domain/settings";
 import { addDays, MIN, utcToWall } from "../../domain/time";
-import type { ImpactDTO, ScheduleChange } from "../../shared/types";
+import type { ConflictDTO, ImpactDTO, ScheduleChange } from "../../shared/types";
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
-import { assertSql, audit, capacityBatch, readScheduleVersion, withRetry } from "../lib/db";
+import { audit, capacityBatch, readScheduleVersion, withRetry } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { getHolidays, getSettings } from "../repos/settings";
 import { loadOverrideDates, loadWindows } from "../repos/schedule";
-import { blockInserts } from "../reservations/holds";
+import { movePendingStatements, type PendingMove } from "../reservations/holds";
 import { resolveChange } from "./changes";
 
-export type { ImpactDTO, ScheduleChange, WindowInput } from "../../shared/types";
+export type { ConflictDTO, ImpactDTO, ScheduleChange, WindowInput } from "../../shared/types";
 
 const DAY = 24 * 60 * MIN;
 
@@ -157,34 +157,56 @@ export async function loadRosterState(env: Env): Promise<RosterState> {
   return { version, settings, slotInput, unavailability, staff, holds, info };
 }
 
-function toImpactDTO(state: RosterState, impact: RosterImpact): ImpactDTO {
+function toImpactDTO(state: RosterState, impact: RosterImpact, preexisting: Set<string>): ImpactDTO {
   const holds = new Map(state.holds.map((h) => [h.id, h]));
   const name = (id: number | null) => (id === null ? null : (state.staff.get(id)?.name ?? null));
+  const conflict = (c: RosterImpact["conflicts"][number]): ConflictDTO => ({
+    id: c.id,
+    kind: c.kind,
+    status: c.status,
+    reservationId: state.info.get(c.id)!.reservationId,
+    ref: c.ref,
+    startAt: c.slotStart,
+    staffName: name(c.staffId),
+    reason: c.reason,
+    alternatives: c.alternatives.map((a) => ({
+      id: a.staffId,
+      name: name(a.staffId) ?? "",
+      displaces: a.displaces.map((id) => ({ id, ref: holds.get(id)!.ref })),
+    })),
+    customerName: state.info.get(c.id)!.customerName,
+  });
   return {
     moved: impact.moved.map((m) => ({ id: m.id, ref: m.ref, startAt: holds.get(m.id)!.slotStart, from: name(m.from), to: name(m.to) ?? "" })),
-    conflicts: impact.conflicts.map((c) => ({
-      id: c.id,
-      kind: c.kind,
-      status: c.status,
-      reservationId: state.info.get(c.id)!.reservationId,
-      ref: c.ref,
-      startAt: c.slotStart,
-      staffName: name(c.staffId),
-      reason: c.reason,
-      alternatives: c.alternatives.map((a) => ({
-        id: a.staffId,
-        name: name(a.staffId) ?? "",
-        displaces: a.displaces.map((id) => ({ id, ref: holds.get(id)!.ref })),
-      })),
-      customerName: state.info.get(c.id)!.customerName,
-    })),
+    conflicts: impact.conflicts.filter((c) => !preexisting.has(c.id)).map(conflict),
+    warnings: impact.conflicts.filter((c) => preexisting.has(c.id)).map(conflict),
   };
+}
+
+/**
+ * Conflicts that exist before the change (e.g. data written outside these paths) must not block unrelated edits,
+ * but their holds still own their tech_blocks. So they are pinned to their current technician, in the baseline and
+ * in the proposal alike, and nothing is matched onto it. Pinning can push another pending out in the baseline; that
+ * one is pre-existing too, so pins grow until the baseline is stable. Returns the pinned holds and the ids of the
+ * baseline's conflicts.
+ */
+function baseline(state: RosterState): { holds: RosterHold[]; preexisting: Set<string> } {
+  const pins = new Set<string>();
+  for (;;) {
+    const holds = state.holds.map((h) => (pins.has(h.id) ? { ...h, pinned: true } : h));
+    const base = rosterImpact({ holds, slotInput: state.slotInput });
+    const fresh = base.conflicts.filter((c) => !pins.has(c.id));
+    if (fresh.length === 0) return { holds, preexisting: new Set(base.conflicts.map((c) => c.id)) };
+    for (const c of fresh) pins.add(c.id);
+  }
 }
 
 async function evaluate(env: Env, state: RosterState, change: ScheduleChange) {
   const resolved = await resolveChange(env.DB, state, change);
-  const impact = rosterImpact({ holds: state.holds, slotInput: resolved.slotInput });
-  return { resolved, impact, dto: toImpactDTO(state, impact) };
+  const { holds, preexisting } = baseline(state);
+  const impact = rosterImpact({ holds, slotInput: resolved.slotInput });
+  const dto = toImpactDTO(state, impact, preexisting);
+  return { resolved, impact, dto };
 }
 
 /** What `change` would do to existing holds, under the returned schedule version. Never writes. */
@@ -195,8 +217,8 @@ export async function previewChange(env: Env, change: ScheduleChange): Promise<{
 }
 
 /**
- * Applies `change` if the schedule is still at the previewed `version` (else 409 stale_preview) and it leaves no
- * conflict (else 409 conflicts with the recomputed impact). The impact is always recomputed here. One batch writes
+ * Applies `change` if the schedule is still at the previewed `version` (else 409 stale_preview) and it introduces no
+ * conflict (else 409 conflicts with the recomputed impact; pre-existing ones are only warnings). The impact is always recomputed here. One batch writes
  * the change, re-blocks every moved pending request (asserting it is still pending with its old technician) and
  * audits `schedule.<type>`.
  */
@@ -206,22 +228,14 @@ export async function applyChange(env: Env, actor: StaffPrincipal, change: Sched
     const state = await loadRosterState(env);
     if (state.version !== version) throw new HttpError(409, "stale_preview");
     const { resolved, impact, dto } = await evaluate(env, state, change);
-    if (impact.conflicts.length > 0) throw new HttpError(409, "conflicts", { impact: dto });
+    if (dto.conflicts.length > 0) throw new HttpError(409, "conflicts", { impact: dto });
 
     const now = clock.now();
     const holds = new Map(state.holds.map((h) => [h.id, h]));
-    const moved = impact.moved.map((m) => ({ ...m, hold: holds.get(m.id)! }));
+    const moves: PendingMove[] = impact.moved.map((m) => ({ id: m.id, from: m.from, to: m.to, occStart: holds.get(m.id)!.occStart, occEnd: holds.get(m.id)!.occEnd }));
     await capacityBatch(db, state.version, [
       ...resolved.statements(db, now),
-      ...moved.map((m) =>
-        assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND provisional_staff_id IS ?", m.id, m.from),
-      ),
-      // Free every moved hold's blocks first, then re-insert, so swaps never collide on (staff_id, block_start).
-      ...moved.map((m) => db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(m.id)),
-      ...moved.map((m) =>
-        db.prepare("UPDATE reservations SET provisional_staff_id = ?, updated_at = ? WHERE id = ? AND status = 'pending'").bind(m.to, now, m.id),
-      ),
-      ...moved.flatMap((m) => blockInserts(db, m.to, rangeBlocks(m.hold.occStart, m.hold.occEnd), m.id)),
+      ...movePendingStatements(db, moves, now),
       audit(db, {
         actorKind: "staff",
         actor: String(actor.id),

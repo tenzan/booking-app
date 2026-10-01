@@ -81,12 +81,12 @@ describe("weekly windows", () => {
     const create = { type: "window.create", window: weekly(1, 540, 720, [team.a]) };
     const p = await preview(adminCookie, create);
     expect(p.status).toBe(200);
-    expect(p.json).toEqual({ version: v0, impact: { moved: [], conflicts: [] } });
+    expect(p.json).toEqual({ version: v0, impact: { moved: [], conflicts: [], warnings: [] } });
     expect(await count("SELECT COUNT(*) AS n FROM availability_windows")).toBe(1); // preview never writes
 
     const created = await apply(adminCookie, create, v0);
     expect(created.status).toBe(200);
-    expect(created.json).toEqual({ version: v0 + 1, impact: { moved: [], conflicts: [] } });
+    expect(created.json).toEqual({ version: v0 + 1, impact: { moved: [], conflicts: [], warnings: [] } });
     expect(await version()).toBe(v0 + 1);
 
     const list = await api("GET", "/api/staff/schedule/windows", { cookie: techCookie });
@@ -160,6 +160,7 @@ describe("conflicts", () => {
           staffName: "Tim Tech", reason: "tech_removed", alternatives: [{ id: team.b, name: "Una Tech", displaces: [] }], customerName: "Pat Co",
         },
       ],
+      warnings: [],
     });
     const refused = await apply(adminCookie, change, p.json.version);
     expect([refused.status, refused.json.error]).toEqual([409, "conflicts"]);
@@ -173,7 +174,7 @@ describe("conflicts", () => {
       env.DB.prepare("UPDATE tech_blocks SET staff_id = ? WHERE owner_id = ?").bind(team.b, r.id),
     ]);
     const again = await preview(adminCookie, change);
-    expect(again.json.impact).toEqual({ moved: [], conflicts: [] });
+    expect(again.json.impact).toEqual({ moved: [], conflicts: [], warnings: [] });
     expect((await apply(adminCookie, change, again.json.version)).status).toBe(200);
     expect(await windowStaff(fri)).toEqual([team.b]);
   });
@@ -202,7 +203,7 @@ describe("conflicts", () => {
 
     // Ending right at the stored range is fine.
     const ok = await save(adminCookie, { ...change, startAt: at(FRI, 10, 40) });
-    expect([ok.status, ok.json.impact]).toEqual([200, { moved: [], conflicts: [] }]);
+    expect([ok.status, ok.json.impact]).toEqual([200, { moved: [], conflicts: [], warnings: [] }]);
   });
 
   it("evaluates appointments weeks ahead, beyond the booking horizon", async () => {
@@ -219,7 +220,7 @@ describe("conflicts", () => {
     await approve(r.id, team.a);
     setNow(at(FRI, 10, 40));
     const res = await preview(adminCookie, { type: "window.delete", id: fri });
-    expect(res.json.impact).toEqual({ moved: [], conflicts: [] });
+    expect(res.json.impact).toEqual({ moved: [], conflicts: [], warnings: [] });
   });
 
   it("treats open proposal options as fixed holds", async () => {
@@ -240,6 +241,57 @@ describe("conflicts", () => {
   });
 });
 
+describe("pre-existing conflicts", () => {
+  it("are warnings: they never block an unrelated change, and disappear once fixed", async () => {
+    const r = await submit(pat, at(FRI, 10));
+    await approve(r.id, team.a);
+    // Written outside the schedule API: a's leave now overlaps the confirmed appointment.
+    await env.DB.prepare("INSERT INTO staff_unavailability(staff_id, start_at, end_at) VALUES (?, ?, ?)").bind(team.a, at(FRI, 10), at(FRI, 11)).run();
+    const leave = (await env.DB.prepare("SELECT id FROM staff_unavailability").first<{ id: number }>())!.id;
+
+    const change = { type: "window.create", window: weekly(1, 540, 720, [team.a]) };
+    const p = await preview(adminCookie, change);
+    expect(p.json.impact).toEqual({
+      moved: [],
+      conflicts: [],
+      warnings: [
+        {
+          id: r.id, kind: "reservation", status: "confirmed", reservationId: r.id, ref: r.ref, startAt: at(FRI, 10),
+          staffName: "Tim Tech", reason: "tech_removed", alternatives: [{ id: team.b, name: "Una Tech", displaces: [] }], customerName: "Pat Co",
+        },
+      ],
+    });
+    const res = await apply(adminCookie, change, p.json.version);
+    expect([res.status, res.json.impact]).toEqual([200, p.json.impact]);
+
+    const fixed = await preview(adminCookie, { type: "unavailability.delete", id: leave });
+    expect(fixed.json.impact).toEqual({ moved: [], conflicts: [], warnings: [] });
+  });
+
+  it("keep their technician pinned: no pending is moved onto it, so that pending becomes a (new) conflict", async () => {
+    const x = await submit(pat, at(FRI, 10, 30)); // a
+    await approve(x.id, team.a); // occupies a 10:30–11:10
+    const y = await submit(sam, at(FRI, 10)); // 10:00–10:40 overlaps x on a → b
+    expect((await row(y.id)).provisional_staff_id).toBe(team.b);
+    // Written outside the schedule API: the window now ends at 10:30, so x has lost its slot (still holding a's blocks).
+    await env.DB.prepare("UPDATE availability_windows SET end_min = 630 WHERE id = ?").bind(fri).run();
+
+    const change = { type: "unavailability.create", staffId: team.b, startAt: at(FRI, 9), endAt: at(FRI, 12) };
+    const p = await preview(adminCookie, change);
+    expect(p.json.impact.moved).toEqual([]); // not onto a, whose blocks x still owns
+    expect(p.json.impact.conflicts.map((c: any) => [c.id, c.reason])).toEqual([[y.id, "no_capacity"]]);
+    expect(p.json.impact.warnings.map((c: any) => [c.id, c.reason])).toEqual([[x.id, "slot_removed"]]);
+    const res = await apply(adminCookie, change, p.json.version);
+    expect([res.status, res.json.error]).toEqual([409, "conflicts"]);
+    expect((await row(y.id)).provisional_staff_id).toBe(team.b);
+
+    // A change that worsens nothing still applies, warning included.
+    const ok = await save(adminCookie, { type: "window.create", window: weekly(1, 540, 720, [team.a]) });
+    expect(ok.status).toBe(200);
+    expect(ok.json.impact.warnings.map((c: any) => c.id)).toEqual([x.id]);
+  });
+});
+
 describe("moved pending requests", () => {
   it("are re-blocked in the same batch as the change (B → A)", async () => {
     const p1 = await submit(pat, at(FRI, 10)); // a (first candidate)
@@ -249,7 +301,7 @@ describe("moved pending requests", () => {
 
     const change = { type: "unavailability.create", staffId: team.b, startAt: at(FRI, 9), endAt: at(FRI, 12) };
     const p = await preview(adminCookie, change);
-    expect(p.json.impact).toEqual({ moved: [{ id: s1.id, ref: s1.ref, startAt: at(FRI, 10), from: "Una Tech", to: "Tim Tech" }], conflicts: [] });
+    expect(p.json.impact).toEqual({ moved: [{ id: s1.id, ref: s1.ref, startAt: at(FRI, 10), from: "Una Tech", to: "Tim Tech" }], conflicts: [], warnings: [] });
     expect((await row(s1.id)).provisional_staff_id).toBe(team.b); // preview wrote nothing
 
     const res = await apply(adminCookie, change, p.json.version);
@@ -292,7 +344,7 @@ describe("date overrides", () => {
 
     // Replacing again swaps the windows (no duplicates), and the request stays where it is.
     const again = await save(adminCookie, { type: "override.set", date: FRI, windows: [dated(FRI, 540, 720, [team.a, team.b])] });
-    expect(again.json.impact).toEqual({ moved: [], conflicts: [] });
+    expect(again.json.impact).toEqual({ moved: [], conflicts: [], warnings: [] });
     expect(await count("SELECT COUNT(*) AS n FROM availability_windows WHERE kind = 'date'")).toBe(1);
     expect(await env.DB.prepare("SELECT note FROM date_overrides WHERE date = ?").bind(FRI).first("note")).toBeNull();
 
@@ -323,12 +375,12 @@ describe("unavailability", () => {
     const base = { type: "unavailability.create", staffId: team.a, startAt: at(FRI, 9), endAt: at(FRI, 12) };
     for (const change of [
       { ...base, endAt: base.startAt },
-      { ...base, endAt: base.startAt + 61 * DAY },
+      { ...base, endAt: base.startAt + 367 * DAY },
       { ...base, reason: "x".repeat(201) },
     ]) {
       expect((await preview(adminCookie, change)).status).toBe(400);
     }
-    expect((await preview(adminCookie, { ...base, endAt: base.startAt + 60 * DAY })).status).toBe(200);
+    expect((await preview(adminCookie, { ...base, endAt: base.startAt + 366 * DAY })).status).toBe(200);
     const unknown = await preview(adminCookie, { ...base, staffId: 9999 });
     expect([unknown.status, unknown.json.error]).toEqual([400, "invalid_staff"]);
     expect((await preview(adminCookie, { type: "unavailability.delete", id: 9999 })).status).toBe(404);
@@ -371,6 +423,21 @@ describe("unavailability", () => {
 
     expect((await save(techCookie, { type: "unavailability.delete", id: mine.id })).status).toBe(200);
     expect(await count("SELECT COUNT(*) AS n FROM staff_unavailability")).toBe(1);
+  });
+
+  it("lists the next 90 days by default, at most 500 rows", async () => {
+    const add = (startAt: number) =>
+      env.DB.prepare("INSERT INTO staff_unavailability(staff_id, start_at, end_at) VALUES (?, ?, ?)").bind(team.a, startAt, startAt + 60 * MIN).run();
+    await add(at(FRI, 9));
+    await add(at(THU, 8) + 100 * DAY);
+    const list = (q: string) => api("GET", `/api/staff/schedule/unavailability${q}`, { cookie: techCookie });
+    expect((await list("")).json.unavailability.map((u: any) => u.startAt)).toEqual([at(FRI, 9)]);
+    expect((await list(`?to=${at(THU, 8) + 101 * DAY}`)).json.unavailability).toHaveLength(2);
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 510)
+       INSERT INTO staff_unavailability(staff_id, start_at, end_at) SELECT ?, ? + i * 60000, ? + i * 60000 + 30000 FROM n`,
+    ).bind(team.b, at(FRI, 12), at(FRI, 12)).run();
+    expect((await list("")).json.unavailability).toHaveLength(500);
   });
 
   it("anonymous callers and customers get 401", async () => {
@@ -432,6 +499,26 @@ describe("versioning and concurrency", () => {
     expect(await count("SELECT COUNT(*) AS n FROM staff_unavailability")).toBe(1);
   });
 
+  it("rows deleted behind our back (no version bump) fail the in-batch existence asserts", async () => {
+    await save(adminCookie, { type: "unavailability.create", staffId: team.a, startAt: at(FRI, 13), endAt: at(FRI, 15) });
+    const leave = (await env.DB.prepare("SELECT id FROM staff_unavailability").first<{ id: number }>())!.id;
+    const cases: Array<[ScheduleChange, string]> = [
+      [{ type: "window.update", id: fri, window: weekly(5, 600, 720, [team.a]) }, `DELETE FROM availability_windows WHERE id = ${fri}`],
+      [{ type: "unavailability.delete", id: leave }, `DELETE FROM staff_unavailability WHERE id = ${leave}`],
+    ];
+    await env.DB.prepare("DELETE FROM availability_window_staff WHERE window_id = ?").bind(fri).run();
+    await env.DB.prepare("INSERT INTO availability_window_staff(window_id, staff_id) VALUES (?, ?)").bind(fri, team.a).run();
+    for (const [change, sql] of cases) {
+      const { version: v } = await previewChange(env, change);
+      const w = withBatchHook(async () => {
+        await env.DB.prepare(sql).run();
+      });
+      await expect(applyChange(w.env, admin, change, v)).rejects.toMatchObject({ status: 404 });
+      expect(w.calls.batches).toBe(1);
+    }
+    expect(await audits()).toHaveLength(1); // only the setup
+  });
+
   it("an apply landing during a submit makes the submit retry against the new schedule", async () => {
     const w = withBatchHook(async () => {
       const change: ScheduleChange = { type: "unavailability.create", staffId: team.a, startAt: at(FRI, 9), endAt: at(FRI, 12) };
@@ -447,6 +534,31 @@ describe("versioning and concurrency", () => {
   });
 });
 
+describe("change types outside this API", () => {
+  it("staff.update and holiday.set are not accepted by the schedule routes (400), for technicians and admins", async () => {
+    for (const cookie of [techCookie, adminCookie]) {
+      for (const change of [{ type: "staff.update", id: team.a, active: false }, { type: "holiday.set", date: FRI, name: "Day off" }]) {
+        expect([(await preview(cookie, change)).status, (await apply(cookie, change, 0)).status], JSON.stringify(change)).toEqual([400, 400]);
+      }
+    }
+    expect(await count("SELECT COUNT(*) AS n FROM holidays")).toBe(0);
+  });
+
+  it("resolveChange re-checks window rules for direct callers", async () => {
+    const bad: ScheduleChange[] = [
+      { type: "override.set", date: FRI, windows: [dated("2026-10-03", 600, 720, [team.a])] },
+      { type: "override.set", date: FRI, windows: [weekly(5, 600, 720, [team.a])] },
+      { type: "override.set", date: FRI, windows: [dated(FRI, 600, 720, [team.a, team.a])] },
+      { type: "window.create", window: weekly(1, 600, 720, [team.b, team.b]) },
+      { type: "window.create", window: dated(FRI, 600, 720, [team.a]) },
+      { type: "window.update", id: fri, window: weekly(5, 601, 720, [team.a]) },
+    ];
+    for (const change of bad) {
+      await expect(previewChange(env, change), JSON.stringify(change)).rejects.toMatchObject({ status: 400, code: "invalid" });
+    }
+  });
+});
+
 describe("other change types through the same bridge", () => {
   it("holiday.set closes the weekly pattern; holiday.delete reopens it", async () => {
     const r = await submit(pat, at(FRI, 10));
@@ -458,7 +570,7 @@ describe("other change types through the same bridge", () => {
     await env.DB.prepare("UPDATE reservations SET status = 'declined' WHERE id = ?").bind(r.id).run();
     await env.DB.prepare("DELETE FROM tech_blocks").run();
     const ok = await applyChange(env, admin, set, (await previewChange(env, set)).version);
-    expect(ok.impact).toEqual({ moved: [], conflicts: [] });
+    expect(ok.impact).toEqual({ moved: [], conflicts: [], warnings: [] });
     expect(await env.DB.prepare("SELECT name FROM holidays WHERE date = ?").bind(FRI).first("name")).toBe("Foundation Day");
     const del: ScheduleChange = { type: "holiday.delete", date: FRI };
     await applyChange(env, admin, del, (await previewChange(env, del)).version);
@@ -494,7 +606,7 @@ describe("other change types through the same bridge", () => {
     await approve(r.id, team.a);
     const change: ScheduleChange = { type: "settings.update", patch: { durationMin: 60, bufferAfterMin: 30 } };
     const p = await previewChange(env, change);
-    expect(p.impact).toEqual({ moved: [], conflicts: [] });
+    expect(p.impact).toEqual({ moved: [], conflicts: [], warnings: [] });
     const res = await applyChange(env, admin, change, p.version);
     expect(res.version).toBe(p.version + 1);
     expect(await env.DB.prepare("SELECT value FROM settings WHERE key = 'durationMin'").first("value")).toBe("60");

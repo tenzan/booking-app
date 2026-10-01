@@ -229,4 +229,37 @@ describe("rosterImpact", () => {
     // c takes 1 → p1 (10:00) displaced; p2 (10:20) was rejected anyway (overlaps p1 on the only technician)
     expect(r.conflicts.find((c) => c.id === "c")!.alternatives).toEqual([alt(1, ["p1"])]);
   });
+
+  describe("pinned holds (pre-existing conflicts that still own their blocks)", () => {
+    it("an invalid pinned hold keeps occupying its technician: no pending is moved onto it", () => {
+      // c (10:30, tech 1) lost its slot; p (10:00, tech 2) overlaps it; tech 2 goes on leave.
+      const input = proposed({ windows: [win({ endMin: 630 })], unavailability: [{ staffId: 2, startAt: at(600), endAt: at(700) }] });
+      const holds = [hold("c", 630, { staffId: 1 }), pending("p", 600, 2)];
+      expect(run(holds, input).moved).toEqual([{ id: "p", ref: "ref-p", from: 2, to: 1 }]); // unpinned: onto c's technician
+      const r = run([hold("c", 630, { staffId: 1, pinned: true }), pending("p", 600, 2)], input);
+      expect(r.moved).toEqual([]);
+      expect(r.conflicts.map((c) => [c.id, c.reason, c.alternatives])).toEqual([["p", "no_capacity", []], ["c", "slot_removed", []]]);
+      expect(r.assignment.has("c")).toBe(false);
+    });
+
+    it("a pinned pending never moves; it is a conflict only while its own technician is not free", () => {
+      const holds = [pending("p", 600, 1, { pinned: true })];
+      const fine = run(holds);
+      expect([fine.moved, fine.conflicts, fine.assignment.get("p")]).toEqual([[], [], 1]);
+      const leave = run(holds, proposed({ unavailability: [{ staffId: 1, startAt: at(600), endAt: at(660) }] }));
+      expect(leave.moved).toEqual([]);
+      expect(leave.conflicts).toEqual([
+        { id: "p", kind: "reservation", status: "pending", ref: "ref-p", slotStart: at(600), staffId: 1, reason: "tech_removed", alternatives: [] },
+      ]);
+      // ...and still blocks its technician for others.
+      const other = run([...holds, pending("q", 600, 2)], proposed({ unavailability: [{ staffId: 1, startAt: at(600), endAt: at(660) }, { staffId: 2, startAt: at(600), endAt: at(605) }] }));
+      expect(other.conflicts.map((c) => [c.id, c.reason])).toEqual([["p", "tech_removed"], ["q", "no_capacity"]]);
+    });
+
+    it("alternatives of a pinned confirmed conflict ignore its own placement", () => {
+      const input = proposed({ unavailability: [{ staffId: 2, startAt: at(600), endAt: at(660) }] });
+      const r = run([hold("c", 600, { staffId: 2, pinned: true }), pending("p", 600, 1)], input);
+      expect(r.conflicts).toEqual([expect.objectContaining({ id: "c", reason: "tech_removed", alternatives: [alt(1, ["p"])] })]);
+    });
+  });
 });

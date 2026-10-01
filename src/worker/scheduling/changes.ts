@@ -4,6 +4,8 @@
 import type { SlotInput, WindowDef } from "../../domain/slots";
 import { DEFAULT_SETTINGS, type Settings } from "../../domain/settings";
 import type { ScheduleChange, WindowInput } from "../../shared/types";
+import { windowInputSchema } from "../../shared/schemas";
+import { assertSql } from "../lib/db";
 import { HttpError } from "../lib/http";
 import type { RosterState } from "./roster";
 
@@ -17,6 +19,8 @@ export interface ResolvedChange {
 }
 
 type Patchable = Record<keyof Settings, unknown>;
+
+const WEEKLY_WINDOW_SQL = "SELECT 1 FROM availability_windows WHERE id = ? AND kind = 'weekly'";
 
 const sortedIds = (ids: number[]) => [...ids].sort((a, b) => a - b);
 
@@ -36,6 +40,14 @@ function cloneInput(s: SlotInput): SlotInput {
 function assertActiveStaff(state: RosterState, ids: number[]): void {
   const bad = ids.filter((id) => !state.staff.get(id)?.active);
   if (bad.length > 0) throw new HttpError(400, "invalid_staff", { staffIds: bad });
+}
+
+function checkWindows(windows: WindowInput[], expected: "weekly" | string): void {
+  for (const w of windows) {
+    const parsed = windowInputSchema.safeParse(w);
+    const placed = expected === "weekly" ? w.kind === "weekly" : w.kind === "date" && w.date === expected;
+    if (!parsed.success || !placed) throw new HttpError(400, "invalid", parsed.success ? [{ path: ["kind"], message: "wrong kind or date" }] : parsed.error.issues);
+  }
 }
 
 const windowSummary = (w: WindowInput) => ({
@@ -79,10 +91,10 @@ export async function resolveChange(db: D1Database, state: RosterState, change: 
     return w;
   };
 
-  if ((change.type === "window.create" || change.type === "window.update") && change.window.kind !== "weekly") {
-    // Same rule as the shared schema, for callers that skip it: a date's windows change only through override.set.
-    throw new HttpError(400, "invalid", { path: ["window", "kind"] });
-  }
+  // The shared schema's window rules again, for callers that skip it (Tasks 4–5 call this directly): grid, range,
+  // weekday XOR date, unique staff; weekly windows only through window.*, the override's own date through override.set.
+  if (change.type === "window.create" || change.type === "window.update") checkWindows([change.window], "weekly");
+  if (change.type === "override.set") checkWindows(change.windows, change.date);
 
   switch (change.type) {
     case "window.create": {
@@ -102,6 +114,7 @@ export async function resolveChange(db: D1Database, state: RosterState, change: 
       return {
         slotInput: next,
         statements: (db) => [
+          assertSql(db, WEEKLY_WINDOW_SQL, change.id),
           db
             .prepare("UPDATE availability_windows SET weekday = ?, start_min = ?, end_min = ? WHERE id = ? AND kind = 'weekly'")
             .bind(w.weekday, w.startMin, w.endMin, change.id),
@@ -119,6 +132,7 @@ export async function resolveChange(db: D1Database, state: RosterState, change: 
       return {
         slotInput: next,
         statements: (db) => [
+          assertSql(db, WEEKLY_WINDOW_SQL, change.id),
           db.prepare("DELETE FROM availability_window_staff WHERE window_id = ?").bind(change.id),
           db.prepare("DELETE FROM availability_windows WHERE id = ?").bind(change.id),
         ],
@@ -150,7 +164,11 @@ export async function resolveChange(db: D1Database, state: RosterState, change: 
       next.overrideDates.delete(change.date);
       return {
         slotInput: next,
-        statements: (db) => [...deleteDateWindows(db, change.date), db.prepare("DELETE FROM date_overrides WHERE date = ?").bind(change.date)],
+        statements: (db) => [
+          assertSql(db, "SELECT 1 FROM date_overrides WHERE date = ?", change.date),
+          ...deleteDateWindows(db, change.date),
+          db.prepare("DELETE FROM date_overrides WHERE date = ?").bind(change.date),
+        ],
         details: { date: change.date },
       };
     }
@@ -175,7 +193,10 @@ export async function resolveChange(db: D1Database, state: RosterState, change: 
       next.unavailability = state.unavailability.filter((u) => u.id !== change.id);
       return {
         slotInput: next,
-        statements: (db) => [db.prepare("DELETE FROM staff_unavailability WHERE id = ?").bind(change.id)],
+        statements: (db) => [
+          assertSql(db, "SELECT 1 FROM staff_unavailability WHERE id = ?", change.id),
+          db.prepare("DELETE FROM staff_unavailability WHERE id = ?").bind(change.id),
+        ],
         details: { id: change.id, staffId: row.staffId },
       };
     }

@@ -7,7 +7,7 @@ import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
-import { blockInserts, ELIGIBLE_SQL, movedPending } from "./holds";
+import { blockInsert, ELIGIBLE_SQL, movedPending, movePendingStatements } from "./holds";
 import { getReservation, techOptions, type ReservationDTO } from "./queries";
 
 /**
@@ -50,15 +50,9 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   await capacityBatch(db, ctx.version, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND version = ?", id, version),
     assertSql(db, ELIGIBLE_SQL, current.customer.id, current.contactEmail),
-    ...moved.map((m) =>
-      assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND provisional_staff_id IS ?", m.holdId, m.fromStaffId),
-    ),
-    // Free every moved hold's blocks first, then re-insert, so swaps never collide on (staff_id, block_start).
+    // The target's blocks go first so a moved request may take its old provisional technician.
     db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
-    ...moved.map((m) => db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(m.holdId)),
-    ...moved.map((m) =>
-      db.prepare("UPDATE reservations SET provisional_staff_id = ?, updated_at = ? WHERE id = ? AND status = 'pending'").bind(m.staffId, now, m.holdId),
-    ),
+    ...movePendingStatements(db, moved, now),
     db
       .prepare(
         `UPDATE reservations SET status = 'confirmed', assigned_staff_id = ?, provisional_staff_id = NULL,
@@ -66,8 +60,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
          WHERE id = ? AND status = 'pending' AND version = ?`,
       )
       .bind(staffId, now, actor.id, now, id, version),
-    ...blockInserts(db, staffId, targetBlocks, id),
-    ...moved.flatMap((m) => blockInserts(db, m.staffId, rangeBlocks(m.hold.start, m.hold.end), m.holdId)),
+    blockInsert(db, staffId, targetBlocks, id),
     enqueueEmail(db, { template: "confirmed", to: current.contactEmail, dedupeKey: `confirmed:${id}:v${newVersion}`, reservationId: id }),
     // The approver already knows; everyone else who follows requests is told who got it.
     ...staff

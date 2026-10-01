@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 const DAY_MS = 24 * 60 * 60_000;
-export const MAX_UNAVAILABILITY_DAYS = 60;
+export const MAX_UNAVAILABILITY_DAYS = 366;
 
 const isCalendarDate = (s: string): boolean => {
   const d = new Date(`${s}T00:00:00Z`);

@@ -11,7 +11,7 @@ import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
-import { blockInserts, ELIGIBLE_SQL, movedPending } from "./holds";
+import { blockInsert, ELIGIBLE_SQL, movedPending, movePendingStatements } from "./holds";
 
 export interface SubmitInput {
   customerId: number;
@@ -117,14 +117,7 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
     assertSql(db, ELIGIBLE_SQL, input.customerId, email),
     // Aborts (and retries into the check above) when booking was paused after our settings snapshot.
     assertSql(db, "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'bookingEnabled' AND value = 'false')"),
-    ...moved.map((m) =>
-      assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND provisional_staff_id IS ?", m.holdId, m.fromStaffId),
-    ),
-    ...moved.map((m) => db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(m.holdId)),
-    ...moved.map((m) =>
-      db.prepare("UPDATE reservations SET provisional_staff_id = ?, updated_at = ? WHERE id = ? AND status = 'pending'").bind(m.staffId, now, m.holdId),
-    ),
-    ...moved.flatMap((m) => blockInserts(db, m.staffId, rangeBlocks(m.hold.start, m.hold.end), m.holdId)),
+    ...movePendingStatements(db, moved, now),
     db
       .prepare(
         `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
@@ -135,7 +128,7 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
         id, ref, input.customerId, email, input.contactName, input.phone, input.issue, slot.startAt, slot.endAt, occStart, occEnd,
         staffId, input.idempotencyKey, deadlines.reminderAt, deadlines.escalationAt, deadlines.expiresAt, now, now,
       ),
-    ...blockInserts(db, staffId, rangeBlocks(occStart, occEnd), id),
+    blockInsert(db, staffId, rangeBlocks(occStart, occEnd), id),
     enqueueEmail(db, { template: "request_received", to: email, dedupeKey: `received:${id}`, reservationId: id }),
     ...staff.map((s) => enqueueEmail(db, { template: "new_request", to: s.email, dedupeKey: `new:${id}:${s.id}`, reservationId: id })),
     audit(db, {

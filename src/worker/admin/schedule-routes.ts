@@ -51,15 +51,15 @@ const unavailabilityQuery = z.object({
   to: z.coerce.number().int().optional(),
 });
 
-/** Time off overlapping [from (default now), to), soonest first. */
+const DEFAULT_SPAN_MS = 90 * 24 * 60 * 60_000;
+const MAX_ROWS = 500;
+
+/** Time off overlapping [from (default now), to (default from + 90 days)), soonest first, at most 500 rows. */
 scheduleRoutes.get("/unavailability", async (c) => {
   const q = unavailabilityQuery.parse({ staffId: c.req.query("staffId"), from: c.req.query("from"), to: c.req.query("to") });
-  const where = ["u.end_at > ?"];
-  const binds: unknown[] = [q.from ?? clock.now()];
-  if (q.to !== undefined) {
-    where.push("u.start_at < ?");
-    binds.push(q.to);
-  }
+  const from = q.from ?? clock.now();
+  const where = ["u.end_at > ?", "u.start_at < ?"];
+  const binds: unknown[] = [from, q.to ?? from + DEFAULT_SPAN_MS];
   if (q.staffId !== undefined) {
     where.push("u.staff_id = ?");
     binds.push(q.staffId);
@@ -67,7 +67,7 @@ scheduleRoutes.get("/unavailability", async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT u.id, u.staff_id AS staffId, s.name AS staffName, u.start_at AS startAt, u.end_at AS endAt, u.reason
      FROM staff_unavailability u JOIN staff s ON s.id = u.staff_id
-     WHERE ${where.join(" AND ")} ORDER BY u.start_at, u.id`,
+     WHERE ${where.join(" AND ")} ORDER BY u.start_at, u.id LIMIT ${MAX_ROWS}`,
   )
     .bind(...binds)
     .all<UnavailabilityDTO>();
