@@ -59,31 +59,31 @@ const confirmedWith = async (who: { id: number; cookie: string }, startAt: numbe
 
 /** A reservation row inserted directly: listing tests need exact starts, statuses and technicians. */
 let seq = 0;
-const insertRes = async (o: { id: string; startAt: number; status?: string; assigned?: number | null; provisional?: number | null }) => {
+const insertRes = async (o: { id: string; startAt: number; status?: string; assigned?: number | null; provisional?: number | null; createdAt?: number }) => {
   seq++;
   await env.DB.prepare(
     `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
        assigned_staff_id, provisional_staff_id, idempotency_key, created_at, updated_at)
-     VALUES (?, ?, ?, 'sam@example.test', 'Sam', '000', 'issue', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+     VALUES (?, ?, ?, 'sam@example.test', 'Sam', '000', 'issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
   )
-    .bind(o.id, `R-${seq}`, sam.id, o.startAt, o.startAt + 30 * MIN, o.startAt, o.startAt + 40 * MIN, o.status ?? "pending", o.assigned ?? null, o.provisional ?? null, `k-${o.id}`)
+    .bind(o.id, `R-${seq}`, sam.id, o.startAt, o.startAt + 30 * MIN, o.startAt, o.startAt + 40 * MIN, o.status ?? "pending", o.assigned ?? null, o.provisional ?? null, `k-${o.id}`, o.createdAt ?? 0)
     .run();
 };
 
 describe("reservation list: paging and filters", () => {
   it("pages by start time then id with an opaque cursor, without gaps or repeats", async () => {
-    // r-b and r-c share a start: the id breaks the tie.
-    await insertRes({ id: "r-e", startAt: at(FRI, 14) });
-    await insertRes({ id: "r-c", startAt: at(FRI, 11) });
+    // r-c and r-b share a start: creation time breaks the tie (r-c is older), and r-d / r-e tie on both, so the id decides.
+    await insertRes({ id: "r-e", startAt: at(FRI, 12) });
+    await insertRes({ id: "r-b", startAt: at(FRI, 11), createdAt: 20 });
     await insertRes({ id: "r-a", startAt: at(FRI, 10) });
-    await insertRes({ id: "r-b", startAt: at(FRI, 11) });
+    await insertRes({ id: "r-c", startAt: at(FRI, 11), createdAt: 10 });
     await insertRes({ id: "r-d", startAt: at(FRI, 12) });
 
     const p1 = await get(techCookie, "/api/staff/reservations?limit=2");
-    expect(ids(p1.json.reservations)).toEqual(["r-a", "r-b"]);
+    expect(ids(p1.json.reservations)).toEqual(["r-a", "r-c"]);
     expect(typeof p1.json.nextCursor).toBe("string");
     const p2 = await get(techCookie, `/api/staff/reservations?limit=2&cursor=${p1.json.nextCursor}`);
-    expect(ids(p2.json.reservations)).toEqual(["r-c", "r-d"]);
+    expect(ids(p2.json.reservations)).toEqual(["r-b", "r-d"]);
     const p3 = await get(techCookie, `/api/staff/reservations?limit=2&cursor=${p2.json.nextCursor}`);
     expect(ids(p3.json.reservations)).toEqual(["r-e"]);
     expect(p3.json.nextCursor).toBeNull();
@@ -214,7 +214,11 @@ describe("calendar feed", () => {
     const from = at(FRI, 0);
     expect((await cal(techCookie, `from=${from}`)).status).toBe(400);
     expect((await cal(techCookie, `to=${from + MIN}`)).status).toBe(400);
-    expect((await cal(techCookie, `from=&to=${from + MIN}`)).status).toBe(400);
+    for (const qs of [`from=&to=${from + MIN}`, `from=${from}&to=`, `from=abc&to=${from + MIN}`, `from=${from}&to=1.5`, `from=&to=`]) {
+      const bad = await cal(techCookie, qs);
+      expect(bad.status).toBe(400);
+      expect(bad.json.error).toBe("invalid");
+    }
     expect((await cal(techCookie, `from=${from}&to=${from}`)).json.error).toBe("invalid_range");
     expect((await cal(techCookie, `from=${from}&to=${from - MIN}`)).status).toBe(400);
     const DAY = 24 * 60 * MIN;
@@ -247,9 +251,9 @@ describe("audit log", () => {
     expect(forRes).toEqual(["reservation.cancelled", "reservation.approved", "reservation.requested"]);
     expect(rows.every((r, i) => i === 0 || (rows[i - 1].at > r.at) || (rows[i - 1].at === r.at && rows[i - 1].id > r.id))).toBe(true);
     const approved = rows.find((r) => r.action === "reservation.approved");
-    expect(approved).toMatchObject({ actorKind: "staff", actor: "Ada Admin", reservationId: id });
+    expect(approved).toMatchObject({ actorKind: "staff", actor: "Ada Admin", actorId: String(team.admin), reservationId: id });
     expect(approved.reservationRef).toMatch(/\S/);
-    expect(rows.find((r) => r.action === "reservation.requested")).toMatchObject({ actorKind: "customer", actor: "pat@example.test" });
+    expect(rows.find((r) => r.action === "reservation.requested")).toMatchObject({ actorKind: "customer", actor: "pat@example.test", actorId: "pat@example.test" });
   });
 
   it("filters by reservation, customer, actor and action (exact or `prefix.`)", async () => {
@@ -388,6 +392,17 @@ describe("email failures", () => {
     expect(admin.json.emails.map((e: any) => e.to)).toEqual(["Pat.Lee@sub.example.test", "jordan@example.test"]);
   });
 
+  it("masks recipient addresses echoed in lastError for technicians, not for admins", async () => {
+    await job({ id: "f1", status: "failed", to: "jordan@example.test", lastError: "550 <jordan@example.test> user unknown; cc other.person@mail.example.test" });
+    const tech = await get(techCookie, "/api/staff/emails");
+    expect(tech.json.emails[0].lastError).toBe("550 <j***@example.test> user unknown; cc o***@mail.example.test");
+    expect(JSON.stringify(tech.json)).not.toContain("jordan");
+    expect(JSON.stringify(tech.json)).not.toContain("other.person");
+    expect((await get(adminCookie, "/api/staff/emails")).json.emails[0].lastError).toBe(
+      "550 <jordan@example.test> user unknown; cc other.person@mail.example.test",
+    );
+  });
+
   it("never exposes a login token or URL through lastError", async () => {
     await job({ id: "f1", status: "failed", lastError: "bad link https://app.example.test/login#t=SECRETTOKEN123 rejected" });
     const res = await get(adminCookie, "/api/staff/emails");
@@ -423,12 +438,16 @@ describe("email failures", () => {
 
   it("retry through the API (admin) re-queues and kicks the outbox", async () => {
     await job({ id: "f1", status: "failed", attempts: 6, lastError: "smtp 550", template: "staff_login", to: "tech-a@example.test" });
+    const mails = () => env.DB.prepare("SELECT COUNT(*) AS n FROM dev_mailbox WHERE to_email = 'tech-a@example.test'").first<{ n: number }>().then((r) => r!.n);
+    const before = await mails(); // the test's own staff login mail is already there
     const res = await retry(adminCookie, "f1");
     expect(res.status).toBe(200);
-    // The kicked outbox picked it up straight away: it is no longer failed and its attempt count restarted from 0.
+    // The kicked outbox delivered it (MAIL_MODE=dev writes the message to the dev mailbox).
+    expect(env.MAIL_MODE).toBe("dev");
     const after = await jobRow("f1");
-    expect(after.status).not.toBe("failed");
-    expect(after.attempts).toBeLessThanOrEqual(1);
+    expect(after).toMatchObject({ status: "sent", attempts: 0, locked_until: null });
+    expect(after.sent_at).not.toBeNull();
+    expect(await mails()).toBe(before + 1);
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'email.retry'").first<{ n: number }>())!.n).toBe(1);
     expect((await get(adminCookie, "/api/staff/emails/summary")).json.failed).toBe(0);
   });

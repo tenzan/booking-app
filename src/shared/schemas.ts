@@ -254,6 +254,8 @@ export const customerListQuerySchema = z.object({
 /** Query strings carry "" for a cleared field: treat it as absent. */
 const blankToUndefined = (v: unknown) => (v === "" ? undefined : v);
 const optionalInt = z.preprocess(blankToUndefined, z.coerce.number().int().optional());
+/** A present, integer query value: "", missing and non-numeric all fail. */
+const requiredInt = z.string().regex(/^-?\d+$/).transform(Number).pipe(z.number().int());
 const optionalText = (max: number) => z.preprocess(blankToUndefined, z.string().max(max).optional());
 
 export const RESERVATION_STATUSES = ["pending", "confirmed", "declined", "expired", "cancelled", "completed"] as const;
@@ -279,8 +281,8 @@ export const reservationListQuerySchema = z.object({
 });
 
 export const calendarQuerySchema = z.object({
-  from: z.coerce.number().int(),
-  to: z.coerce.number().int(),
+  from: requiredInt,
+  to: requiredInt,
   staffId: optionalInt,
   status: statusListSchema,
 });

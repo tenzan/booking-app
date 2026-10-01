@@ -79,7 +79,7 @@ export async function getReservation(db: D1Database, id: string): Promise<Reserv
 /**
  * Filters: `from` inclusive / `to` exclusive on the start time; `staffId` matches the assigned technician only
  * (`orProvisionalStaffId` additionally matches pending requests provisionally on that technician: the calendar's view).
- * Soonest first (then id), `limit` rows (default 50) after `cursor`.
+ * Soonest first (then creation time, then id), `limit` rows (default 50) after `cursor`.
  */
 export async function listReservations(
   db: D1Database,
@@ -117,15 +117,15 @@ export async function listReservations(
     binds.push(f.orProvisionalStaffId, f.orProvisionalStaffId);
   }
   if (f.cursor !== undefined) {
-    const [startAt, id] = decodeCursor(f.cursor, ["number", "string"]);
-    where.push("(r.start_at > ? OR (r.start_at = ? AND r.id > ?))");
-    binds.push(startAt, startAt, id);
+    const [startAt, createdAt, id] = decodeCursor(f.cursor, ["number", "number", "string"]);
+    where.push("(r.start_at > ? OR (r.start_at = ? AND (r.created_at > ? OR (r.created_at = ? AND r.id > ?))))");
+    binds.push(startAt, startAt, createdAt, createdAt, id);
   }
-  const sql = `${SELECT}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY r.start_at, r.id LIMIT ?`;
+  const sql = `${SELECT}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY r.start_at, r.created_at, r.id LIMIT ?`;
   const { results } = await db.prepare(sql).bind(...binds, limit + 1).all<Row>();
   const page = results.slice(0, limit).map(toDTO);
   const last = page.at(-1);
-  return { reservations: page, nextCursor: results.length > limit && last ? encodeCursor([last.startAt, last.id]) : null };
+  return { reservations: page, nextCursor: results.length > limit && last ? encodeCursor([last.startAt, last.createdAt, last.id]) : null };
 }
 
 const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
@@ -246,7 +246,7 @@ export async function listAudit(
   }
   const { results } = await db
     .prepare(
-      `SELECT a.id, a.at, a.actor_kind, COALESCE(s.name, a.actor) AS actor, a.action, a.details,
+      `SELECT a.id, a.at, a.actor_kind, COALESCE(s.name, a.actor) AS actor, a.actor AS actor_id, a.action, a.details,
               a.reservation_id, r.ref AS reservation_ref, a.customer_id
        FROM audit_log a
        LEFT JOIN staff s ON a.actor_kind = 'staff' AND CAST(s.id AS TEXT) = a.actor
@@ -260,6 +260,7 @@ export async function listAudit(
       at: number;
       actor_kind: AuditRow["actorKind"];
       actor: string | null;
+      actor_id: string | null;
       action: string;
       details: string;
       reservation_id: string | null;
@@ -272,6 +273,7 @@ export async function listAudit(
     at: r.at,
     actorKind: r.actor_kind,
     actor: r.actor,
+    actorId: r.actor_id,
     action: r.action,
     details: JSON.parse(r.details),
     reservationId: r.reservation_id,

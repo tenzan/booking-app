@@ -81,8 +81,8 @@ describe("POST /api/staff/settings/booking", () => {
 
     const rows = await env.DB.prepare("SELECT actor_kind, actor, details FROM audit_log WHERE action = 'settings.booking' ORDER BY id").all<any>();
     expect(rows.results.map((r) => [r.actor_kind, r.actor, JSON.parse(r.details)])).toEqual([
-      ["staff", "admin@example.test", { enabled: false }],
-      ["staff", "admin@example.test", { enabled: true }],
+      ["staff", String(team.admin), { enabled: false }],
+      ["staff", String(team.admin), { enabled: true }],
     ]);
   });
 

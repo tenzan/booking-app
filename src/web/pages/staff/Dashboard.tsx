@@ -15,11 +15,25 @@ import { t } from "../../i18n";
 import { BookingCard } from "./BookingCard";
 import { Countdown, useNow } from "./Countdown";
 
+/** Every page of a reservation query (pages are capped server-side), so the dashboard never silently drops rows. */
+async function fetchAllReservations(query: string): Promise<ReservationDTO[]> {
+  const all: ReservationDTO[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: { reservations: ReservationDTO[]; nextCursor: string | null } = await apiFetch(
+      `/api/staff/reservations?${query}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    );
+    all.push(...page.reservations);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return all;
+}
+
 /** Staff reservation list; refetched on window focus and every minute so a dashboard left open stays current. */
 function useReservations(query: string) {
   return useQuery({
     queryKey: queryKeys.staffReservationList(query),
-    queryFn: () => apiFetch<{ reservations: ReservationDTO[] }>(`/api/staff/reservations?${query}`).then((r) => r.reservations),
+    queryFn: () => fetchAllReservations(query),
     refetchOnWindowFocus: "always",
     refetchInterval: 60_000,
   });

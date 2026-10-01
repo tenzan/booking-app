@@ -100,6 +100,14 @@ export function maskEmail(address: string): string {
   return `${[...address.slice(0, at)][0]}***${address.slice(at)}`;
 }
 
+const EMAIL_IN_TEXT = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+
+/** Transport errors often echo the recipient: for non-admins the job's address and any address-shaped text is masked too. */
+function maskErrorText(text: string, toEmail: string): string {
+  const masked = toEmail === "" ? text : text.split(toEmail).join(maskEmail(toEmail));
+  return masked.replace(EMAIL_IN_TEXT, maskEmail);
+}
+
 interface EmailRow {
   id: string;
   template: string;
@@ -143,7 +151,7 @@ opsRoutes.get("/emails", requireStaff(), async (c) => {
     status: j.status,
     attempts: j.attempts,
     // Sanitized when stored; scrubbed again so that a token can never leave through this view.
-    lastError: j.last_error === null ? null : safeError(j.last_error),
+    lastError: j.last_error === null ? null : full ? safeError(j.last_error) : maskErrorText(safeError(j.last_error), j.to_email),
     createdAt: j.created_at,
     sentAt: j.sent_at,
     sendAfter: j.send_after,

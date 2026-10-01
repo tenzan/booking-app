@@ -231,6 +231,8 @@ export interface CalendarDTO {
 
 export interface AuditEntryDTO extends AuditRow {
   id: number;
+  /** The stored actor, unresolved: the staff id (as text) for staff, the email for customers. */
+  actorId: string | null;
   reservationId: string | null;
   reservationRef: string | null;
   customerId: number | null;

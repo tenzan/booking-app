@@ -17,7 +17,7 @@ bookingToggleRoutes.post("/settings/booking", requireStaff("admin"), async (c) =
     db
       .prepare("INSERT INTO settings(key, value) VALUES ('bookingEnabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .bind(JSON.stringify(enabled)),
-    audit(db, { actorKind: "staff", actor: c.var.staff!.email, action: "settings.booking", details: { enabled } }),
+    audit(db, { actorKind: "staff", actor: String(c.var.staff!.id), action: "settings.booking", details: { enabled } }),
   ]);
   return c.json({ bookingEnabled: enabled });
 });
