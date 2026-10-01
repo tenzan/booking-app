@@ -82,14 +82,14 @@ Requires Node.js 22 or newer.
 cp .env.example .env
 npm i
 npm run dev      # renders wrangler.jsonc, applies migrations locally, starts Vite
-npm run seed     # in another terminal: sample staff, customers and settings
+npm run seed     # in another terminal: sample staff, customers and a weekly schedule
 ```
 
 Open `http://localhost:5173`. With `MAIL_MODE=dev`, outgoing email is written to a local mailbox instead of being sent; read it at `http://localhost:5173/dev/mail` (this includes the magic links).
 
 Other scripts: `npm test` (Vitest), `npm run typecheck`, `npm run build`, `npm run e2e` (Playwright smoke tests).
 
-Note: `npm run seed` and the `/dev/mail` page are delivered in later development plans; the dev server and tests work today.
+The seed is synthetic and idempotent: staff `admin@example.test` and `tech1@`–`tech3@example.test`, the customers in `docs/sample-customers.csv` (e.g. `frontdesk@example.test`) and Mon–Fri 09:00–12:00 / 13:00–17:00. Staff sign in at `http://localhost:5173/staff/login`. `npm run e2e` starts (or reuses) the dev server on port 5173 and runs `npm run seed -- --reset` first, which also clears local reservations, emails, sessions and rate-limit counters.
 
 ## Configuration reference
 

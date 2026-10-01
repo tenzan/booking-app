@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { CustomerReservationDTO } from "../shared/types";
+import type { AuditRow, CustomerReservationDTO, ReservationDTO, TechOption } from "../shared/types";
 
 /** A non-2xx API response (`status` 0 = the request never reached the server). */
 export class ApiError extends Error {
@@ -88,12 +88,31 @@ export interface AccessView {
   cancelCutoffMin: number;
 }
 
+export interface StaffReservationView {
+  reservation: ReservationDTO;
+  techOptions: TechOption[];
+  audit: AuditRow[];
+}
+
+export interface DevMessage {
+  id: number;
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  createdAt: number;
+}
+
 export const queryKeys = {
   me: ["me"] as const,
   accounts: ["customer", "accounts"] as const,
   availability: ["customer", "availability"] as const,
   reservations: ["customer", "reservations"] as const,
   reservation: (id: string) => ["customer", "reservations", id] as const,
+  staffReservations: ["staff", "reservations"] as const,
+  staffReservationList: (query: string) => ["staff", "reservations", "list", query] as const,
+  staffReservation: (id: string) => ["staff", "reservations", "detail", id] as const,
+  devMail: ["dev", "mail"] as const,
 };
 
 export function useMe() {
@@ -131,3 +150,5 @@ export function useFragmentToken(): string | null {
 
 /** "/?next=<path>" — the start page sends the user back to `path` after signing in. */
 export const signInPath = (next?: string): string => (next ? `/?next=${encodeURIComponent(next)}` : "/");
+/** "/staff/login?next=<path>" — the staff sign-in page, returning to `path` after the link is redeemed. */
+export const staffSignInPath = (next?: string): string => (next ? `/staff/login?next=${encodeURIComponent(next)}` : "/staff/login");

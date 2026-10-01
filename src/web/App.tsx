@@ -12,6 +12,12 @@ import ReservationAccess from "./pages/customer/ReservationAccess";
 import Start from "./pages/customer/Start";
 import Success from "./pages/customer/Success";
 import Verify from "./pages/customer/Verify";
+import DevMail from "./pages/DevMail";
+import Dashboard from "./pages/staff/Dashboard";
+import StaffLogin from "./pages/staff/Login";
+import ReservationDetail from "./pages/staff/ReservationDetail";
+import StaffLayout, { RequireStaff } from "./pages/staff/StaffLayout";
+import StaffVerify from "./pages/staff/Verify";
 
 /** Customer-only pages: without a session, go to the start page and come back here after signing in. */
 function RequireCustomer({ children }: { children: ReactNode }) {
@@ -22,13 +28,13 @@ function RequireCustomer({ children }: { children: ReactNode }) {
   return children;
 }
 
-function NotFound() {
+function NotFound({ home = "/", homeLabel = t("web.common.homeLink") }: { home?: string; homeLabel?: string }) {
   usePageTitle(t("web.common.notFoundHeading"));
   return (
     <EmptyState
       title={t("web.common.notFoundHeading")}
       body={t("web.common.notFoundBody")}
-      action={<ButtonLink to="/">{t("web.common.homeLink")}</ButtonLink>}
+      action={<ButtonLink to={home}>{homeLabel}</ButtonLink>}
     />
   );
 }
@@ -46,6 +52,16 @@ export default function App() {
           <Route path="my" element={<RequireCustomer><MyReservations /></RequireCustomer>} />
           <Route path="*" element={<NotFound />} />
         </Route>
+        <Route path="staff" element={<StaffLayout />}>
+          <Route path="login" element={<StaffLogin />} />
+          <Route path="auth/verify" element={<StaffVerify />} />
+          <Route element={<RequireStaff />}>
+            <Route index element={<Dashboard />} />
+            <Route path="r/:id" element={<ReservationDetail />} />
+            <Route path="*" element={<NotFound home="/staff" homeLabel={t("web.staff.nav.dashboard")} />} />
+          </Route>
+        </Route>
+        <Route path="dev/mail" element={<DevMail />} />
       </Routes>
     </BrowserRouter>
   );

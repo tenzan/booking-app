@@ -51,8 +51,11 @@ export default function Book() {
   );
 }
 
-/** A message tied to the step it belongs to; leaving that step drops it. */
-type Banner = { step: Step; tone: "warning" | "error"; text: string; action?: "retry" | "my" };
+/**
+ * A message tied to the step it belongs to; leaving that step drops it. `about: "account"` marks problems with the
+ * chosen account: only choosing an account clears them, not picking a time.
+ */
+type Banner = { step: Step; tone: "warning" | "error"; text: string; action?: "retry" | "my"; about?: "account" };
 
 const prefill = (a: Account): Details => ({
   contactName: a.contactName ?? "",
@@ -182,8 +185,10 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
       } else if (isApiError(e, 409, "limit_reached")) {
         setBanner({ step: 3, tone: "warning", text: t("web.book.errors.limitReached"), action: "my" });
       } else if (isApiError(e, 403, "not_eligible")) {
-        setBanner({ step: 3, tone: "error", text: t("web.book.errors.notEligible") });
+        // The refreshed account list usually drops this account, which sends the flow back to step 1: say why there.
+        setBanner({ step: 1, tone: "error", text: t("web.book.errors.notEligible"), about: "account" });
         void qc.invalidateQueries({ queryKey: queryKeys.accounts });
+        goTo(1, true);
       } else if (isApiError(e, 409, "idempotency_conflict")) {
         idempotency.current = null;
         goTo(2, true);
@@ -215,7 +220,7 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
 
   function continueFromTime() {
     if (!account) {
-      setBanner({ step: 1, tone: "error", text: t("web.book.account.required") });
+      setBanner({ step: 1, tone: "error", text: t("web.book.account.required"), about: "account" });
       return;
     }
     setBanner(null);
@@ -316,7 +321,7 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
                 selected={slot?.startAt ?? null}
                 onSelect={(s) => {
                   setSlot(s);
-                  setBanner(null);
+                  setBanner((b) => (b?.about === "account" ? b : null));
                 }}
               />
             ) : days.length > 0 && avail.hasNextPage ? (

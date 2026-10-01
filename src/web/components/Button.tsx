@@ -2,7 +2,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { Link, type LinkProps } from "react-router";
 import { Spinner } from "./Spinner";
 
-type Variant = "primary" | "secondary" | "ghost";
+type Variant = "primary" | "secondary" | "ghost" | "danger";
 type Size = "md" | "lg";
 
 const base =
@@ -12,6 +12,7 @@ const variants: Record<Variant, string> = {
   secondary:
     "border border-slate-300 bg-white text-slate-900 hover:bg-slate-100 active:bg-slate-200 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800",
   ghost: "text-blue-700 hover:bg-blue-50 active:bg-blue-100 dark:text-blue-300 dark:hover:bg-slate-800",
+  danger: "bg-red-700 text-white hover:bg-red-800 active:bg-red-900 dark:bg-red-600 dark:hover:bg-red-700",
 };
 const sizes: Record<Size, string> = {
   md: "min-h-11 px-4 text-base",

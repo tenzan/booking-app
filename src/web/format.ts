@@ -39,3 +39,6 @@ export const dateIn = (ms: number, tz: string): string => utcToWall(ms, tz).date
 
 /** "Thu, Oct 1". */
 export const fmtShortDate = (date: string): string => fmtDate(date, { weekday: "short", month: "short", day: "numeric" });
+
+/** "Thu, Oct 1, 2026, 10:00 Asia/Tokyo (GMT+9)" — an instant with its time-zone label, for standalone mentions. */
+export const fmtStamp = (ms: number, tz: string): string => `${fmtDateTime(ms, tz, LOCALE)} ${fmtTz(tz, ms)}`;
