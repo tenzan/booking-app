@@ -25,7 +25,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, reason: stri
     db
       .prepare(
         `UPDATE reservations SET status = 'declined', closed_at = ?, closed_by_kind = 'staff', closed_by = ?,
-           close_reason = ?, version = version + 1, updated_at = ?
+           close_reason = ?, provisional_staff_id = NULL, version = version + 1, updated_at = ?
          WHERE id = ? AND status = 'pending' AND version = ?`,
       )
       .bind(now, String(actor.id), reason, now, id, version),

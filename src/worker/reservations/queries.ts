@@ -1,7 +1,9 @@
 import { assignableFor } from "../../domain/matching";
-import { findSlot, generateSlots, occupiedRange } from "../../domain/slots";
-import type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
+import { freeStaffAt, windowStaffAt } from "../../domain/slots";
+import { AUDIT_PAGE_SIZE, RESERVATIONS_PAGE_DEFAULT } from "../../shared/schemas";
+import type { AuditEntryDTO, AuditListDTO, AuditRow, CustomerReservationDTO, ReservationDTO, ReservationListDTO, ReservationStatus, TechOption } from "../../shared/types";
 import type { Env } from "../env";
+import { decodeCursor, encodeCursor } from "../lib/cursor";
 import { loadScheduleCtx } from "../scheduling/context";
 
 export type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
@@ -74,11 +76,24 @@ export async function getReservation(db: D1Database, id: string): Promise<Reserv
   return row ? toDTO(row) : null;
 }
 
-/** Filters: `from` inclusive / `to` exclusive on the start time; `staffId` matches the assigned or provisional technician. Soonest first. */
+/**
+ * Filters: `from` inclusive / `to` exclusive on the start time; `staffId` matches the assigned technician only
+ * (`orProvisionalStaffId` additionally matches pending requests provisionally on that technician: the calendar's view).
+ * Soonest first (then creation time, then id), `limit` rows (default 50) after `cursor`.
+ */
 export async function listReservations(
   db: D1Database,
-  f: { status?: ReservationStatus[]; from?: number; to?: number; staffId?: number },
-): Promise<ReservationDTO[]> {
+  f: {
+    status?: ReservationStatus[];
+    from?: number;
+    to?: number;
+    staffId?: number;
+    orProvisionalStaffId?: number;
+    limit?: number;
+    cursor?: string;
+  },
+): Promise<ReservationListDTO> {
+  const limit = f.limit ?? RESERVATIONS_PAGE_DEFAULT;
   const where: string[] = [];
   const binds: unknown[] = [];
   if (f.status && f.status.length > 0) {
@@ -94,12 +109,23 @@ export async function listReservations(
     binds.push(f.to);
   }
   if (f.staffId !== undefined) {
-    where.push("(r.assigned_staff_id = ? OR r.provisional_staff_id = ?)");
-    binds.push(f.staffId, f.staffId);
+    where.push("r.assigned_staff_id = ?");
+    binds.push(f.staffId);
   }
-  const sql = `${SELECT}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY r.start_at, r.created_at, r.id`;
-  const { results } = await db.prepare(sql).bind(...binds).all<Row>();
-  return results.map(toDTO);
+  if (f.orProvisionalStaffId !== undefined) {
+    where.push("(r.assigned_staff_id = ? OR (r.status = 'pending' AND r.provisional_staff_id = ?))");
+    binds.push(f.orProvisionalStaffId, f.orProvisionalStaffId);
+  }
+  if (f.cursor !== undefined) {
+    const [startAt, createdAt, id] = decodeCursor(f.cursor, ["number", "number", "string"]);
+    where.push("(r.start_at > ? OR (r.start_at = ? AND (r.created_at > ? OR (r.created_at = ? AND r.id > ?))))");
+    binds.push(startAt, startAt, createdAt, createdAt, id);
+  }
+  const sql = `${SELECT}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY r.start_at, r.created_at, r.id LIMIT ?`;
+  const { results } = await db.prepare(sql).bind(...binds, limit + 1).all<Row>();
+  const page = results.slice(0, limit).map(toDTO);
+  const last = page.at(-1);
+  return { reservations: page, nextCursor: results.length > limit && last ? encodeCursor([last.startAt, last.createdAt, last.id]) : null };
 }
 
 const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
@@ -183,32 +209,121 @@ export async function getAudit(db: D1Database, reservationId: string): Promise<A
 }
 
 /**
+ * The audit log, newest first, a page after `cursor`. `actor` is the stored actor (a staff id, or a customer email);
+ * staff actors are shown by name. `action` lists terms, any of which may match: one ending in "." matches every action with
+ * that prefix (`reservation.`), any other exactly.
+ */
+export async function listAudit(
+  db: D1Database,
+  f: { reservationId?: string; customerId?: number; actor?: string; action?: string[]; cursor?: string },
+): Promise<AuditListDTO> {
+  const where: string[] = [];
+  const binds: unknown[] = [];
+  if (f.reservationId !== undefined) {
+    where.push("a.reservation_id = ?");
+    binds.push(f.reservationId);
+  }
+  if (f.customerId !== undefined) {
+    where.push("a.customer_id = ?");
+    binds.push(f.customerId);
+  }
+  if (f.actor !== undefined) {
+    where.push("a.actor = ?");
+    binds.push(f.actor);
+  }
+  if (f.action !== undefined && f.action.length > 0) {
+    // Any of the terms: `prefix.` matches by prefix, anything else exactly (no LIKE, so `%` and `_` are literal).
+    const terms = f.action.map((term) => {
+      if (term.endsWith(".")) {
+        binds.push(term, term);
+        return "substr(a.action, 1, length(?)) = ?";
+      }
+      binds.push(term);
+      return "a.action = ?";
+    });
+    where.push(`(${terms.join(" OR ")})`);
+  }
+  if (f.cursor !== undefined) {
+    const [at, id] = decodeCursor(f.cursor, ["number", "number"]);
+    where.push("(a.at < ? OR (a.at = ? AND a.id < ?))");
+    binds.push(at, at, id);
+  }
+  const { results } = await db
+    .prepare(
+      `SELECT a.id, a.at, a.actor_kind, COALESCE(s.name, a.actor) AS actor, a.actor AS actor_id, a.action, a.details,
+              a.reservation_id, r.ref AS reservation_ref, a.customer_id
+       FROM audit_log a
+       LEFT JOIN staff s ON a.actor_kind = 'staff' AND CAST(s.id AS TEXT) = a.actor
+       LEFT JOIN reservations r ON r.id = a.reservation_id
+       ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY a.at DESC, a.id DESC LIMIT ?`,
+    )
+    .bind(...binds, AUDIT_PAGE_SIZE + 1)
+    .all<{
+      id: number;
+      at: number;
+      actor_kind: AuditRow["actorKind"];
+      actor: string | null;
+      actor_id: string | null;
+      action: string;
+      details: string;
+      reservation_id: string | null;
+      reservation_ref: string | null;
+      customer_id: number | null;
+    }>();
+  const page = results.slice(0, AUDIT_PAGE_SIZE);
+  const entries: AuditEntryDTO[] = page.map((r) => ({
+    id: r.id,
+    at: r.at,
+    actorKind: r.actor_kind,
+    actor: r.actor,
+    actorId: r.actor_id,
+    action: r.action,
+    details: JSON.parse(r.details),
+    reservationId: r.reservation_id,
+    reservationRef: r.reservation_ref,
+    customerId: r.customer_id,
+  }));
+  const last = page.at(-1);
+  return { entries, nextCursor: results.length > AUDIT_PAGE_SIZE && last ? encodeCursor([last.at, last.id]) : null };
+}
+
+/**
  * Every active bookable technician, assignable ones first, then by name, each with the reason it cannot take
  * this request (first match wins: not on the slot, unavailable, busy with a fixed hold, needed elsewhere).
- * Only pending requests can be approved, so other statuses get no options.
+ * Pending requests get approval candidates; confirmed appointments get same-time reassignment candidates, with the
+ * current technician flagged `current`. Other statuses get no options.
  */
 export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOption[]> {
-  if (r.status !== "pending") return [];
+  if (r.status !== "pending" && r.status !== "confirmed") return [];
   const ctx = await loadScheduleCtx(env, r.startAt, r.endAt);
   const { results: staff } = await env.DB.prepare("SELECT id, name FROM staff WHERE active = 1 AND bookable = 1").all<{ id: number; name: string }>();
 
-  const [occStart, occEnd] = occupiedRange(r.startAt, r.endAt, ctx.cfg);
-  const assignable = new Set(assignableFor(ctx.holds, r.id));
-  // Scheduled for the slot regardless of time off (the slot's own staff list already excludes those on leave).
-  const scheduled = new Set(findSlot(generateSlots({ ...ctx.slotInput, unavailability: [] }), r.startAt)?.staffIds ?? []);
+  // A pending or confirmed reservation always holds capacity, so its stored range is in the context.
+  const own = ctx.holds.find((h) => h.id === r.id);
+  if (!own) return [];
+  const { start: occStart, end: occEnd } = own;
+  // Scheduled on the window covering the request, regardless of time off and of today's duration.
+  const scheduled = new Set(windowStaffAt(ctx.slotInput, r.startAt));
+  const freeList = freeStaffAt(ctx.slotInput, r.startAt, occStart, occEnd);
+  const free = new Set(freeList);
+  // Exactly the free technicians: the context's provisional fallback (which only keeps capacity held) is no option.
+  // A confirmed appointment is unfixed here so that each candidate is tried in place of its technician.
+  const holds = ctx.holds.map((h) => (h.id === r.id ? { ...h, fixed: null, eligible: freeList } : h));
+  const assignable = new Set(assignableFor(holds, r.id));
+  const currentId = r.status === "confirmed" ? (r.assignedStaff?.id ?? null) : null;
 
   const options = staff.map((s): TechOption => {
-    if (assignable.has(s.id)) return { id: s.id, name: s.name, assignable: true, reason: null };
-    if (!scheduled.has(s.id)) return { id: s.id, name: s.name, assignable: false, reason: "not_scheduled" };
-    if (ctx.slotInput.unavailability.some((u) => u.staffId === s.id && u.startAt < occEnd && occStart < u.endAt)) {
-      return { id: s.id, name: s.name, assignable: false, reason: "unavailable" };
-    }
-    const fixed = ctx.holds.find((h) => h.id !== r.id && h.fixed === s.id && h.start < occEnd && occStart < h.end);
+    const base = { id: s.id, name: s.name, ...(s.id === currentId ? { current: true } : {}) };
+    if (assignable.has(s.id)) return { ...base, assignable: true, reason: null };
+    if (!scheduled.has(s.id)) return { ...base, assignable: false, reason: "not_scheduled" };
+    if (!free.has(s.id)) return { ...base, assignable: false, reason: "unavailable" };
+    const fixed = holds.find((h) => h.id !== r.id && h.fixed === s.id && h.start < occEnd && occStart < h.end);
     if (fixed) {
       const conflictRef = ctx.holdOwners.get(fixed.id)?.ref ?? undefined;
-      return { id: s.id, name: s.name, assignable: false, reason: "busy", ...(conflictRef ? { conflictRef } : {}) };
+      return { ...base, assignable: false, reason: "busy", ...(conflictRef ? { conflictRef } : {}) };
     }
-    return { id: s.id, name: s.name, assignable: false, reason: "needed_for_other_request" };
+    return { ...base, assignable: false, reason: "needed_for_other_request" };
   });
   return options.sort((a, b) => Number(b.assignable) - Number(a.assignable) || a.name.localeCompare(b.name) || a.id - b.id);
 }

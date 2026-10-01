@@ -1,11 +1,13 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
+import { emailSchema } from "../../shared/schemas";
 import type { AppEnv } from "../env";
 import { audit } from "../lib/db";
 import { sha256Hex, uuid } from "../lib/crypto";
 import { clock } from "../lib/clock";
 import { HttpError, readJson } from "../lib/http";
 import { rateLimit } from "../lib/rate-limit";
+import { safeRedirect } from "../lib/redirect";
 import { verifyTurnstile } from "../lib/turnstile";
 import { enqueueEmail, kickOutbox } from "../mail/outbox";
 import { clearSessionCookie, createSession, requireStaff, revokeSession, type SessionKind } from "../middleware/session";
@@ -17,18 +19,12 @@ const WINDOW_MS = 15 * 60_000;
 
 export const authRoutes = new Hono<AppEnv>();
 
-const emailSchema = z.string().trim().max(254).pipe(z.email()).transform((e) => e.toLowerCase());
 const tokenSchema = z.string().min(1).max(200);
 const requestSchema = z.object({
   email: emailSchema,
   turnstileToken: z.string().max(4096).optional(),
   redirectPath: z.string().max(2048).optional(),
 });
-
-/** Same-origin absolute paths only; anything else is dropped (never an error). */
-function safeRedirect(p: string | null | undefined): string | null {
-  return typeof p === "string" && p.startsWith("/") && !p.startsWith("//") && !p.includes("\\") && !/[\u0000-\u001f\u007f]/.test(p) ? p : null;
-}
 
 const clientIp = (c: Context<AppEnv>): string | null => c.req.header("cf-connecting-ip") ?? null;
 
@@ -123,7 +119,7 @@ authRoutes.post("/auth/redeem", async (c) => {
     const staff = await activeStaffByEmail(db, row.email);
     if (!staff) throw new HttpError(403, "not_eligible");
     await createSession(c, "staff", staff.email, staff.id);
-    await audit(db, { actorKind: "staff", actor: staff.email, action: "auth.staff_signin" }).run();
+    await audit(db, { actorKind: "staff", actor: String(staff.id), action: "auth.staff_signin", details: { email: staff.email } }).run();
   }
   return c.json({ kind: row.kind, redirectPath: safeRedirect(row.redirect_path) });
 });

@@ -121,7 +121,8 @@ describe("with two eligible technicians plus the admin", () => {
     expect((await api("GET", "/api/staff/reservations?status=bogus", { cookie: techCookie })).status).toBe(400);
 
     const d = await detail(techCookie, id);
-    expect(d.json.techOptions).toEqual([]); // not pending any more
+    // Confirmed: reassignment candidates, the current technician flagged.
+    expect(d.json.techOptions.filter((o: any) => o.current).map((o: any) => o.id)).toEqual([team.a]);
     expect(d.json.audit.map((r: any) => [r.actorKind, r.actor, r.action])).toEqual([
       ["customer", "pat@example.test", "reservation.requested"],
       ["staff", "Ada Admin", "reservation.approved"],
@@ -208,11 +209,11 @@ describe("with two eligible technicians plus the admin", () => {
     const id = await submit(pat, at(FRI, 10));
     const other = (await row(id)).provisional_staff_id === team.b ? team.a : team.b;
     await env.DB.prepare(
-      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
          assigned_staff_id, idempotency_key, created_at, updated_at)
-       VALUES ('c1', 'R-TEST-0001', ?, 'sam@example.test', 'Sam', '000', 'issue', ?, ?, 'confirmed', ?, 'k-c1', 0, 0)`,
+       VALUES ('c1', 'R-TEST-0001', ?, 'sam@example.test', 'Sam', '000', 'issue', ?, ?, ?, ?, 'confirmed', ?, 'k-c1', 0, 0)`,
     )
-      .bind(sam.id, at(FRI, 10, 15), at(FRI, 10, 45), other)
+      .bind(sam.id, at(FRI, 10, 15), at(FRI, 10, 45), at(FRI, 10, 5), at(FRI, 10, 55), other)
       .run();
     for (let ms = at(FRI, 10, 5); ms < at(FRI, 10, 55); ms += 5 * MIN) {
       await env.DB.prepare("INSERT INTO tech_blocks(staff_id, block_start, owner_kind, owner_id) VALUES (?, ?, 'reservation', 'c1')").bind(other, ms / MIN).run();
@@ -257,6 +258,7 @@ describe("with two eligible technicians plus the admin", () => {
       const again = await decline(techCookie, id, "ok");
       expect([again.status, again.json.error, again.json.details.current.status]).toEqual([409, "stale", "declined"]);
       expect(await jobs("declined")).toBe(1);
+      expect((await detail(techCookie, id)).json.techOptions).toEqual([]); // closed: no options
     });
 
     it("cannot approve a declined request", async () => {
@@ -378,6 +380,25 @@ describe("when a pending request holds a technician another request needs", () =
     ]);
     const res = await approve(adminCookie, late, team.b);
     expect(res.json.error).toBe("tech_unavailable");
+  });
+});
+
+describe("when the only technician of a pending request goes on leave", () => {
+  it("is never offered nor accepted, even though the request still holds them provisionally", async () => {
+    await seedWeekly(5, 600, 660, [team.a]);
+    const id = await submit(pat, at(FRI, 10));
+    expect((await row(id)).provisional_staff_id).toBe(team.a);
+    // The leave touches only the stored buffer (10:30–10:40) of the 10:00–10:30 appointment.
+    await env.DB.prepare("INSERT INTO staff_unavailability(staff_id, start_at, end_at) VALUES (?, ?, ?)").bind(team.a, at(FRI, 10, 35), at(FRI, 12)).run();
+
+    const d = await detail(adminCookie, id);
+    expect(d.json.techOptions.find((o: any) => o.id === team.a)).toMatchObject({ assignable: false, reason: "unavailable" });
+    expect(d.json.techOptions.every((o: any) => !o.assignable)).toBe(true);
+
+    const res = await approve(adminCookie, id, team.a);
+    expect([res.status, res.json.error]).toEqual([409, "tech_unavailable"]);
+    expect(res.json.details.options.find((o: any) => o.id === team.a)).toMatchObject({ assignable: false, reason: "unavailable" });
+    expect(await row(id)).toMatchObject({ status: "pending", version: 1, provisional_staff_id: team.a });
   });
 });
 

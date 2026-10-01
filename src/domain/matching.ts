@@ -17,18 +17,28 @@ export interface Hold {
 
 const NODE_BUDGET = 200_000;
 
+export type SolveResult =
+  | { ok: true; assignment: Map<string, number> }
+  | { ok: false; reason: "impossible" | "budget_exhausted" };
+
 const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }): boolean =>
   a.start < b.end && b.start < a.end;
 
 /** Assigns every hold a technician, or returns null if impossible (or the search budget runs out). */
 export function solve(holds: Hold[]): Map<string, number> | null {
+  const result = solveDetailed(holds);
+  return result.ok ? result.assignment : null;
+}
+
+/** Like `solve`, but says why it failed: provably `impossible`, or the search `budget` of nodes ran out. */
+export function solveDetailed(holds: Hold[], budget: number = NODE_BUDGET): SolveResult {
   const assignment = new Map<string, number>();
   const placed: { hold: Hold; staff: number }[] = [];
 
   for (const h of holds) {
     if (h.fixed === null) continue;
     for (const p of placed) {
-      if (p.staff === h.fixed && overlaps(p.hold, h)) return null;
+      if (p.staff === h.fixed && overlaps(p.hold, h)) return { ok: false, reason: "impossible" };
     }
     placed.push({ hold: h, staff: h.fixed });
     assignment.set(h.id, h.fixed);
@@ -63,7 +73,7 @@ export function solve(holds: Hold[]): Map<string, number> | null {
     const first = i > 0 && info.get(flexible[i - 1]!)!.group === group ? chosen[i - 1]! + 1 : 0;
     for (let c = first; c < candidates.length; c++) {
       const staff = candidates[c]!;
-      if (++nodes > NODE_BUDGET) return false;
+      if (++nodes > budget) return false;
       if (placed.some((p) => p.staff === staff && overlaps(p.hold, h))) continue;
       placed.push({ hold: h, staff });
       assignment.set(h.id, staff);
@@ -71,12 +81,13 @@ export function solve(holds: Hold[]): Map<string, number> | null {
       if (place(i + 1)) return true;
       placed.pop();
       assignment.delete(h.id);
-      if (nodes > NODE_BUDGET) return false;
+      if (nodes > budget) return false;
     }
     return false;
   };
 
-  return place(0) ? assignment : null;
+  if (place(0)) return { ok: true, assignment };
+  return { ok: false, reason: nodes > budget ? "budget_exhausted" : "impossible" };
 }
 
 /** Holds transitively overlapping [start, end), by time only (staff ignored). */

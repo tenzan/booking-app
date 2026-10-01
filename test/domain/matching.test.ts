@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { solve, spotsFor, assignableFor, component, type Hold } from "../../src/domain/matching";
+import { solve, solveDetailed, spotsFor, assignableFor, component, type Hold } from "../../src/domain/matching";
 const M = 60_000, T = 1_000_000 * M;
 const slot = (startMin: number, eligible: number[]) => ({ start: T + startMin * M, end: T + (startMin + 40) * M, eligible });
 const hold = (id: string, startMin: number, o: Partial<{ fixed: number | null; eligible: number[]; preferred: number | null }>) =>
@@ -120,5 +120,27 @@ describe("backtracking and symmetry", () => {
     expect(solve([...twelve, hold("extra", 0, { eligible: staff })])).toBeNull();
     expect(spotsFor(twelve, slot(0, staff))).toBe(0);
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe("solveDetailed", () => {
+  it("ok with the same assignment as solve", () => {
+    const holds = [hold("c", 0, { fixed: 2 }), hold("p", 0, {})];
+    const r = solveDetailed(holds);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect([...r.assignment]).toEqual([...solve(holds)!]);
+  });
+  it("impossible when fixed holds clash or no technician is free", () => {
+    expect(solveDetailed([hold("a", 0, { fixed: 1 }), hold("b", 10, { fixed: 1 })])).toEqual({ ok: false, reason: "impossible" });
+    expect(solveDetailed([hold("a", 0, { fixed: 1 }), hold("b", 0, { fixed: 2 }), hold("p", 0, {})])).toEqual({ ok: false, reason: "impossible" });
+  });
+  it("budget_exhausted when the node budget is forced tiny, and solve() maps it to null", () => {
+    const holds = [hold("a", 0, {}), hold("b", 0, {})];
+    expect(solveDetailed(holds, 1)).toEqual({ ok: false, reason: "budget_exhausted" });
+    expect(solveDetailed(holds, 2).ok).toBe(true);
+    expect(solveDetailed(holds)).toMatchObject({ ok: true });
+  });
+  it("only fixed holds need no budget", () => {
+    expect(solveDetailed([hold("c", 0, { fixed: 1 })], 0).ok).toBe(true);
   });
 });

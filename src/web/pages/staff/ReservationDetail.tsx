@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams, useSearchParams } from "react-router";
+import { Link, useLocation, useParams, useSearchParams } from "react-router";
 import type { ReservationDTO, TechOption } from "../../../shared/types";
-import { apiFetch, isApiError, queryKeys, useMe, type StaffReservationView } from "../../api";
+import { apiFetch, isApiError, queryKeys, safePath, useMe, type StaffReservationView } from "../../api";
 import { Button, ButtonLink } from "../../components/Button";
 import { Card, Notice } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
@@ -14,12 +14,18 @@ import { fmtStamp, fmtWhen } from "../../format";
 import { t } from "../../i18n";
 import { Countdown, useNow } from "./Countdown";
 import { ApprovePanel } from "./detail/ApprovePanel";
+import { CancelPanel } from "./detail/CancelPanel";
 import { DeclinePanel } from "./detail/DeclinePanel";
 import { History } from "./detail/History";
+import { ReassignPanel } from "./detail/ReassignPanel";
 
-type Action = "approve" | "decline" | "propose";
-const ACTIONS: Action[] = ["approve", "decline", "propose"];
-const asAction = (s: string | null): Action | null => (ACTIONS as Array<string | null>).includes(s) ? (s as Action) : null;
+type Action = "approve" | "decline" | "propose" | "reassign" | "cancel";
+/** What staff can do with a reservation in each status (until a confirmed appointment has ended). */
+const ACTIONS_FOR: Partial<Record<ReservationDTO["status"], Action[]>> = {
+  pending: ["approve", "decline", "propose", "cancel"],
+  confirmed: ["reassign", "cancel"],
+};
+const asAction = (s: string | null, allowed: Action[]): Action | null => (allowed as Array<string | null>).includes(s) ? (s as Action) : null;
 
 type PageNotice = { tone: "success" | "warning"; text: string };
 
@@ -30,14 +36,26 @@ function handledBy(r: ReservationDTO): { name: string; at: number } | null {
   return null;
 }
 
-/** `/staff/r/:id[?action=approve|decline|propose[&assign=me]]` — the links in staff notification emails land here. */
+/** Where the back link goes: the page that linked here when it said so in history state (e.g. a customer), else the dashboard. */
+function readBack(state: unknown): { to: string; label: string; state?: object } | null {
+  const back = (state as { back?: { to?: unknown; label?: unknown; state?: unknown } } | null)?.back;
+  const to = typeof back?.to === "string" ? safePath(back.to) : null;
+  if (!to || typeof back?.label !== "string" || back.label === "") return null;
+  // History state for the page we return to (e.g. the customer list's search), passed through untouched.
+  const returnState = typeof back.state === "object" && back.state !== null && !Array.isArray(back.state) ? back.state : undefined;
+  return { to, label: back.label, state: returnState };
+}
+
+/** `/staff/r/:id[?action=approve|decline|propose|reassign|cancel[&assign=me]]` — the links in staff notification emails land here. */
 export default function ReservationDetail() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
+  // Read once: opening an action panel rewrites the URL (and drops the history state).
+  const backTo = useRef(readBack(useLocation().state)).current;
   const qc = useQueryClient();
   const me = useMe();
   const tz = me.data?.timezone ?? "UTC";
-  const action = asAction(params.get("action"));
+  const now = useNow();
   const assignMe = params.get("assign") === "me";
   const [notice, setNotice] = useState<PageNotice | null>(null);
   const noticeRef = useRef<HTMLDivElement>(null);
@@ -68,14 +86,18 @@ export default function ReservationDetail() {
   };
 
   const onStale = (current: ReservationDTO | undefined) => {
-    const who = current && current.status !== "pending" ? handledBy(current) : null;
+    // Handled by someone else (a new status): say who and close the panel. Same status: it changed (e.g. another
+    // reassignment) — the panel stays, rebuilt from the refreshed reservation.
+    const viewed = q.data?.reservation.status;
+    const moved = current !== undefined && current.status !== viewed;
+    const who = moved ? handledBy(current) : null;
     setNotice({
       tone: "warning",
       text: who
         ? t("web.staff.detail.stale", { status: t(`web.statusShort.${current!.status}`), name: who.name, time: fmtStamp(who.at, tz) })
         : t("web.staff.detail.changed"),
     });
-    if (current && current.status !== "pending") openPanel(null);
+    if (moved) openPanel(null);
     refresh();
   };
 
@@ -86,15 +108,21 @@ export default function ReservationDetail() {
 
   const back = (
     <Link
-      to="/staff"
+      to={backTo?.to ?? "/staff"}
+      state={backTo?.state}
       className="-ml-2 inline-flex min-h-11 items-center gap-1 rounded-lg px-2 font-medium text-blue-700 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-slate-800"
     >
       <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <path d="M19 12H5m5 5-5-5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
-      {t("web.staff.detail.back")}
+      <span className="break-words">{backTo?.label ?? t("web.staff.detail.back")}</span>
     </Link>
   );
+
+  const r = q.data?.reservation;
+  const ended = r !== undefined && r.status === "confirmed" && r.endAt <= now;
+  const allowed = r && !ended ? (ACTIONS_FOR[r.status] ?? []) : [];
+  const action = asAction(params.get("action"), allowed);
 
   if (isApiError(q.error, 404)) {
     return (
@@ -157,9 +185,9 @@ export default function ReservationDetail() {
               <StatusBanner r={q.data.reservation} tz={tz} />
               <Facts r={q.data.reservation} tz={tz} />
             </div>
-            <div className="min-w-0 space-y-6 lg:sticky lg:top-24 lg:col-span-2">
-              {q.data.reservation.status === "pending" && (
-                <ActionsCard action={action} onOpen={openPanel}>
+            <div className="min-w-0 space-y-6 lg:sticky lg:top-32 lg:col-span-2">
+              {allowed.length > 0 && (
+                <ActionsCard actions={allowed} action={action} onOpen={openPanel}>
                   {action === "approve" && (
                     <ApprovePanel
                       key={q.data.reservation.version}
@@ -174,7 +202,25 @@ export default function ReservationDetail() {
                   )}
                   {action === "decline" && <DeclinePanel r={q.data.reservation} onDone={onDone} onStale={onStale} />}
                   {action === "propose" && <ProposeNote />}
+                  {action === "reassign" && (
+                    <ReassignPanel
+                      key={q.data.reservation.version}
+                      r={q.data.reservation}
+                      options={q.data.techOptions}
+                      myId={me.data?.staff?.id ?? null}
+                      onOptions={onOptions}
+                      onRefresh={refresh}
+                      onDone={onDone}
+                      onStale={onStale}
+                    />
+                  )}
+                  {action === "cancel" && <CancelPanel r={q.data.reservation} onDone={onDone} onStale={onStale} />}
                 </ActionsCard>
+              )}
+              {ended && (
+                <Card>
+                  <p className="text-slate-600 dark:text-slate-400">{t("web.staff.detail.endedNote")}</p>
+                </Card>
               )}
               <History audit={q.data.audit} tz={tz} />
             </div>
@@ -282,7 +328,17 @@ function Facts({ r, tz }: { r: ReservationDTO; tz: string }) {
   );
 }
 
-function ActionsCard({ action, onOpen, children }: { action: Action | null; onOpen: (a: Action | null) => void; children: ReactNode }) {
+function ActionsCard({
+  actions,
+  action,
+  onOpen,
+  children,
+}: {
+  actions: Action[];
+  action: Action | null;
+  onOpen: (a: Action | null) => void;
+  children: ReactNode;
+}) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const opened = useRef(false);
   // Focus the panel heading when the user opens a panel (not when the page loads with ?action=).
@@ -293,11 +349,11 @@ function ActionsCard({ action, onOpen, children }: { action: Action | null; onOp
   const tab = (a: Action) => {
     const active = action === a;
     const tone =
-      a === "approve"
+      a === "approve" || a === "reassign"
         ? active
           ? "border-blue-700 bg-blue-700 text-white dark:border-blue-500 dark:bg-blue-600"
           : "border-slate-300 bg-white text-slate-900 hover:border-blue-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-        : a === "decline"
+        : a === "decline" || a === "cancel"
           ? active
             ? "border-red-700 bg-red-700 text-white dark:border-red-500 dark:bg-red-600"
             : "border-slate-300 bg-white text-slate-900 hover:border-red-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
@@ -314,7 +370,7 @@ function ActionsCard({ action, onOpen, children }: { action: Action | null; onOp
           opened.current = true;
           onOpen(active ? null : a);
         }}
-        className={`min-h-11 rounded-xl border px-3 text-sm font-semibold transition-colors ${a === "propose" ? "col-span-2 sm:col-span-1 lg:col-span-2" : ""} ${tone}`}
+        className={`min-h-11 rounded-xl border px-3 py-1.5 text-sm leading-tight font-semibold transition-colors ${tone}`}
       >
         {t(`web.staff.detail.actions.${a}`)}
       </button>
@@ -325,12 +381,18 @@ function ActionsCard({ action, onOpen, children }: { action: Action | null; onOp
     approve: t("web.staff.detail.approve.heading"),
     decline: t("web.staff.detail.decline.heading"),
     propose: t("web.staff.detail.propose.heading"),
+    reassign: t("web.staff.detail.reassign.heading"),
+    cancel: t("web.staff.detail.cancel.heading"),
   };
 
   return (
     <Card className="space-y-4">
-      <div role="group" aria-label={t("web.staff.detail.actions.label")} className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-2">
-        {ACTIONS.map(tab)}
+      <div
+        role="group"
+        aria-label={t("web.staff.detail.actions.label")}
+        className={`grid grid-cols-2 gap-2 ${actions.length > 2 ? "sm:grid-cols-4 lg:grid-cols-2" : ""}`}
+      >
+        {actions.map(tab)}
       </div>
       {action && (
         <div id="action-panel" className="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-800">

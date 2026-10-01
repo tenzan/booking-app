@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import { ApiError, queryKeys } from "./api";
+import { installChunkReload } from "./chunkReload";
 import "./index.css";
 
 /** A 401 mid-session means the session ended: re-ask "who am I" so guarded pages send the user to sign in. */
@@ -20,6 +21,8 @@ const queryClient: QueryClient = new QueryClient({
     },
   },
 });
+
+installChunkReload();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

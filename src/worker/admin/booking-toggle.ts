@@ -7,7 +7,7 @@ import { requireStaff } from "../middleware/session";
 
 const body = z.object({ enabled: z.boolean() });
 
-/** Admin switch for online booking (the setting `bookingEnabled`); the full settings API comes later. */
+/** Dedicated admin switch for online booking (the setting `bookingEnabled`, also editable through the settings API). */
 export const bookingToggleRoutes = new Hono<AppEnv>();
 
 bookingToggleRoutes.post("/settings/booking", requireStaff("admin"), async (c) => {
@@ -17,7 +17,7 @@ bookingToggleRoutes.post("/settings/booking", requireStaff("admin"), async (c) =
     db
       .prepare("INSERT INTO settings(key, value) VALUES ('bookingEnabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .bind(JSON.stringify(enabled)),
-    audit(db, { actorKind: "staff", actor: c.var.staff!.email, action: "settings.booking", details: { enabled } }),
+    audit(db, { actorKind: "staff", actor: String(c.var.staff!.id), action: "settings.booking", details: { enabled } }),
   ]);
   return c.json({ bookingEnabled: enabled });
 });

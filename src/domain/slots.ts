@@ -1,4 +1,4 @@
-import { MIN, eachDate, wallToUtc } from "./time";
+import { MIN, eachDate, utcToWall, wallToUtc } from "./time";
 
 export interface WindowDef {
   id: number;
@@ -45,13 +45,17 @@ export function occupiedRange(startAt: number, endAt: number, cfg: BufferCfg): [
   return [startAt - cfg.bufferBeforeMin * MIN, endAt + cfg.bufferAfterMin * MIN];
 }
 
-export function blockMinutes(startAt: number, endAt: number, cfg: BufferCfg): number[] {
-  const [occStart, occEnd] = occupiedRange(startAt, endAt, cfg);
+/** Epoch-minute starts of the 5-minute blocks an occupied range [occStart, occEnd) touches. */
+export function rangeBlocks(occStart: number, occEnd: number): number[] {
   const out: number[] = [];
   for (let ms = Math.floor(occStart / BLOCK_MS) * BLOCK_MS; ms < occEnd; ms += BLOCK_MS) {
     out.push(ms / MIN);
   }
   return out;
+}
+
+export function blockMinutes(startAt: number, endAt: number, cfg: BufferCfg): number[] {
+  return rangeBlocks(...occupiedRange(startAt, endAt, cfg));
 }
 
 export function findSlot(slots: Slot[], startAt: number): Slot | undefined {
@@ -69,6 +73,35 @@ function windowsForDate(input: SlotInput, date: string): WindowDef[] {
   if (input.holidays.has(date)) return [];
   const weekday = weekdayOf(date);
   return input.windows.filter((w) => w.kind === "weekly" && w.weekday === weekday);
+}
+
+function windowsCovering(input: SlotInput, startAt: number): WindowDef[] {
+  const { date, minute } = utcToWall(startAt, input.cfg.tz);
+  return windowsForDate(input, date).filter((win) => win.startMin <= minute && minute < win.endMin);
+}
+
+/** Does any availability window (under overrides and holidays) cover `startAt`, whoever is listed on it? */
+export function windowExistsAt(input: SlotInput, startAt: number): boolean {
+  return windowsCovering(input, startAt).length > 0;
+}
+
+/**
+ * Bookable technicians listed on the windows covering `startAt`, ignoring the current duration/step (does the slot
+ * still fit?) and time off. This is who an existing hold may be (re)assigned to, independent of settings changes.
+ */
+export function windowStaffAt(input: SlotInput, startAt: number): number[] {
+  const staff = new Set<number>();
+  for (const win of windowsCovering(input, startAt)) {
+    for (const id of win.staffIds) if (input.bookableStaff.has(id)) staff.add(id);
+  }
+  return [...staff].sort((a, b) => a - b);
+}
+
+/** `windowStaffAt` minus technicians whose time off overlaps the hold's own occupied range [occStart, occEnd). */
+export function freeStaffAt(input: SlotInput, startAt: number, occStart: number, occEnd: number): number[] {
+  return windowStaffAt(input, startAt).filter(
+    (id) => !input.unavailability.some((u) => u.staffId === id && u.startAt < occEnd && occStart < u.endAt),
+  );
 }
 
 export function generateSlots(input: SlotInput): Slot[] {

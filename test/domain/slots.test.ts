@@ -1,5 +1,5 @@
 import { it, expect } from "vitest";
-import { generateSlots, blockMinutes, occupiedRange } from "../../src/domain/slots";
+import { generateSlots, blockMinutes, occupiedRange, freeStaffAt, windowExistsAt } from "../../src/domain/slots";
 import type { WindowDef } from "../../src/domain/slots";
 import { wallToUtc } from "../../src/domain/time";
 const tz = "Asia/Tokyo";
@@ -27,4 +27,14 @@ it("blocks cover duration + buffers on 5-min grid", () => {
   const st = Date.parse("2026-10-01T01:00:00Z");
   expect(occupiedRange(st, st + 30 * 60000, cfg)).toEqual([st, st + 40 * 60000]);
   expect(blockMinutes(st, st + 30 * 60000, cfg)).toHaveLength(8);
+});
+it("windowExistsAt ignores who is listed; freeStaffAt drops bookable-less and on-leave staff over the given range", () => {
+  const start = wallToUtc("2026-10-01", 600, tz);
+  const input = { ...base, fromDate: "2026-10-01", toDate: "2026-10-01", windows: [w({ staffIds: [1, 2, 9] })],
+    unavailability: [{ staffId: 2, startAt: start + 45 * 60000, endAt: start + 90 * 60000 }] };
+  expect(windowExistsAt(input, start)).toBe(true);
+  expect(windowExistsAt({ ...input, holidays: new Set(["2026-10-01"]) }, start)).toBe(false);
+  expect(windowExistsAt({ ...input, bookableStaff: new Set<number>() }, start)).toBe(true);
+  expect(freeStaffAt(input, start, start, start + 40 * 60000)).toEqual([1, 2]); // 9 is not bookable
+  expect(freeStaffAt(input, start, start, start + 50 * 60000)).toEqual([1]);    // a longer stored range reaches the leave
 });

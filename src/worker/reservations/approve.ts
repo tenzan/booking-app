@@ -1,5 +1,5 @@
 import { component, solve } from "../../domain/matching";
-import { blockMinutes, occupiedRange } from "../../domain/slots";
+import { freeStaffAt, rangeBlocks } from "../../domain/slots";
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
 import { assertSql, audit, capacityBatch, withRetry } from "../lib/db";
@@ -7,7 +7,7 @@ import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
-import { blockInserts, ELIGIBLE_SQL, movedPending, NO_BUFFER } from "./holds";
+import { blockInsert, ELIGIBLE_SQL, movedPending, movePendingStatements } from "./holds";
 import { getReservation, techOptions, type ReservationDTO } from "./queries";
 
 /**
@@ -34,28 +34,25 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   // Pending a moment ago but no longer holding capacity: it changed under us.
   if (!target) throw new HttpError(409, "stale", { current: (await getReservation(db, id)) ?? current });
 
+  // Only a technician free on the request's own window and stored range may take it: never the provisional fallback
+  // the context keeps for holding capacity (that technician may be on leave).
+  const free = freeStaffAt(ctx.slotInput, current.startAt, target.start, target.end);
   const fixedHolds = ctx.holds.map((h) => (h.id === id ? { ...h, fixed: staffId } : h));
-  const assignment = target.eligible.includes(staffId) ? solve(component(fixedHolds, target.start, target.end)) : null;
+  const assignment = free.includes(staffId) ? solve(component(fixedHolds, target.start, target.end)) : null;
   if (!assignment) throw new HttpError(409, "tech_unavailable", { options: await techOptions(env, current) });
 
   const now = clock.now();
   const newVersion = version + 1;
   const moved = movedPending(ctx, assignment, id);
-  const targetBlocks = blockMinutes(target.start, target.end, NO_BUFFER);
+  const targetBlocks = rangeBlocks(target.start, target.end);
   const staff = await notifyStaff(db);
 
   await capacityBatch(db, ctx.version, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND version = ?", id, version),
     assertSql(db, ELIGIBLE_SQL, current.customer.id, current.contactEmail),
-    ...moved.map((m) =>
-      assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND provisional_staff_id IS ?", m.holdId, m.fromStaffId),
-    ),
-    // Free every moved hold's blocks first, then re-insert, so swaps never collide on (staff_id, block_start).
+    // The target's blocks go first so a moved request may take its old provisional technician.
     db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
-    ...moved.map((m) => db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(m.holdId)),
-    ...moved.map((m) =>
-      db.prepare("UPDATE reservations SET provisional_staff_id = ?, updated_at = ? WHERE id = ? AND status = 'pending'").bind(m.staffId, now, m.holdId),
-    ),
+    ...movePendingStatements(db, moved, now),
     db
       .prepare(
         `UPDATE reservations SET status = 'confirmed', assigned_staff_id = ?, provisional_staff_id = NULL,
@@ -63,8 +60,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
          WHERE id = ? AND status = 'pending' AND version = ?`,
       )
       .bind(staffId, now, actor.id, now, id, version),
-    ...blockInserts(db, staffId, targetBlocks, id),
-    ...moved.flatMap((m) => blockInserts(db, m.staffId, blockMinutes(m.hold.start, m.hold.end, NO_BUFFER), m.holdId)),
+    blockInsert(db, staffId, targetBlocks, id),
     enqueueEmail(db, { template: "confirmed", to: current.contactEmail, dedupeKey: `confirmed:${id}:v${newVersion}`, reservationId: id }),
     // The approver already knows; everyone else who follows requests is told who got it.
     ...staff

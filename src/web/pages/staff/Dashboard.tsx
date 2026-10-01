@@ -2,7 +2,7 @@ import { useId, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { wallToUtc } from "../../../domain/time";
-import type { ReservationDTO } from "../../../shared/types";
+import type { EmailSummaryDTO, ReservationDTO } from "../../../shared/types";
 import { apiFetch, queryKeys, useMe } from "../../api";
 import { Button } from "../../components/Button";
 import { Card, Notice } from "../../components/Card";
@@ -15,11 +15,25 @@ import { t } from "../../i18n";
 import { BookingCard } from "./BookingCard";
 import { Countdown, useNow } from "./Countdown";
 
+/** Every page of a reservation query (pages are capped server-side), so the dashboard never silently drops rows. */
+async function fetchAllReservations(query: string): Promise<ReservationDTO[]> {
+  const all: ReservationDTO[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: { reservations: ReservationDTO[]; nextCursor: string | null } = await apiFetch(
+      `/api/staff/reservations?${query}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    );
+    all.push(...page.reservations);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return all;
+}
+
 /** Staff reservation list; refetched on window focus and every minute so a dashboard left open stays current. */
 function useReservations(query: string) {
   return useQuery({
     queryKey: queryKeys.staffReservationList(query),
-    queryFn: () => apiFetch<{ reservations: ReservationDTO[] }>(`/api/staff/reservations?${query}`).then((r) => r.reservations),
+    queryFn: () => fetchAllReservations(query),
     refetchOnWindowFocus: "always",
     refetchInterval: 60_000,
   });
@@ -36,9 +50,9 @@ export default function Dashboard() {
   const now = useNow();
   const today = todayIn(tz, now);
 
-  const pending = useReservations("status=pending");
+  const pending = useReservations("status=pending&limit=200");
   const confirmed = useReservations(
-    `status=confirmed&from=${wallToUtc(today, 0, tz)}&to=${wallToUtc(addDays(today, 1), 0, tz)}`,
+    `status=confirmed&limit=200&from=${wallToUtc(today, 0, tz)}&to=${wallToUtc(addDays(today, 1), 0, tz)}`,
   );
 
   return (
@@ -48,6 +62,8 @@ export default function Dashboard() {
         <p className="text-slate-600 dark:text-slate-400">{fmtLongDate(today)}</p>
         <TimezoneNote tz={tz} atMs={now} />
       </div>
+
+      <EmailFailures />
 
       {me.data?.staff && <BookingCard enabled={me.data.bookingEnabled} isAdmin={me.data.staff.role === "admin"} />}
 
@@ -80,6 +96,38 @@ export default function Dashboard() {
         </Section>
       </div>
     </div>
+  );
+}
+
+/** Red banner while any email has failed for good; every staff member sees it, administrators can retry from the list. */
+function EmailFailures() {
+  const summary = useQuery({
+    queryKey: queryKeys.emailSummary,
+    queryFn: () => apiFetch<EmailSummaryDTO>("/api/staff/emails/summary"),
+    refetchOnWindowFocus: "always",
+    refetchInterval: 60_000,
+  });
+  const failed = summary.data?.failed ?? 0;
+  if (failed === 0) return null;
+  return (
+    <Notice tone="error" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <p className="flex items-center gap-2 font-semibold">
+        <svg className="size-5 shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 8v5m0 3.5v.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        {failed === 1 ? t("web.staff.dashboard.emailsFailedOne") : t("web.staff.dashboard.emailsFailed", { n: failed })}
+      </p>
+      <Link
+        to="/staff/emails"
+        state={{ back: { to: "/staff", label: t("web.staff.nav.dashboard") } }}
+        className="inline-flex min-h-11 items-center gap-1 rounded-lg font-semibold text-red-800 underline underline-offset-2 hover:text-red-950 dark:text-red-200 dark:hover:text-white"
+      >
+        {t("web.staff.dashboard.emailsReview")}
+        <svg className="size-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="m9 6 6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </Link>
+    </Notice>
   );
 }
 

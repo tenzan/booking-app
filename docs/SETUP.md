@@ -91,3 +91,30 @@ doppler configs tokens create github-actions --project <your-project> --config p
 ```
 
 Without that secret the deploy job is skipped, so forks of this repository stay green.
+
+## 6. Importing customers
+
+Administrators can import customers from a CSV file in the staff area (Customers → Import CSV; columns `customer_number,name,phone,contact_email,contact_name,active`; see `docs/sample-customers.csv`). Each row is one contact; rows with the same `customer_number` form one customer. The import only creates and updates: it never deletes customers or contacts, and a blank `phone`, `contact_name` or `active` leaves the stored value as it is. A file may have up to 5000 rows and 1 MB.
+
+The import page offers `docs/sample-customers.csv` for download at `/samples/customers.csv`. That file is the only copy: a small plugin in `vite.config.ts` serves it from the dev server and adds it to the client build, so edit it in `docs/` (the dev seed reads it too).
+
+The import is written to D1 in batches of at most 100 statements, and every batch is one request from the Worker to D1. A large file therefore needs the **Workers Paid plan's subrequest allowance**; on the free plan (50 subrequests per request) keep files under about 1000 rows, or split them. If an import stops part way, importing the same file again finishes it safely.
+
+## 7. Initial data
+
+A new deployment starts empty: no staff, no customers and no weekly hours, so nobody can book yet. Set it up in this order from the staff area (`https://booking.example.com/staff`):
+
+1. **First administrator.** Open `/staff/login` and request a sign-in link with an address listed in `BOOTSTRAP_ADMIN_EMAILS` (section 2). While there is no active administrator, that address becomes one when it asks for a link; once an administrator exists the setting has no effect (it only recovers access if every administrator has been deactivated). The new administrator is named after the address and takes bookings: rename them, or turn off "Takes bookings", in **Team**.
+2. **Team.** In **Team → Add a team member**, add each technician (and any further administrators) with their work email. Each signs in with a link sent to that address. "Takes bookings" decides who can be assigned to appointments; "New-request emails" decides who is told about new requests.
+3. **Weekly schedule.** In **Schedule → Weekly**, add the hours customers can book on each weekday and choose the technicians who work them (**Add hours**). Close single dates or give them other hours under **Dates**, add public holidays in **Settings → Holidays**, and record time off under **Time off**. Customers only see times when a technician on the schedule is free.
+4. **Customers.** Import your customers in **Customers → Import CSV** (see section 6 for the columns and rules; a sample file is offered at `/samples/customers.csv`), or add them one by one in **Customers**. Only the contacts listed there can request a booking link.
+5. **Settings.** In **Settings**, check the organisation name and set the **Support phone**: customers see it while online booking is paused and on their reservation page. Review the appointment length, buffers, booking window and business hours.
+6. **Online booking.** Online booking is on unless an administrator has paused it. If you paused it while setting up (with the switch in **Settings → Online booking** or on the staff dashboard), resume it there now. You can pause it again at any time, for example to stop a wave of spam requests: customers then see a notice with your support phone, while existing reservations, their email links and all staff features keep working.
+
+To try the app with sample data on your own machine instead, see "Quick start" in the README (`npm run seed`).
+
+**How schedule changes judge existing appointments.** Before a schedule change is saved, the app lists the appointments and requests it would affect. An appointment counts as covered by a weekly or date window when its **start time** falls inside the window and its technician is on it (and not on time off during the appointment, buffers included). Shortening the end of a window therefore does not flag an appointment that starts inside it but runs past the new end; check those yourself in the calendar if that matters to you. When a change takes a technician away from an appointment, the dialog offers the technicians who can take it under the new schedule: choosing one stages the reassignment, and it is saved together with the change.
+
+## 8. Deploying schema changes
+
+`npm run deploy` applies D1 migrations to the remote database **before** it uploads the new Worker, so for a short while the previous release runs against the new schema (and if the deploy fails after the migrations, it keeps doing so). Keep every migration backward-compatible with the previous release: add tables, nullable columns or columns with defaults; do not drop or rename columns the running code still reads, and do not add constraints or triggers that the previous release's writes would violate. Make enforcing changes one release later — for example, ship the code that always fills a new column first, then add the trigger or `NOT NULL` rebuild that enforces it in the next release.

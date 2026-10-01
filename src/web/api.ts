@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import type { AuditRow, CustomerReservationDTO, ReservationDTO, TechOption } from "../shared/types";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
+import type { CodedMessage } from "../domain/csv";
+import type { ImportRow, ImportSummary } from "../domain/customer-import";
+import type { HolidayImportRow } from "../domain/holiday-import";
+import type { Settings } from "../domain/settings";
+import type { AuditRow, CustomerReservationDTO, ImpactDTO, ReservationDTO, StaffDTO, TechOption, UnavailabilityDTO, WindowDTO } from "../shared/types";
 
 /** A non-2xx API response (`status` 0 = the request never reached the server). */
 export class ApiError extends Error {
@@ -36,6 +40,16 @@ export async function apiFetch<T>(path: string, opts: { method?: string; body?: 
 
 export const isApiError = (e: unknown, status?: number, code?: string): e is ApiError =>
   e instanceof ApiError && (status === undefined || e.status === status) && (code === undefined || e.code === code);
+
+/**
+ * For apiFetch calls made outside React Query (whose global handler does this for queries and mutations): on a 401
+ * re-ask "who am I", so the route guard sends the person to sign in. True when `e` was a 401.
+ */
+export function handleSignedOut(qc: QueryClient, e: unknown): boolean {
+  if (!isApiError(e, 401)) return false;
+  void qc.invalidateQueries({ queryKey: queryKeys.me });
+  return true;
+}
 
 /** Same-origin absolute path, or null. Mirrors the server's check so a link can never send us off-site. */
 export function safePath(p: string | null | undefined): string | null {
@@ -97,6 +111,78 @@ export interface StaffReservationView {
   audit: AuditRow[];
 }
 
+/** A team member as the schedule editor lists them. */
+export interface ScheduleStaff {
+  id: number;
+  name: string;
+  bookable: boolean;
+  active: boolean;
+}
+
+export interface ScheduleOverride {
+  date: string;
+  note: string | null;
+  /** Empty: closed all day. */
+  windows: WindowDTO[];
+}
+
+/** GET /api/staff/schedule/windows: the weekly pattern, date overrides from today on, and every team member. */
+export interface ScheduleWindows {
+  weekly: WindowDTO[];
+  overrides: ScheduleOverride[];
+  staff: ScheduleStaff[];
+}
+
+export interface UnavailabilityList {
+  unavailability: UnavailabilityDTO[];
+}
+
+export interface Holiday {
+  date: string;
+  name: string;
+}
+
+/** What a capacity change would do, under the schedule version it was computed at (pass it back to apply). */
+export interface Previewed {
+  version: number;
+  impact: ImpactDTO;
+}
+
+/** GET /api/staff/settings. */
+export interface SettingsView {
+  settings: Settings;
+  timezone: string;
+}
+
+/** One row of a holiday CSV import as previewed, with the bookings on its date the holiday would take away. */
+export type HolidayImportRowView = HolidayImportRow & { conflicts: number };
+
+export interface HolidayImportPreview extends Previewed {
+  rows: HolidayImportRowView[];
+}
+
+export interface TeamList {
+  staff: StaffDTO[];
+}
+
+/** POST /api/staff/customers/import/preview: what the file would do; apply with the same text and `planHash`. */
+export interface CustomerImportPreview {
+  planHash: string;
+  rows: ImportRow[];
+  summary: ImportSummary;
+  /** File-level notes that don't block the import (unknown columns). */
+  warnings: CodedMessage[];
+}
+
+/** POST /api/staff/customers/import/apply. */
+export interface CustomerImportResult {
+  created: number;
+  updated: number;
+  unchanged: number;
+  contactsAdded: number;
+  contactsUpdated: number;
+}
+
 export interface DevMessage {
   id: number;
   to: string;
@@ -115,6 +201,24 @@ export const queryKeys = {
   staffReservations: ["staff", "reservations"] as const,
   staffReservationList: (query: string) => ["staff", "reservations", "list", query] as const,
   staffReservation: (id: string) => ["staff", "reservations", "detail", id] as const,
+  /** Under staffReservations, so any reservation change refreshes the calendar too. */
+  calendar: (week: string, staffId: string, status: string) => ["staff", "reservations", "calendar", week, staffId, status] as const,
+  audit: (action: string, actor: string) => ["staff", "audit", action, actor] as const,
+  /** Every email-delivery query (lists and the summary); invalidate after a retry. */
+  emails: ["staff", "emails"] as const,
+  emailList: (status: string) => ["staff", "emails", "list", status] as const,
+  emailSummary: ["staff", "emails", "summary"] as const,
+  /** Everything schedule-shaped; invalidate after any capacity change. */
+  schedule: ["staff", "schedule"] as const,
+  scheduleWindows: ["staff", "schedule", "windows"] as const,
+  scheduleUnavailability: (query: string) => ["staff", "schedule", "unavailability", query] as const,
+  holidays: (year: number) => ["staff", "schedule", "holidays", year] as const,
+  settings: ["staff", "settings"] as const,
+  team: ["staff", "team"] as const,
+  /** Every customer query (list pages and details); invalidate after any customer change. */
+  customers: ["staff", "customers"] as const,
+  customerList: (query: string, status: string) => ["staff", "customers", "list", query, status] as const,
+  customer: (id: number) => ["staff", "customers", "detail", id] as const,
   devMail: ["dev", "mail"] as const,
 };
 
