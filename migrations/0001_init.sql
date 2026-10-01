@@ -48,6 +48,7 @@ CREATE TABLE auth_tokens (
   expires_at INTEGER NOT NULL,
   used_at INTEGER
 );
+CREATE INDEX idx_auth_tokens_expires ON auth_tokens(expires_at);
 CREATE TABLE sessions (
   id_hash TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN ('customer','staff')),
@@ -58,6 +59,7 @@ CREATE TABLE sessions (
   last_seen_at INTEGER NOT NULL,
   revoked_at INTEGER
 );
+CREATE INDEX idx_sessions_staff ON sessions(staff_id);
 CREATE TABLE access_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   token_hash TEXT NOT NULL UNIQUE,
@@ -65,14 +67,17 @@ CREATE TABLE access_tokens (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
+CREATE INDEX idx_access_tokens_expires ON access_tokens(expires_at);
 
 CREATE TABLE availability_windows (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL CHECK (kind IN ('weekly','date')),
   weekday INTEGER CHECK (weekday BETWEEN 0 AND 6),
   date TEXT,
-  start_min INTEGER NOT NULL,
-  end_min INTEGER NOT NULL CHECK (end_min > start_min)
+  start_min INTEGER NOT NULL CHECK (start_min >= 0 AND start_min % 5 = 0),
+  end_min INTEGER NOT NULL CHECK (end_min <= 1440 AND end_min % 5 = 0),
+  CHECK (end_min > start_min),
+  CHECK ((kind = 'weekly' AND weekday IS NOT NULL AND date IS NULL) OR (kind = 'date' AND date IS NOT NULL AND weekday IS NULL))
 );
 CREATE TABLE availability_window_staff (
   window_id INTEGER NOT NULL REFERENCES availability_windows(id) ON DELETE CASCADE,
@@ -162,6 +167,7 @@ CREATE TABLE email_jobs (
   sent_at INTEGER
 );
 CREATE INDEX idx_jobs_due ON email_jobs(status, send_after);
+CREATE INDEX idx_jobs_reservation ON email_jobs(reservation_id, status);
 
 CREATE TABLE dev_mailbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
