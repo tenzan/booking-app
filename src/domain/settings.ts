@@ -22,6 +22,8 @@ export interface Settings {
   proposalExpiryBeforeStartMin: number;
   customerReminderOffsetsMin: number[];
   notifyCustomerOnReassign: boolean;
+  /** Master switch for customer self-service booking; staff and existing reservations are unaffected. */
+  bookingEnabled: boolean;
 }
 
 const w = { start: 540, end: 1080 };
@@ -48,4 +50,5 @@ export const DEFAULT_SETTINGS: Settings = {
   proposalExpiryBeforeStartMin: 120,
   customerReminderOffsetsMin: [1440, 60],
   notifyCustomerOnReassign: false,
+  bookingEnabled: true,
 };

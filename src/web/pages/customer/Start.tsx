@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useSearchParams } from "react-router";
 import { safePath, useMe } from "../../api";
 import { Button, ButtonLink } from "../../components/Button";
+import { BookingPaused } from "../../components/BookingPaused";
 import { Card } from "../../components/Card";
 import { EmailLinkForm, EmailStrong, LinkSent } from "../../components/EmailLinkForm";
 import { PageHeading, usePageTitle, useSignOut } from "../../components/Layout";
@@ -14,17 +15,23 @@ export default function Start() {
   const [params] = useSearchParams();
   const next = safePath(params.get("next"));
   const [sentTo, setSentTo] = useState<string | null>(null);
+  const paused = me.data?.bookingEnabled === false;
 
   return (
     <div className="space-y-8">
       <div className="space-y-3">
         <PageHeading>{t("web.start.heading")}</PageHeading>
-        {!me.data?.customer && <p className="text-lg text-slate-600 dark:text-slate-300">{t("web.start.lead")}</p>}
+        {!me.data?.customer && !paused && <p className="text-lg text-slate-600 dark:text-slate-300">{t("web.start.lead")}</p>}
       </div>
       {me.isPending ? (
         <Skeleton className="h-64" />
       ) : me.data?.customer ? (
-        <SignedIn email={me.data.customer.email} next={next} />
+        <>
+          {paused && <BookingPaused supportPhone={me.data.supportPhone} />}
+          <SignedIn email={me.data.customer.email} next={next} canBook={!paused} />
+        </>
+      ) : paused ? (
+        <BookingPaused supportPhone={me.data!.supportPhone} />
       ) : sentTo ? (
         <LinkSent body={tNodes("web.start.sentBody", { email: <EmailStrong email={sentTo} /> })} onReset={() => setSentTo(null)} />
       ) : (
@@ -38,12 +45,12 @@ export default function Start() {
           onSent={setSentTo}
         />
       )}
-      {!me.data?.customer && !sentTo && <HowItWorks />}
+      {!me.data?.customer && !sentTo && !paused && <HowItWorks />}
     </div>
   );
 }
 
-function SignedIn({ email, next }: { email: string; next: string | null }) {
+function SignedIn({ email, next, canBook }: { email: string; next: string | null; canBook: boolean }) {
   const signOut = useSignOut();
   return (
     <Card className="space-y-5">
@@ -52,10 +59,12 @@ function SignedIn({ email, next }: { email: string; next: string | null }) {
         <p className="mt-1 break-words text-slate-600 dark:text-slate-400">{t("web.nav.signedInAs", { email })}</p>
       </div>
       <div className="flex flex-col gap-3 sm:flex-row">
-        <ButtonLink to={next ?? "/book"} size="lg" className="sm:flex-1">
-          {t("web.start.bookNow")}
-        </ButtonLink>
-        <ButtonLink to="/my" variant="secondary" size="lg" className="sm:flex-1">
+        {canBook && (
+          <ButtonLink to={next ?? "/book"} size="lg" className="sm:flex-1">
+            {t("web.start.bookNow")}
+          </ButtonLink>
+        )}
+        <ButtonLink to="/my" variant={canBook ? "secondary" : "primary"} size="lg" className="sm:flex-1">
           {t("web.nav.myReservations")}
         </ButtonLink>
       </div>

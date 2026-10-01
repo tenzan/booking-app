@@ -318,7 +318,7 @@ describe("sessions", () => {
   it("GET /api/auth/me reports site config for anonymous visitors", async () => {
     await env.DB.prepare("INSERT INTO settings(key, value) VALUES ('orgName', ?)").bind(JSON.stringify("Edited Org")).run();
     const me = await api("GET", "/api/auth/me");
-    expect(me.json).toEqual({ customer: null, staff: null, turnstileSiteKey: null, orgName: "Edited Org", timezone: "Asia/Tokyo" });
+    expect(me.json).toEqual({ customer: null, staff: null, turnstileSiteKey: null, orgName: "Edited Org", timezone: "Asia/Tokyo", bookingEnabled: true, supportPhone: "" });
   });
 });
 
