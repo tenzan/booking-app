@@ -5,6 +5,8 @@ import { HttpError } from "../lib/http";
 export const security: MiddlewareHandler<AppEnv> = async (c, next) => {
   c.header("Referrer-Policy", "no-referrer");
   c.header("X-Content-Type-Options", "nosniff");
+  // JSON only: nothing here is ever rendered as a document or framed. (The SPA's CSP lives in public/_headers.)
+  c.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
   c.header("Cache-Control", "no-store");
   const method = c.req.method;
   if (method !== "GET" && method !== "HEAD") {
