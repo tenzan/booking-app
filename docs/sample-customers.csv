@@ -1,0 +1,7 @@
+customer_number,name,phone,contact_email,contact_name,active
+C-1001,Example Dental Clinic,+1-555-0100,frontdesk@example.test,Jamie Doe,true
+C-1001,Example Dental Clinic,+1-555-0100,manager@example.test,Riley Roe,true
+C-1002,Sample Eye Care,+1-555-0101,office@example.test,Sam Poe,true
+C-1003,Demo Family Practice,,shared@example.test,Alex Moe,true
+C-1004,Demo Family Practice West,,shared@example.test,Alex Moe,true
+C-1005,Inactive Example Co,,former@example.test,Pat Loe,false
