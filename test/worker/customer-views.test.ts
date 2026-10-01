@@ -88,12 +88,20 @@ describe("GET /api/customer/reservations", () => {
     expect(res.json.reservations.map((r: any) => r.id)).toEqual([r2, r1]);
   });
 
-  it("includes reservations of deactivated accounts and contacts", async () => {
+  it("includes reservations of a deactivated account while the contact is active", async () => {
     const id = await submit(pat, at(FRI, 10));
+    await env.DB.prepare("UPDATE customers SET active = 0 WHERE id = ?").bind(pat.id).run();
+    const res = await api("GET", "/api/customer/reservations", { cookie: pat.cookie });
+    expect(res.json.reservations.map((r: any) => r.id)).toEqual([id]);
+  });
+
+  it("drops an account's reservations once the contact is deactivated", async () => {
+    await submit(pat, at(FRI, 10));
     await env.DB.prepare("UPDATE customers SET active = 0 WHERE id = ?").bind(pat.id).run();
     await env.DB.prepare("UPDATE customer_contacts SET active = 0 WHERE customer_id = ?").bind(pat.id).run();
     const res = await api("GET", "/api/customer/reservations", { cookie: pat.cookie });
-    expect(res.json.reservations.map((r: any) => r.id)).toEqual([id]);
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ reservations: [] });
   });
 
   it("returns an empty list for a contact with no reservations", async () => {
@@ -132,10 +140,15 @@ describe("GET /api/customer/reservations/:id", () => {
     expect(list.json.reservations.map((r: any) => r.id)).toEqual([id]);
   });
 
-  it("still shows the reservation after the contact was deactivated", async () => {
+  it("hides the reservation from a deactivated contact's session, but the emailed access link still opens it", async () => {
     const id = await submit(pat, at(FRI, 10));
+    const token = await lastMailTo("pat@example.test");
     await env.DB.prepare("UPDATE customer_contacts SET active = 0 WHERE customer_id = ?").bind(pat.id).run();
-    expect((await api("GET", `/api/customer/reservations/${id}`, { cookie: pat.cookie })).status).toBe(200);
+    const viaSession = await api("GET", `/api/customer/reservations/${id}`, { cookie: pat.cookie });
+    expect([viaSession.status, viaSession.json]).toEqual([404, { error: "not_found" }]);
+    const viaLink = await access(token);
+    expect(viaLink.status).toBe(200);
+    expect(viaLink.json.reservation.id).toBe(id);
   });
 
   it("does not leak staff names, staff ids or other contacts' emails", async () => {

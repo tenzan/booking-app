@@ -449,14 +449,14 @@ describe("bootstrap admin", () => {
 });
 
 describe("repos", () => {
-  it("eligibleAccountsForEmail needs an active contact on an active customer; accountIdsForContact ignores activity", async () => {
+  it("eligibleAccountsForEmail needs an active contact on an active customer; accountIdsForContact needs only an active contact", async () => {
     const a = await seedCustomer({ email: "Pat@example.test" });
     const b = await seedCustomer({ email: "pat@example.test", active: false });
     const c = await seedCustomer({ email: "pat@example.test", contactActive: false });
     const eligible = await eligibleAccountsForEmail(env.DB, "pat@EXAMPLE.test");
     expect(eligible.map((x) => x.id)).toEqual([a]);
     expect(eligible[0]).toMatchObject({ name: "Acme Test Co", contactName: null, contactPhone: null, customerPhone: null });
-    expect((await accountIdsForContact(env.DB, "pat@example.test")).sort()).toEqual([a, b, c].sort());
+    expect((await accountIdsForContact(env.DB, "pat@example.test")).sort()).toEqual([a, b].sort());
   });
 
   it("notifyStaff lists active staff with notify on", async () => {

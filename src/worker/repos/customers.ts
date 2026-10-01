@@ -22,10 +22,13 @@ export async function eligibleAccountsForEmail(db: D1Database, email: string): P
   return results;
 }
 
-/** Every account the email is a contact of, active or not (for viewing and cancelling past requests). */
+/**
+ * Accounts whose reservations this email may see through a session: an ACTIVE contact row, even when the customer
+ * itself is inactive. A deactivated contact keeps only the per-reservation access links from its emails.
+ */
 export async function accountIdsForContact(db: D1Database, email: string): Promise<number[]> {
   const { results } = await db
-    .prepare("SELECT DISTINCT customer_id FROM customer_contacts WHERE email = ? ORDER BY customer_id")
+    .prepare("SELECT DISTINCT customer_id FROM customer_contacts WHERE email = ? AND active = 1 ORDER BY customer_id")
     .bind(email)
     .all<{ customer_id: number }>();
   return results.map((r) => r.customer_id);
