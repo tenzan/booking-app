@@ -122,7 +122,7 @@ export interface ConflictDTO {
 /** What a schedule change would do to existing holds. Staff are shown by name. */
 export interface ImpactDTO {
   /** Pending requests that move to another technician (applied together with the change). */
-  moved: Array<{ id: string; ref: string; startAt: number; from: string | null; to: string }>;
+  moved: Array<{ id: string; ref: string; startAt: number; from: string | null; fromId: number | null; to: string; toId: number }>;
   /** Conflicts the change introduces; it cannot be applied while any remain. */
   conflicts: ConflictDTO[];
   /** Conflicts that already existed before the change and remain after it; they never block applying it. */

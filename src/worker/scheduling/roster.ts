@@ -178,7 +178,7 @@ function toImpactDTO(state: RosterState, impact: RosterImpact, preexisting: Set<
     customerName: state.info.get(c.id)!.customerName,
   });
   return {
-    moved: impact.moved.map((m) => ({ id: m.id, ref: m.ref, startAt: holds.get(m.id)!.slotStart, from: name(m.from), to: name(m.to) ?? "" })),
+    moved: impact.moved.map((m) => ({ id: m.id, ref: m.ref, startAt: holds.get(m.id)!.slotStart, from: name(m.from), fromId: m.from, to: name(m.to) ?? "", toId: m.to })),
     conflicts: impact.conflicts.filter((c) => !preexisting.has(c.id)).map(conflict),
     warnings: impact.conflicts.filter((c) => preexisting.has(c.id)).map(conflict),
   };

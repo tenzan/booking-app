@@ -28,6 +28,8 @@ export function Dialog({ open, onClose, closable, labelledBy, describedBy, initi
   const returnTo = useRef<HTMLElement | null>(null);
   const closableRef = useRef(closable);
   closableRef.current = closable;
+  const openRef = useRef(open);
+  openRef.current = open;
 
   useEffect(() => {
     const d = ref.current;
@@ -65,6 +67,18 @@ export function Dialog({ open, onClose, closable, labelledBy, describedBy, initi
     const first = items[0]!;
     const last = items[items.length - 1]!;
     const active = document.activeElement;
+    // Focus on something that isn't a tab stop (the title, a notice): wrap when nothing lies beyond it.
+    if (active && ref.current?.contains(active) && !items.includes(active as HTMLElement)) {
+      const before = items.filter((el) => el.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).length;
+      if (e.shiftKey && before === 0) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && before === items.length) {
+        e.preventDefault();
+        first.focus();
+      }
+      return;
+    }
     if (e.shiftKey && (active === first || !ref.current?.contains(active))) {
       e.preventDefault();
       last.focus();
@@ -84,6 +98,12 @@ export function Dialog({ open, onClose, closable, labelledBy, describedBy, initi
       onCancel={(e) => {
         e.preventDefault();
         if (closableRef.current) onClose();
+      }}
+      // Closed by the browser anyway (a close request that couldn't be cancelled): follow it when allowed, else reopen.
+      onClose={() => {
+        if (!openRef.current) return;
+        if (closableRef.current) onClose();
+        else ref.current?.showModal();
       }}
       className="m-0 h-dvh max-h-none w-full max-w-none bg-transparent p-0 text-slate-900 backdrop:bg-slate-950/60 sm:m-auto sm:h-fit sm:max-h-[min(52rem,calc(100dvh-4rem))] sm:w-[calc(100%-3rem)] sm:max-w-2xl dark:text-slate-100"
     >

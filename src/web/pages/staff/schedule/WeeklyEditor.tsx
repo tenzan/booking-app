@@ -72,7 +72,7 @@ export function WeeklyEditor({ data, canEdit, myId, submit }: { data: ScheduleWi
                 }`}
               >
                 <h3 className="flex items-center justify-between gap-2 px-1 font-semibold lg:block lg:text-center lg:text-sm lg:tracking-wide lg:uppercase">
-                  <span className="lg:hidden">{fmtWeekday(day)}</span>
+                  <span className="lg:sr-only">{fmtWeekday(day)}</span>
                   <span className="hidden lg:inline" aria-hidden="true">
                     {fmtWeekday(day, "short")}
                   </span>
@@ -99,7 +99,7 @@ export function WeeklyEditor({ data, canEdit, myId, submit }: { data: ScheduleWi
                       </li>
                     ) : (
                       <li key={w.id}>
-                        <WindowCard w={w} day={day} staff={staff} myId={myId} canEdit={canEdit} narrow={narrow} onEdit={() => setEditing({ mode: "edit", id: w.id })} />
+                        <WindowCard w={w} day={day} staff={staff} myId={myId} canEdit={canEdit && editing === null} narrow={narrow} onEdit={() => setEditing({ mode: "edit", id: w.id })} />
                       </li>
                     ),
                   )}
@@ -109,7 +109,8 @@ export function WeeklyEditor({ data, canEdit, myId, submit }: { data: ScheduleWi
                     </li>
                   )}
                 </ul>
-                {canEdit && !isNew && (
+                {/* One form at a time: other days' actions wait until it closes. */}
+                {canEdit && editing === null && (
                   <Button
                     id={addId}
                     variant="ghost"

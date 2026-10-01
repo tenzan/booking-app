@@ -163,6 +163,15 @@ function OverrideRow({
     if (asking) keepRef.current?.focus();
   }, [asking]);
 
+  // Cleared (at once or from the review dialog): a holiday row stays, without anything to remove.
+  const askingRef = useRef(asking);
+  askingRef.current = asking;
+  useEffect(() => {
+    if (o || !askingRef.current) return;
+    setAsking(false);
+    requestAnimationFrame(() => document.getElementById(`override-${r.date}`)?.focus());
+  }, [o, r.date]);
+
   const stopAsking = () => {
     setAsking(false);
     requestAnimationFrame(() => removeRef.current?.focus());
@@ -181,6 +190,10 @@ function OverrideRow({
     if (result.status === "failed") {
       setAsking(false);
       setProblem(result.message);
+    } else if (result.status === "applied") {
+      // The row's Edit button stays (as "Set hours" on a holiday) once the list refreshes: focus waits there.
+      setAsking(false);
+      requestAnimationFrame(() => document.getElementById(`override-${r.date}`)?.focus());
     }
   }
 
@@ -306,11 +319,14 @@ function OverrideForm({
   const weeklyFor = (d: string): WindowDTO[] =>
     isoDateSchema.safeParse(d).success ? data.weekly.filter((w) => w.weekday === weekdayOf(d)).sort((a, b) => a.startMin - b.startMin) : [];
   const initial = fixedDate ? existingFor(fixedDate) : null;
+  /** Custom hours start from the weekday's pattern, or a plain 09:00–17:00 when it has none. */
+  const startingRanges = (weekly: WindowDTO[]): Range[] =>
+    (weekly.length > 0 ? weekly : [{ startMin: 540, endMin: 1020, staffIds: bookableIds(data.staff) }]).map(toRange);
 
   const [date, setDate] = useState(fixedDate ?? "");
   const [closed, setClosed] = useState(initial ? initial.windows.length === 0 : !fixedDate);
   const [ranges, setRanges] = useState<Range[]>(() =>
-    initial && initial.windows.length > 0 ? initial.windows.map(toRange) : fixedDate ? weeklyFor(fixedDate).map(toRange) : [],
+    initial && initial.windows.length > 0 ? initial.windows.map(toRange) : fixedDate ? startingRanges(weeklyFor(fixedDate)) : [],
   );
   const [note, setNote] = useState(initial?.note ?? "");
   const [errors, setErrors] = useState<{ date?: string; ranges?: Record<number, { range?: string; staff?: string }>; form?: string }>({});
@@ -323,10 +339,7 @@ function OverrideForm({
 
   function chooseCustom() {
     setClosed(false);
-    if (ranges.length === 0) {
-      const base = weekly.length > 0 ? weekly : [{ startMin: 540, endMin: 1020, staffIds: bookableIds(data.staff) }];
-      setRanges(base.map(toRange));
-    }
+    if (ranges.length === 0) setRanges(startingRanges(weekly));
   }
 
   const update = (key: number, patch: Partial<Range>) => setRanges((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));

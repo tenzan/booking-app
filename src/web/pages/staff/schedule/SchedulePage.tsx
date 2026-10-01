@@ -75,7 +75,23 @@ export default function SchedulePage() {
             ) : tab === "weekly" ? (
               <WeeklyEditor data={windows.data} canEdit={isAdmin} myId={myId} submit={submit} />
             ) : (
-              <OverridesEditor data={windows.data} holidays={holidays} today={today} canEdit={isAdmin} myId={myId} submit={submit} />
+              <div className="space-y-4">
+                {(holidaysNow.isError || holidaysNext.isError) && (
+                  <Notice tone="warning" className="flex flex-wrap items-center justify-between gap-3">
+                    {k("holidaysFailed")}
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        void holidaysNow.refetch();
+                        void holidaysNext.refetch();
+                      }}
+                    >
+                      {t("web.common.retry")}
+                    </Button>
+                  </Notice>
+                )}
+                <OverridesEditor data={windows.data} holidays={holidays} today={today} canEdit={isAdmin} myId={myId} submit={submit} />
+              </div>
             )}
           </div>
         )}

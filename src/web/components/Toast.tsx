@@ -23,11 +23,28 @@ export function useToast() {
  */
 export function Toast({ toast, onDismiss }: { toast: ToastMessage | null; onDismiss: () => void }) {
   const [paused, setPaused] = useState(false);
+  /** Where focus was before it entered the toast, to go back there when the toast goes. */
+  const cameFrom = useRef<HTMLElement | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // A new toast (or none) starts unpaused: a removed toast never fires mouseleave/blur.
+  useEffect(() => setPaused(false), [toast?.id]);
+
+  const close = useCallback(() => {
+    const hadFocus = boxRef.current?.contains(document.activeElement) ?? false;
+    onDismiss();
+    if (hadFocus) {
+      const target = cameFrom.current?.isConnected ? cameFrom.current : document.getElementById("main");
+      target?.focus();
+    }
+    cameFrom.current = null;
+  }, [onDismiss]);
+
   useEffect(() => {
     if (!toast || paused) return;
-    const id = window.setTimeout(onDismiss, SHOW_MS);
+    const id = window.setTimeout(close, SHOW_MS);
     return () => window.clearTimeout(id);
-  }, [toast, paused, onDismiss]);
+  }, [toast, paused, close]);
 
   return (
     <div
@@ -38,10 +55,16 @@ export function Toast({ toast, onDismiss }: { toast: ToastMessage | null; onDism
       {toast && (
         <div
           key={toast.id}
+          ref={boxRef}
           onMouseEnter={() => setPaused(true)}
           onMouseLeave={() => setPaused(false)}
-          onFocus={() => setPaused(true)}
-          onBlur={() => setPaused(false)}
+          onFocus={(e) => {
+            setPaused(true);
+            if (e.relatedTarget instanceof HTMLElement && !e.currentTarget.contains(e.relatedTarget)) cameFrom.current = e.relatedTarget;
+          }}
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setPaused(false);
+          }}
           className="pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-xl bg-slate-900 py-2 pr-2 pl-4 text-white shadow-lg ring-1 ring-black/10 motion-safe:animate-[toast-in_160ms_ease-out] dark:bg-slate-100 dark:text-slate-900"
         >
           <svg className="size-5 shrink-0 text-green-400 dark:text-green-700" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -50,7 +73,7 @@ export function Toast({ toast, onDismiss }: { toast: ToastMessage | null; onDism
           <p className="min-w-0 flex-1 py-1.5">{toast.text}</p>
           <button
             type="button"
-            onClick={onDismiss}
+            onClick={close}
             className="grid size-11 shrink-0 place-items-center rounded-lg hover:bg-white/10 dark:hover:bg-black/10"
             aria-label={t("web.common.dismiss")}
           >

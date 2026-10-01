@@ -301,7 +301,7 @@ describe("moved pending requests", () => {
 
     const change = { type: "unavailability.create", staffId: team.b, startAt: at(FRI, 9), endAt: at(FRI, 12) };
     const p = await preview(adminCookie, change);
-    expect(p.json.impact).toEqual({ moved: [{ id: s1.id, ref: s1.ref, startAt: at(FRI, 10), from: "Una Tech", to: "Tim Tech" }], conflicts: [], warnings: [] });
+    expect(p.json.impact).toEqual({ moved: [{ id: s1.id, ref: s1.ref, startAt: at(FRI, 10), from: "Una Tech", fromId: team.b, to: "Tim Tech", toId: team.a }], conflicts: [], warnings: [] });
     expect((await row(s1.id)).provisional_staff_id).toBe(team.b); // preview wrote nothing
 
     const res = await apply(adminCookie, change, p.json.version);
@@ -334,7 +334,7 @@ describe("date overrides", () => {
 
     const set = await save(adminCookie, { type: "override.set", date: FRI, note: "Team offsite", windows: [dated(FRI, 600, 720, [team.b])] });
     expect(set.status).toBe(200);
-    expect(set.json.impact.moved).toEqual([{ id: r.id, ref: r.ref, startAt: at(FRI, 10), from: "Tim Tech", to: "Una Tech" }]);
+    expect(set.json.impact.moved).toEqual([{ id: r.id, ref: r.ref, startAt: at(FRI, 10), from: "Tim Tech", fromId: team.a, to: "Una Tech", toId: team.b }]);
     expect((await row(r.id)).provisional_staff_id).toBe(team.b);
     expect(new Set((await blocksOf(r.id)).map((b) => b.staff_id))).toEqual(new Set([team.b]));
 
@@ -595,7 +595,7 @@ describe("other change types through the same bridge", () => {
     await env.DB.prepare("DELETE FROM tech_blocks WHERE owner_id = ?").bind(r.id).run();
     const offB: ScheduleChange = { type: "staff.update", id: team.b, bookable: false };
     const res = await applyChange(env, admin, offB, (await previewChange(env, offB)).version);
-    expect(res.impact.moved).toEqual([{ id: s1.id, ref: s1.ref, startAt: at(FRI, 10), from: "Una Tech", to: "Tim Tech" }]);
+    expect(res.impact.moved).toEqual([{ id: s1.id, ref: s1.ref, startAt: at(FRI, 10), from: "Una Tech", fromId: team.b, to: "Tim Tech", toId: team.a }]);
     expect(await env.DB.prepare("SELECT active, bookable FROM staff WHERE id = ?").bind(team.b).first()).toEqual({ active: 1, bookable: 0 });
     expect((await row(s1.id)).provisional_staff_id).toBe(team.a);
     await expect(previewChange(env, { type: "staff.update", id: 9999, active: false })).rejects.toMatchObject({ status: 404 });

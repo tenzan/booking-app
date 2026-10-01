@@ -102,7 +102,7 @@ export function UnavailabilityEditor({
       staff={activeStaff}
       isAdmin={isAdmin}
       myId={myId}
-      defaultStaffId={filter === "all" ? (isAdmin ? null : myId) : filter}
+      defaultStaffId={isAdmin ? (filter === "all" ? null : filter) : myId}
       tz={tz}
       today={today}
       submit={submit}
@@ -303,7 +303,9 @@ function TimeOffForm({
   const start = initial ? wall(initial.startAt, tz) : { date: today, minute: 540 };
   const end = initial ? wall(initial.endAt, tz) : { date: today, minute: 1020 };
   const initialAllDay = initial ? isAllDay(initial, tz) : true;
-  const [staffId, setStaffId] = useState<number | null>(initial?.staffId ?? defaultStaffId);
+  const [chosenId, setStaffId] = useState<number | null>(initial?.staffId ?? defaultStaffId);
+  // A technician only ever books time off for themselves, whatever the list is filtered to.
+  const staffId = isAdmin ? chosenId : myId;
   const [allDay, setAllDay] = useState(initialAllDay);
   const [startDate, setStartDate] = useState(start.date);
   const [startMin, setStartMin] = useState(initialAllDay ? 540 : start.minute);
@@ -355,10 +357,11 @@ function TimeOffForm({
       scheduleRequest(
         { type: "unavailability.delete", id: oldId },
         { summary: k("timeOff.summaryDelete", { name: initial!.staffName, when: fmtTimeOff(initial!, tz) }), done: k("timeOff.doneUpdate", { name: initial!.staffName }) },
+        // Closes the form whether this half applies at once or after a review in the dialog.
+        onClose,
       ),
     );
     if (result.status === "failed") setErrors({ form: k("timeOff.oldNotRemoved") });
-    else onClose();
   }
 
   const me = staff.find((s) => s.id === myId);

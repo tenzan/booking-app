@@ -39,9 +39,16 @@ export function scheduleRequest(change: ScheduleChange, texts: { summary: string
 }
 
 const isClear = (i: ImpactDTO) => i.moved.length === 0 && i.conflicts.length === 0;
-/** What the person decided on: who moves where, and which holds are in conflict. Warnings never block, so they don't count. */
+/**
+ * Everything the person was shown and may have decided on: who moves from whom to whom (by staff id), which holds
+ * conflict, and which already needed attention (warnings don't block, but a new one is news).
+ */
 const signature = (i: ImpactDTO) =>
-  JSON.stringify([i.moved.map((m) => `${m.id}>${m.to}`).sort(), i.conflicts.map((c) => `${c.id}:${c.reason}`).sort()]);
+  JSON.stringify([
+    i.moved.map((m) => `${m.id}:${m.fromId ?? "-"}>${m.toId}`).sort(),
+    i.conflicts.map((c) => `${c.id}:${c.reason}`).sort(),
+    i.warnings.map((w) => `${w.id}:${w.reason}`).sort(),
+  ]);
 const isRace = (e: unknown) => isApiError(e, 409, "stale_preview") || isApiError(e, 409, "conflicts");
 
 type ApplyOutcome = { kind: "applied" } | { kind: "review"; previewed: Previewed };
@@ -86,6 +93,20 @@ export function useImpactFlow({ tz, onDone }: { tz: string; onDone: (text: strin
   const qc = useQueryClient();
   const [review, setReview] = useState<Review | null>(null);
 
+  /**
+   * These calls bypass React Query, so its global 401 handler never sees them: on 401 re-ask "who am I" and the
+   * route guard sends the person to sign in. True when `e` was a 401.
+   */
+  const signedOut = useCallback(
+    (e: unknown) => {
+      if (!isApiError(e, 401)) return false;
+      setReview(null);
+      void qc.invalidateQueries({ queryKey: queryKeys.me });
+      return true;
+    },
+    [qc],
+  );
+
   const refreshLists = useCallback(
     () =>
       Promise.all([
@@ -120,14 +141,15 @@ export function useImpactFlow({ tz, onDone }: { tz: string; onDone: (text: strin
           finish(req);
           return { status: "applied" };
         }
-        setReview({ req, ...out.previewed, notice: { tone: "warning", text: k("impact.changedMeanwhile") }, returnTo });
+        setReview({ req, ...out.previewed, notice: { tone: "warning", text: k("impact.changedJustNow") }, returnTo });
         return { status: "review" };
       } catch (e) {
+        signedOut(e);
         if (isApiError(e, 404) || isApiError(e, 400, "invalid_staff")) void refreshLists();
         return { status: "failed", message: scheduleErrorText(e) };
       }
     },
-    [finish, refreshLists],
+    [finish, refreshLists, signedOut],
   );
 
   const dialog = (
@@ -138,6 +160,7 @@ export function useImpactFlow({ tz, onDone }: { tz: string; onDone: (text: strin
       onClose={() => setReview(null)}
       onApplied={(req) => finish(req)}
       refreshLists={refreshLists}
+      signedOut={signedOut}
     />
   );
   return { submit, dialog };
@@ -150,6 +173,7 @@ function ImpactDialog({
   onClose,
   onApplied,
   refreshLists,
+  signedOut,
 }: {
   review: Review | null;
   tz: string;
@@ -157,9 +181,11 @@ function ImpactDialog({
   onClose: () => void;
   onApplied: (req: ChangeRequest) => void;
   refreshLists: () => Promise<void>;
+  signedOut: (e: unknown) => boolean;
 }) {
   const titleId = useId();
   const descId = useId();
+  const hintId = useId();
   const titleRef = useRef<HTMLHeadingElement>(null);
   const noticeRef = useRef<HTMLDivElement>(null);
   /** What is running: "save", "refresh", or the id of the conflict being resolved. */
@@ -196,7 +222,7 @@ function ImpactDialog({
       focusNotice.current = true;
       setReview((r) => (r ? { ...r, ...fresh, notice: { tone, text: message } } : r));
     } catch (e) {
-      say("error", scheduleErrorText(e));
+      if (!signedOut(e)) say("error", scheduleErrorText(e));
     }
     void refreshLists();
   }
@@ -211,7 +237,7 @@ function ImpactDialog({
         setReview((r) => (r ? { ...r, ...out.previewed, notice: { tone: "warning", text: k("impact.changedMeanwhile") } } : r));
       }
     } catch (e) {
-      say("error", scheduleErrorText(e));
+      if (!signedOut(e)) say("error", scheduleErrorText(e));
     } finally {
       setBusy(null);
     }
@@ -223,10 +249,11 @@ function ImpactDialog({
     try {
       await rePreview("success", await action());
     } catch (e) {
+      if (signedOut(e)) return;
       if (isApiError(e, 409, "stale") || isApiError(e, 409, "same_tech")) await rePreview("warning", k("impact.resolve.stale", { ref: c.ref }));
       else if (isApiError(e, 409, "tech_unavailable")) await rePreview("warning", k("impact.resolve.techUnavailable", { ref: c.ref }));
       else if (isApiError(e, 409, "too_late")) say("error", k("impact.resolve.tooLate", { ref: c.ref }));
-      else if (!isApiError(e, 401)) say("error", actionErrorText(e));
+      else say("error", actionErrorText(e));
     } finally {
       setBusy(null);
     }
@@ -238,7 +265,7 @@ function ImpactDialog({
   ].filter(Boolean);
 
   return (
-    <Dialog open onClose={onClose} closable={busy === null} labelledBy={titleId} describedBy={descId} initialFocus={titleRef} returnFocus={review.returnTo}>
+    <Dialog open onClose={onClose} closable={busy === null} labelledBy={titleId} describedBy={descId} initialFocus={review.notice ? noticeRef : titleRef} returnFocus={review.returnTo}>
       <header className="flex items-start gap-3 border-b border-slate-200 px-4 pt-4 pb-3 sm:px-6 sm:pt-5 dark:border-slate-800">
         <div className="min-w-0 flex-1 space-y-1">
           <h2 ref={titleRef} id={titleId} tabIndex={-1} className="text-xl font-bold tracking-tight outline-none">
@@ -321,12 +348,22 @@ function ImpactDialog({
       </div>
 
       <footer className="space-y-2 border-t border-slate-200 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:flex sm:items-center sm:gap-3 sm:space-y-0 sm:px-6 sm:py-4 dark:border-slate-800">
-        {blocked && <p className="hidden min-w-0 flex-1 text-sm text-slate-600 sm:block dark:text-slate-400">{k("impact.resolveFirst")}</p>}
+        {blocked && (
+          <p id={hintId} className="min-w-0 flex-1 text-sm text-slate-600 dark:text-slate-400">
+            {k("impact.resolveFirst")}
+          </p>
+        )}
         <div className="grid shrink-0 grid-cols-2 gap-3 sm:ml-auto sm:flex">
           <Button variant="secondary" onClick={onClose} disabled={busy !== null} className="shrink-0 px-3">
             {k("impact.keepEditing")}
           </Button>
-          <Button onClick={() => void save()} disabled={blocked || (busy !== null && busy !== "save")} loading={busy === "save"} className="shrink-0 px-3">
+          <Button
+            onClick={() => void save()}
+            disabled={blocked || (busy !== null && busy !== "save")}
+            loading={busy === "save"}
+            aria-describedby={blocked ? hintId : undefined}
+            className="shrink-0 px-3"
+          >
             {busy === "save" ? k("saving") : k("impact.save")}
           </Button>
         </div>

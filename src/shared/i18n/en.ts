@@ -406,6 +406,7 @@ export const en = {
         },
         techNote: "Only administrators can change the weekly pattern and date schedules. You can add and remove your own time off.",
         loadFailed: "We couldn't load the schedule.",
+        holidaysFailed: "We couldn't load the holidays, so they're missing from this list.",
         technicians: "Technicians",
         you: "you",
         inactive: "inactive",
@@ -578,6 +579,7 @@ export const en = {
           keepEditing: "Keep editing",
           save: "Save change",
           changedMeanwhile: "The schedule changed while you were reviewing — please check the updated impact.",
+          changedJustNow: "The schedule changed just now — please review the impact.",
         },
       },
       import: {
