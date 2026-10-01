@@ -58,15 +58,15 @@ describe("access and validation", () => {
     const bad = await preview(`${HEADER}\nC-1,Say "hi",,a@example.test,,`);
     expect(bad.status).toBe(400);
     expect(bad.json.error).toBe("invalid_csv");
-    expect(bad.json.details).toMatchObject({ line: 2, column: 9 });
-    expect(bad.json.details.message).toContain("wrap the field in double quotes");
+    expect(bad.json.details).toEqual({ code: "csv_stray_quote", params: { line: 2, column: 9 }, line: 2, column: 9 });
 
     const noHeader = await preview("customer_number,name\nC-1,Acme");
     expect([noHeader.status, noHeader.json.error]).toEqual([400, "invalid_header"]);
-    expect(noHeader.json.details.message).toContain("contact_email");
+    expect(noHeader.json.details).toMatchObject({ code: "header_missing_columns", params: { columns: "contact_email" } });
 
     const many = await preview(file(...Array.from({ length: 5001 }, (_, i) => `C-${i},N,,c${i}@example.test,,`)));
     expect([many.status, many.json.error]).toEqual([400, "too_many_rows"]);
+    expect(many.json.details).toMatchObject({ code: "too_many_rows", params: { max: 5000 } });
   });
 });
 
@@ -78,8 +78,8 @@ describe("preview", () => {
     expect(res.json.summary).toEqual({ customers: { create: 5, update: 0, unchanged: 0 }, contacts: { add: 6, update: 0, unchanged: 0 }, errors: 0 });
     expect(res.json.warnings).toEqual([]);
     expect(res.json.rows).toHaveLength(6);
-    expect(res.json.rows[0]).toEqual({ line: 2, customerNumber: "C-1001", email: "frontdesk@example.test", action: "create", messages: ["creates the customer", "adds the contact"] });
-    expect(res.json.rows[1]).toMatchObject({ line: 3, email: "manager@example.test", action: "create", messages: ["adds the contact"] });
+    expect(res.json.rows[0]).toEqual({ line: 2, customerNumber: "C-1001", email: "frontdesk@example.test", action: "create", messages: [{ code: "creates_customer" }, { code: "adds_contact" }] });
+    expect(res.json.rows[1]).toMatchObject({ line: 3, email: "manager@example.test", action: "create", messages: [{ code: "adds_contact" }] });
     expect(res.json.rows[5]).toMatchObject({ customerNumber: "C-1005", action: "create" });
     expect(await count("SELECT COUNT(*) AS n FROM customers")).toBe(0);
     expect(await count("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'customers.import'")).toBe(0);
@@ -96,8 +96,8 @@ describe("preview", () => {
     expect(res.status).toBe(200);
     expect(res.json.rows.map((r: any) => r.action)).toEqual(["create", "error", "error"]);
     expect(res.json.summary.errors).toBe(2);
-    expect(res.json.rows[1].messages).toEqual(["name is required"]);
-    expect(res.json.rows[2].messages[0]).toContain("differs");
+    expect(res.json.rows[1].messages).toEqual([{ code: "required", params: { field: "name" } }]);
+    expect(res.json.rows[2].messages[0]).toMatchObject({ code: "field_differs", params: { field: "name", line: 2 } });
   });
 });
 
@@ -168,7 +168,7 @@ describe("apply", () => {
     await env.DB.prepare("UPDATE customers SET notes = 'keep me', created_at = 123 WHERE id = ?").bind(id).run();
     const csv = file("C-1,Acme,,new@example.test,New,");
     const p = await preview(csv);
-    expect(p.json.rows[0]).toMatchObject({ action: "update", messages: ["adds the contact"] });
+    expect(p.json.rows[0]).toMatchObject({ action: "update", messages: [{ code: "adds_contact" }] });
     expect(p.json.summary).toMatchObject({ customers: { unchanged: 1 }, contacts: { add: 1 } });
     const res = await apply(csv, p.json.planHash);
     expect(res.json).toMatchObject({ created: 0, updated: 0, unchanged: 1, contactsAdded: 1 });
@@ -196,9 +196,60 @@ describe("apply", () => {
   it("leaves an inactive contact inactive", async () => {
     await seedCustomer({ number: "C-1", name: "Acme", email: "a@example.test", contactActive: false });
     const p = await preview(file("C-1,Acme,,a@example.test,Alice,"));
-    expect(p.json.rows[0].messages).toContain("the contact is inactive and stays inactive");
+    expect(p.json.rows[0].messages).toContainEqual({ code: "contact_stays_inactive" });
     await apply(file("C-1,Acme,,a@example.test,Alice,"), p.json.planHash);
     expect(await contactsOf("C-1")).toEqual([{ email: "a@example.test", name: "Alice", active: 0 }]);
+  });
+});
+
+describe("blank cells leave stored values alone", () => {
+  it("a blank phone, contact_name or active changes nothing and writes nothing", async () => {
+    const id = await seedCustomer({ number: "C-1", name: "Acme", email: "a@example.test", active: false });
+    await env.DB.prepare("UPDATE customers SET phone = '+1 555' WHERE id = ?").bind(id).run();
+    await env.DB.prepare("UPDATE customer_contacts SET name = 'Alice' WHERE customer_id = ?").bind(id).run();
+    const csv = file("C-1,Acme,,a@example.test,,");
+    const p = await preview(csv);
+    expect(p.json.rows[0]).toMatchObject({ action: "unchanged", messages: [] });
+    const res = await apply(csv, p.json.planHash);
+    expect([res.status, res.json.error]).toEqual([400, "nothing_to_import"]);
+    expect(await customerRow("C-1")).toMatchObject({ phone: "+1 555", active: 0 });
+    expect(await contactsOf("C-1")).toEqual([{ email: "a@example.test", name: "Alice", active: 1 }]);
+  });
+
+  it("a file without the optional columns does not reactivate a deactivated customer or clear its data", async () => {
+    const id = await seedCustomer({ number: "C-1", name: "Acme", email: "a@example.test", active: false });
+    await env.DB.prepare("UPDATE customers SET phone = '+1 555' WHERE id = ?").bind(id).run();
+    const csv = "customer_number,name,contact_email\nC-1,Acme Corp,a@example.test\nC-2,New Co,n@example.test";
+    const res = await run(csv);
+    expect(res.json).toMatchObject({ created: 1, updated: 1 });
+    // The name is stated and changes; phone and active stay.
+    expect(await customerRow("C-1")).toMatchObject({ name: "Acme Corp", phone: "+1 555", active: 0 });
+    expect(await customerRow("C-2")).toMatchObject({ phone: null, active: 1 });
+  });
+
+  it("an update that states only the phone keeps active, and a new contact with a blank name gets none", async () => {
+    await seedCustomer({ number: "C-1", name: "Acme", email: "a@example.test", active: false });
+    const res = await run(file("C-1,Acme,+1 777,a@example.test,,", "C-1,Acme,,b@example.test,,"));
+    expect(res.json).toMatchObject({ updated: 1, contactsAdded: 1 });
+    expect(await customerRow("C-1")).toMatchObject({ phone: "+1 777", active: 0 });
+    expect(await contactsOf("C-1")).toEqual([{ email: "a@example.test", name: null, active: 1 }, { email: "b@example.test", name: null, active: 1 }]);
+  });
+
+  it("merged rows: a blank phone on one row is compatible with a stated one", async () => {
+    const res = await run(file("C-1,Acme,,a@example.test,,", "C-1,Acme,+1 555,b@example.test,,"));
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(await customerRow("C-1")).toMatchObject({ phone: "+1 555" });
+  });
+});
+
+describe("shared emails", () => {
+  it("the same email under two customer numbers applies, creating one contact per customer", async () => {
+    const res = await run(file("C-1,Acme,,shared@example.test,Pat,", "C-2,Other,,shared@example.test,Pat,"));
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(res.json).toMatchObject({ created: 2, contactsAdded: 2 });
+    expect(await count("SELECT COUNT(*) AS n FROM customer_contacts WHERE email = 'shared@example.test'")).toBe(2);
+    expect((await contactsOf("C-1"))[0]).toMatchObject({ email: "shared@example.test" });
+    expect((await contactsOf("C-2"))[0]).toMatchObject({ email: "shared@example.test" });
   });
 });
 
@@ -231,6 +282,9 @@ describe("chunking", () => {
     expect(failed.json.details).toEqual({ committedChunks: 2, totalChunks: 6 });
     expect(await count("SELECT COUNT(*) AS n FROM customers")).toBe(200);
     expect(await importAudits()).toHaveLength(0);
+    // The partial run leaves a trace.
+    const partial = (await env.DB.prepare("SELECT actor_kind, details FROM audit_log WHERE action = 'customers.import_partial'").all<any>()).results;
+    expect(partial.map((a) => [a.actor_kind, JSON.parse(a.details)])).toEqual([["staff", { committedChunks: 2, totalChunks: 6 }]]);
 
     await env.DB.prepare("DROP TRIGGER fail_import").run();
     // The earlier preview is stale now (200 customers exist); preview again and re-run the same file.

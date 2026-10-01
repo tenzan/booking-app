@@ -31,7 +31,7 @@ export async function planFromCsv(db: D1Database, csv: string): Promise<ImportPl
   try {
     plan = planCustomerImport(csv, await loadExisting(db));
   } catch (e) {
-    if (e instanceof CustomerImportError) throw new HttpError(400, e.code, { message: e.message, line: e.line, column: e.column });
+    if (e instanceof CustomerImportError) throw new HttpError(400, e.code, { ...e.reason, line: e.line, column: e.column });
     throw e;
   }
   return { ...plan, planHash: await planHash(plan) };
@@ -48,18 +48,20 @@ export async function applyPlan(db: D1Database, actor: string, plan: ImportPlan)
     ...plan.customers.map((c) =>
       db
         .prepare(
+          // A field the file left blank is NULL in the last three binds and keeps its stored value.
           `INSERT INTO customers(customer_number, name, phone, notes, active, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?)
-           ON CONFLICT(customer_number) DO UPDATE SET name = excluded.name, phone = excluded.phone, active = excluded.active, updated_at = excluded.updated_at`,
+           ON CONFLICT(customer_number) DO UPDATE SET name = excluded.name, phone = COALESCE(?, customers.phone),
+             active = COALESCE(?, customers.active), updated_at = excluded.updated_at`,
         )
-        .bind(c.customerNumber, c.name, c.phone, c.active ? 1 : 0, now, now),
+        .bind(c.customerNumber, c.name, c.phone ?? null, c.active === false ? 0 : 1, now, now, c.phone ?? null, c.active === undefined ? null : c.active ? 1 : 0),
     ),
     ...plan.contacts.map((k) =>
       db
         .prepare(
           `INSERT INTO customer_contacts(customer_id, email, name, phone, active) SELECT id, ?, ?, NULL, 1 FROM customers WHERE customer_number = ?
-           ON CONFLICT(customer_id, email) DO UPDATE SET name = excluded.name`,
+           ON CONFLICT(customer_id, email) DO UPDATE SET name = COALESCE(excluded.name, customer_contacts.name)`,
         )
-        .bind(k.email, k.name, k.customerNumber),
+        .bind(k.email, k.name ?? null, k.customerNumber),
     ),
     audit(db, {
       actorKind: "staff",
@@ -83,7 +85,13 @@ export async function applyPlan(db: D1Database, actor: string, plan: ImportPlan)
       await db.batch(chunk);
     } catch (e) {
       console.error("customer import chunk failed:", e instanceof Error ? e.message : e);
-      // Earlier chunks stay committed; importing the same file again finishes the job.
+      // Earlier chunks stay committed; importing the same file again finishes the job. Leave a trace of the partial run,
+      // best effort: a failure here must not hide the original error.
+      try {
+        await audit(db, { actorKind: "staff", actor, action: "customers.import_partial", details: { committedChunks: committed, totalChunks: chunks.length } }).run();
+      } catch (auditError) {
+        console.error("customer import partial audit failed:", auditError instanceof Error ? auditError.message : auditError);
+      }
       throw new HttpError(500, "import_failed", { committedChunks: committed, totalChunks: chunks.length });
     }
     committed++;

@@ -8,10 +8,23 @@ export interface CsvRecord {
   fields: string[];
 }
 
-export class CsvError extends Error {
-  /** `line` and `column` are 1-based and also written into the message, so callers may show the message alone. */
-  constructor(message: string, public line: number, public column?: number) {
+/** A message the UI renders from the catalog: `code` names an entry (web.staff.import.messages.<code>), `params` fill its placeholders. */
+export interface CodedMessage {
+  code: string;
+  params?: Record<string, string | number>;
+}
+
+export type CsvErrorCode = "csv_stray_quote" | "csv_text_after_quote" | "csv_unterminated_quote";
+
+export class CsvError extends Error implements CodedMessage {
+  /**
+   * `line` and `column` are 1-based. `params` always holds them; `message` is the same text in English
+   * (line and column included) for callers that have no catalog.
+   */
+  readonly params: { line: number; column: number };
+  constructor(public code: CsvErrorCode, message: string, public line: number, public column: number) {
     super(message);
+    this.params = { line, column };
   }
 }
 
@@ -44,9 +57,10 @@ export function parseCsv(text: string): CsvRecord[] {
     fields = [];
   };
 
-  const at = (what: string, i: number) => {
+  const at = (code: "csv_stray_quote" | "csv_text_after_quote", what: string, i: number) => {
     const column = i - lineStart + 1;
     return new CsvError(
+      code,
       `${what} (line ${line}, column ${column}): wrap the field in double quotes and write each quote inside it as ""`,
       line,
       column,
@@ -80,9 +94,9 @@ export function parseCsv(text: string): CsvRecord[] {
       lineStart = i + 1;
       recordLine = line;
     } else if (afterQuote) {
-      throw at("unexpected text after a closing quote", i);
+      throw at("csv_text_after_quote", "unexpected text after a closing quote", i);
     } else if (ch === '"') {
-      if (field !== "") throw at("a quote inside an unquoted field", i);
+      if (field !== "") throw at("csv_stray_quote", "a quote inside an unquoted field", i);
       inQuotes = true;
       quoted = true;
       quoteLine = line;
@@ -93,6 +107,7 @@ export function parseCsv(text: string): CsvRecord[] {
   }
   if (inQuotes) {
     throw new CsvError(
+      "csv_unterminated_quote",
       `unterminated quoted field that starts at line ${quoteLine}, column ${quoteColumn}: add the closing double quote`,
       quoteLine,
       quoteColumn,

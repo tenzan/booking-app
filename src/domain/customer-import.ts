@@ -12,7 +12,9 @@ import {
   MAX_CUSTOMER_IMPORT_ROWS,
   phoneSchema,
 } from "../shared/schemas";
-import { CsvError, parseCsv, type CsvRecord } from "./csv";
+import { CsvError, parseCsv, type CodedMessage, type CsvRecord } from "./csv";
+
+export type { CodedMessage };
 
 export const REQUIRED_COLUMNS = ["customer_number", "name", "contact_email"] as const;
 export const OPTIONAL_COLUMNS = ["phone", "contact_name", "active"] as const;
@@ -42,21 +44,27 @@ export interface ImportRow {
   customerNumber: string;
   email: string;
   action: ImportRowAction;
-  messages: string[];
+  /** Why the row is an error, or what it does; rendered from the catalog (web.staff.import.messages.<code>). */
+  messages: CodedMessage[];
 }
 
+/**
+ * What to write for a customer. A blank cell in the file means "leave as is", so on an update `phone` and `active`
+ * are present only when the file supplied them; a new customer gets null / true for blanks.
+ */
 export interface PlannedCustomer {
   customerNumber: string;
   name: string;
-  phone: string | null;
-  active: boolean;
+  phone?: string | null;
+  active?: boolean;
   action: "create" | "update";
 }
 
+/** `name` undefined (update) leaves the stored name; a new contact with a blank name gets null. */
 export interface PlannedContact {
   customerNumber: string;
   email: string;
-  name: string | null;
+  name?: string | null;
   action: "add" | "update";
 }
 
@@ -71,7 +79,7 @@ export interface ImportPlan {
   rows: ImportRow[];
   summary: ImportSummary;
   /** File-level notes that do not block the import (unknown columns). */
-  warnings: string[];
+  warnings: CodedMessage[];
   /** The writes the file implies, sorted canonically. The plan hash covers exactly these. */
   customers: PlannedCustomer[];
   contacts: PlannedContact[];
@@ -79,10 +87,11 @@ export interface ImportPlan {
 
 export type ImportFileErrorCode = "invalid_csv" | "invalid_header" | "too_many_rows";
 
-/** The file as a whole is unusable (malformed CSV, bad header, too many rows). */
+/** The file as a whole is unusable. `code` is the API error; `reason` says why, for the catalog. */
 export class CustomerImportError extends Error {
   constructor(
     public code: ImportFileErrorCode,
+    public reason: CodedMessage,
     message: string,
     public line?: number,
     public column?: number,
@@ -95,28 +104,38 @@ export class CustomerImportError extends Error {
 
 interface CustomerFields {
   name: string;
-  phone: string | null;
-  active: boolean;
+  /** undefined = blank in the file. */
+  phone?: string;
+  active?: boolean;
 }
 
 interface ParsedRow {
   line: number;
   customerNumber: string;
   email: string;
-  errors: string[];
+  errors: CodedMessage[];
   /** Present when customer_number, name, phone and active are all valid. */
   number?: string;
   customer?: CustomerFields;
   contactEmail?: string;
-  contactName?: string | null;
+  /** undefined = blank in the file. */
+  contactName?: string;
 }
 
 const TRUE = /^(true|1|yes)$/i;
 const FALSE = /^(false|0|no)$/i;
 
-/** Message for the first issue of a failed parse, prefixed with the column it belongs to. */
-function problem(column: string, issues: readonly { message: string }[]): string {
-  return `${column}: ${issues[0]?.message ?? "invalid value"}`;
+interface Issue {
+  code: string;
+  maximum?: unknown;
+}
+
+/** Maps a failed schema parse to a message code for `field`; the schemas stay the single source of the rules. */
+function problem(field: string, issues: readonly Issue[], format: CodedMessage): CodedMessage {
+  const i = issues[0];
+  if (i?.code === "too_big") return { code: "too_long", params: { field, max: Number(i.maximum) } };
+  if (i?.code === "invalid_format" || i?.code === "invalid_string") return format;
+  return { code: "invalid_value", params: { field } };
 }
 
 function readRow(record: CsvRecord, index: ReadonlyMap<string, number>, width: number): ParsedRow {
@@ -126,131 +145,160 @@ function readRow(record: CsvRecord, index: ReadonlyMap<string, number>, width: n
   };
   const row: ParsedRow = { line: record.line, customerNumber: cell("customer_number"), email: cell("contact_email"), errors: [] };
   if (record.fields.length !== width) {
-    row.errors.push(`expected ${width} columns like the header, found ${record.fields.length}`);
+    row.errors.push({ code: "column_count", params: { expected: width, found: record.fields.length } });
     return row;
   }
+  const required = (field: string): CodedMessage => ({ code: "required", params: { field } });
 
   let number: string | undefined;
   const numberRaw = cell("customer_number");
-  if (numberRaw === "") row.errors.push("customer_number is required");
+  if (numberRaw === "") row.errors.push(required("customer_number"));
   else {
     const r = customerNumberSchema.safeParse(numberRaw);
     if (r.success) number = r.data;
-    else row.errors.push(problem("customer_number", r.error.issues));
+    else row.errors.push(problem("customer_number", r.error.issues, { code: "invalid_customer_number" }));
   }
 
   let name: string | undefined;
   const nameRaw = cell("name");
-  if (nameRaw === "") row.errors.push("name is required");
+  if (nameRaw === "") row.errors.push(required("name"));
   else {
     const r = customerNameSchema.safeParse(nameRaw);
     if (r.success) name = r.data;
-    else row.errors.push(problem("name", r.error.issues));
+    else row.errors.push(problem("name", r.error.issues, { code: "invalid_value", params: { field: "name" } }));
   }
 
-  let phone: string | null | undefined;
+  let phone: string | undefined;
+  let phoneOk = true;
   const phoneRaw = cell("phone");
-  if (phoneRaw === "") phone = null;
-  else {
+  if (phoneRaw !== "") {
     const r = phoneSchema.safeParse(phoneRaw);
     if (r.success) phone = r.data;
-    else row.errors.push(problem("phone", r.error.issues));
+    else {
+      phoneOk = false;
+      row.errors.push(problem("phone", r.error.issues, { code: "invalid_phone" }));
+    }
   }
 
   let active: boolean | undefined;
+  let activeOk = true;
   const activeRaw = cell("active");
-  if (activeRaw === "" || TRUE.test(activeRaw)) active = true;
+  if (TRUE.test(activeRaw)) active = true;
   else if (FALSE.test(activeRaw)) active = false;
-  else row.errors.push("active: use true or false (also yes/no, 1/0); leave empty for true");
+  else if (activeRaw !== "") {
+    activeOk = false;
+    row.errors.push({ code: "invalid_active" });
+  }
 
   const emailRaw = cell("contact_email");
-  if (emailRaw === "") row.errors.push("contact_email is required");
+  if (emailRaw === "") row.errors.push(required("contact_email"));
   else {
     const r = emailSchema.safeParse(emailRaw);
     if (r.success) row.contactEmail = r.data;
-    else row.errors.push("contact_email: not a valid email address");
+    else {
+      const p = problem("contact_email", r.error.issues, { code: "invalid_email" });
+      row.errors.push(p.code === "too_long" ? p : { code: "invalid_email" });
+    }
   }
 
   const contactRaw = cell("contact_name");
-  if (contactRaw === "") row.contactName = null;
-  else {
+  if (contactRaw !== "") {
     const r = contactNameSchema.safeParse(contactRaw);
     if (r.success) row.contactName = r.data;
-    else row.errors.push(problem("contact_name", r.error.issues));
+    else row.errors.push(problem("contact_name", r.error.issues, { code: "invalid_value", params: { field: "contact_name" } }));
   }
 
-  if (number !== undefined && name !== undefined && phone !== undefined && active !== undefined) {
+  if (number !== undefined && name !== undefined && phoneOk && activeOk) {
     row.number = number;
-    row.customer = { name, phone, active };
+    row.customer = { name, ...(phone !== undefined ? { phone } : {}), ...(active !== undefined ? { active } : {}) };
   }
   return row;
 }
 
 // ---- Planning ---------------------------------------------------------------------------------------------------
 
-function readHeader(records: CsvRecord[]): { index: Map<string, number>; width: number; warnings: string[] } {
+function readHeader(records: CsvRecord[]): { index: Map<string, number>; width: number; warnings: CodedMessage[] } {
   const header = records[0];
-  if (!header) throw new CustomerImportError("invalid_header", "the file is empty: the first line must be the header row", 1);
+  if (!header) throw new CustomerImportError("invalid_header", { code: "header_empty" }, "the file is empty: the first line must be the header row", 1);
   const index = new Map<string, number>();
-  const warnings: string[] = [];
+  const warnings: CodedMessage[] = [];
   header.fields.forEach((raw, i) => {
     const column = raw.trim().toLowerCase();
     if (!KNOWN_COLUMNS.includes(column)) {
-      warnings.push(`unknown column "${raw.trim()}" is ignored`);
+      warnings.push({ code: "unknown_column", params: { column: raw.trim() } });
       return;
     }
-    if (index.has(column)) throw new CustomerImportError("invalid_header", `column ${column} appears twice in the header`, header.line);
+    if (index.has(column)) {
+      throw new CustomerImportError("invalid_header", { code: "header_duplicate_column", params: { column } }, `column ${column} appears twice in the header`, header.line);
+    }
     index.set(column, i);
   });
   const missing = REQUIRED_COLUMNS.filter((c) => !index.has(c));
   if (missing.length > 0) {
-    throw new CustomerImportError("invalid_header", `the header is missing the required column${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`, header.line);
+    throw new CustomerImportError(
+      "invalid_header",
+      { code: "header_missing_columns", params: { columns: missing.join(", ") } },
+      `the header is missing the required column${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`,
+      header.line,
+    );
   }
   return { index, width: header.fields.length, warnings };
 }
 
+type Field = "name" | "phone" | "active";
+
 interface Group {
   number: string;
-  ref: CustomerFields;
-  refLine: number;
+  /** What the file says about the customer: the first non-blank value of each field, and the line it came from. */
+  ref: Partial<CustomerFields>;
+  refLine: Partial<Record<Field, number>>;
   rows: ParsedRow[];
 }
 
-const same = (a: CustomerFields, b: CustomerFields) => a.name === b.name && a.phone === b.phone && a.active === b.active;
+const FIELDS: readonly Field[] = ["name", "phone", "active"];
 
 /**
  * Plans an import. Throws CustomerImportError when the file as a whole is unusable; every problem with a single row
  * becomes an "error" row (the preview shows them all; apply refuses a file that has any).
+ * A blank phone, contact_name or active means "leave as is" (blank on a new customer: no phone, no contact name, active).
  */
 export function planCustomerImport(csv: string, existing: ExistingCustomers): ImportPlan {
   let records: CsvRecord[];
   try {
     records = parseCsv(csv);
   } catch (e) {
-    if (e instanceof CsvError) throw new CustomerImportError("invalid_csv", e.message, e.line, e.column);
+    if (e instanceof CsvError) throw new CustomerImportError("invalid_csv", { code: e.code, params: e.params }, e.message, e.line, e.column);
     throw e;
   }
   const { index, width, warnings } = readHeader(records);
   const dataRecords = records.slice(1).filter((r) => r.fields.some((f) => f.trim() !== ""));
   if (dataRecords.length > MAX_CUSTOMER_IMPORT_ROWS) {
-    throw new CustomerImportError("too_many_rows", `at most ${MAX_CUSTOMER_IMPORT_ROWS} rows per import; split the file`);
+    throw new CustomerImportError("too_many_rows", { code: "too_many_rows", params: { max: MAX_CUSTOMER_IMPORT_ROWS } }, `at most ${MAX_CUSTOMER_IMPORT_ROWS} rows per import; split the file`);
   }
 
   const parsed = dataRecords.map((r) => readRow(r, index, width));
 
-  // Rows of one customer must agree on its own fields; the first row with valid customer fields is the reference.
+  // Rows of one customer must agree on every field they all state; a blank is compatible with anything.
   const groups = new Map<string, Group>();
   const pairs = new Map<string, number>();
   for (const row of parsed) {
     if (row.number !== undefined && row.customer) {
-      const g = groups.get(row.number);
-      if (!g) groups.set(row.number, { number: row.number, ref: row.customer, refLine: row.line, rows: [row] });
-      else {
-        g.rows.push(row);
-        const diff = (["name", "phone", "active"] as const).filter((k) => row.customer![k] !== g.ref[k]);
-        for (const k of diff) {
-          const shown = (v: string | boolean | null) => (v === null || v === "" ? "empty" : `"${v}"`);
-          row.errors.push(`${k} ${shown(row.customer[k])} differs from ${shown(g.ref[k])} on line ${g.refLine}; rows of one customer must agree`);
+      const customer = row.customer;
+      let g = groups.get(row.number);
+      if (!g) {
+        g = { number: row.number, ref: {}, refLine: {}, rows: [] };
+        groups.set(row.number, g);
+      }
+      g.rows.push(row);
+      for (const k of FIELDS) {
+        const value = customer[k];
+        if (value === undefined) continue;
+        const known = g.ref[k];
+        if (known === undefined) {
+          (g.ref as Record<Field, unknown>)[k] = value;
+          g.refLine[k] = row.line;
+        } else if (known !== value) {
+          row.errors.push({ code: "field_differs", params: { field: k, value: String(value), other: String(known), line: g.refLine[k]! } });
         }
       }
     }
@@ -258,48 +306,63 @@ export function planCustomerImport(csv: string, existing: ExistingCustomers): Im
       const key = `${row.number}\u0000${row.contactEmail}`;
       const first = pairs.get(key);
       if (first === undefined) pairs.set(key, row.line);
-      else row.errors.push(`duplicate of line ${first}: the same customer_number and contact_email appear twice`);
+      else row.errors.push({ code: "duplicate_pair", params: { line: first } });
     }
   }
 
   const summary: ImportSummary = { customers: { create: 0, update: 0, unchanged: 0 }, contacts: { add: 0, update: 0, unchanged: 0 }, errors: 0 };
   const customers: PlannedCustomer[] = [];
   const contacts: PlannedContact[] = [];
-  const outcome = new Map<ParsedRow, { action: ImportRowAction; messages: string[] }>();
+  const outcome = new Map<ParsedRow, { action: ImportRowAction; messages: CodedMessage[] }>();
 
   for (const g of groups.values()) {
     const ok = g.rows.filter((r) => r.errors.length === 0 && r.contactEmail !== undefined);
     if (ok.length === 0) continue;
     const stored = existing.get(g.number);
-    const changed = stored ? (["name", "phone", "active"] as const).filter((k) => stored[k] !== g.ref[k]) : [];
-    const customerAction = !stored ? "create" : changed.length > 0 ? "update" : "unchanged";
+    // Only what the file states and differs from what is stored.
+    const nameChanged = !!stored && stored.name !== g.ref.name!;
+    const phoneChanged = !!stored && g.ref.phone !== undefined && stored.phone !== g.ref.phone;
+    const activeChanged = !!stored && g.ref.active !== undefined && stored.active !== g.ref.active;
+    const customerAction = !stored ? "create" : nameChanged || phoneChanged || activeChanged ? "update" : "unchanged";
     summary.customers[customerAction]++;
-    if (customerAction !== "unchanged") customers.push({ customerNumber: g.number, ...g.ref, action: customerAction });
+    if (customerAction === "create") customers.push({ customerNumber: g.number, name: g.ref.name!, phone: g.ref.phone ?? null, active: g.ref.active ?? true, action: "create" });
+    else if (customerAction === "update") {
+      customers.push({
+        customerNumber: g.number,
+        name: g.ref.name!,
+        ...(phoneChanged ? { phone: g.ref.phone } : {}),
+        ...(activeChanged ? { active: g.ref.active } : {}),
+        action: "update",
+      });
+    }
 
     ok.forEach((row, n) => {
       const email = row.contactEmail!;
-      const name = row.contactName ?? null;
-      const messages: string[] = [];
+      const name = row.contactName;
+      const messages: CodedMessage[] = [];
       let action: ImportRowAction = "unchanged";
-      if (n === 0 && customerAction === "create") messages.push("creates the customer");
+      if (n === 0 && customerAction === "create") messages.push({ code: "creates_customer" });
       if (n === 0 && customerAction === "update") {
-        messages.push(`updates the customer: ${changed.map((k) => (k === "active" ? (g.ref.active ? "activates" : "deactivates") : k)).join(", ")}`);
+        const fields = [nameChanged ? "name" : "", phoneChanged ? "phone" : ""].filter(Boolean);
+        if (fields.length > 0) messages.push({ code: "updates_customer", params: { fields: fields.join(", ") } });
+        if (activeChanged) messages.push({ code: g.ref.active ? "activates_customer" : "deactivates_customer" });
       }
       const current = stored?.contacts.get(email);
       if (!current) {
         summary.contacts.add++;
-        contacts.push({ customerNumber: g.number, email, name, action: "add" });
-        messages.push("adds the contact");
-      } else if (current.name !== name) {
+        contacts.push({ customerNumber: g.number, email, name: name ?? null, action: "add" });
+        messages.push({ code: "adds_contact" });
+      } else if (name !== undefined && current.name !== name) {
         summary.contacts.update++;
         contacts.push({ customerNumber: g.number, email, name, action: "update" });
-        messages.push("updates the contact name");
+        messages.push({ code: "updates_contact_name" });
       } else {
         summary.contacts.unchanged++;
       }
-      if (current && !current.active) messages.push("the contact is inactive and stays inactive");
+      if (current && !current.active) messages.push({ code: "contact_stays_inactive" });
+      const contactChanged = !current || (name !== undefined && current.name !== name);
       if (customerAction === "create") action = "create";
-      else if (!current || current.name !== name || (n === 0 && customerAction === "update")) action = "update";
+      else if (contactChanged || (n === 0 && customerAction === "update")) action = "update";
       outcome.set(row, { action, messages });
     });
   }
@@ -322,9 +385,10 @@ export function planCustomerImport(csv: string, existing: ExistingCustomers): Im
 
 /** SHA-256 (hex) of the canonical JSON of the planned writes, not of the raw text: edits that change nothing keep the hash. */
 export async function planHash(plan: Pick<ImportPlan, "customers" | "contacts">): Promise<string> {
+  // Fixed key order; fields the plan leaves alone are omitted by JSON.stringify.
   const canonical = JSON.stringify({
-    customers: plan.customers.map((c) => [c.customerNumber, c.name, c.phone, c.active, c.action]),
-    contacts: plan.contacts.map((c) => [c.customerNumber, c.email, c.name, c.action]),
+    customers: plan.customers.map((c) => ({ n: c.customerNumber, name: c.name, phone: c.phone, active: c.active, action: c.action })),
+    contacts: plan.contacts.map((c) => ({ n: c.customerNumber, email: c.email, name: c.name, action: c.action })),
   });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
