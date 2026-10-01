@@ -55,7 +55,7 @@ export function enqueueEmail(
 }
 
 /** Error text safe to persist: no magic-link fragments, no URLs, at most 500 chars. */
-function safeError(e: unknown): string {
+export function safeError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
   return msg
     .replace(/#t=[^\s"']+/g, "")

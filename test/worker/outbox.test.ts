@@ -172,7 +172,7 @@ describe("processOutbox", () => {
     expect(m!.html).toContain("max-width:560px");
   });
 
-  it("request_received mints an access token with view and cancel links", async () => {
+  it("request_received mints an access token with a view link and no cancel link (until cancellation exists)", async () => {
     await seedReservation();
     await enqueue("request_received", "pat@example.test");
     await processOutbox(env);
@@ -180,7 +180,9 @@ describe("processOutbox", () => {
     expect(m!.subject).toBe("Request received — not yet confirmed (RS-1001)");
     const token = /\/r#t=([A-Za-z0-9_-]+)\n/.exec(m!.text)?.[1];
     expect(token).toBeTruthy();
-    expect(m!.text).toContain(`http://localhost:5173/r#t=${token}&action=cancel`);
+    expect(m!.text).not.toContain("action=cancel");
+    expect(m!.text).not.toContain("Cancel reservation");
+    expect(m!.html).not.toContain("action=cancel");
     const row = await env.DB.prepare("SELECT * FROM access_tokens").first<any>();
     expect(row).toMatchObject({
       reservation_id: "res-1",
@@ -196,6 +198,8 @@ describe("processOutbox", () => {
     const [m] = await mailbox();
     expect(m!.subject).toBe("Confirmed: remote support on Fri, Oct 2, 2026, 10:00 Asia/Tokyo (GMT+9) (RS-1001)");
     expect(m!.text).toContain("A technician will telephone you at +81-3-0000-0000 at the appointment time. Please have your computer turned on and TeamViewer ready.");
+    expect(m!.text).toContain("http://localhost:5173/r#t=");
+    expect(m!.text).not.toContain("action=cancel");
   });
 
   it("assigned names the approver and the technician", async () => {

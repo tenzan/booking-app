@@ -133,10 +133,8 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
     case "request_received":
     case "confirmed": {
       const viewUrl = `${env.APP_BASE_URL}/r#t=${await mintAccessToken(env, r)}`;
-      const actions = [
-        { label: t("common.viewReservation"), url: viewUrl, primary: true },
-        { label: t("common.cancelReservation"), url: `${viewUrl}&action=cancel` },
-      ];
+      // No cancel link yet: customers cannot cancel online until cancellation is built.
+      const actions = [{ label: t("common.viewReservation"), url: viewUrl, primary: true }];
       if (job.template === "request_received") {
         return {
           subject: t("email.requestReceived.subject", { ref: r.ref }),
