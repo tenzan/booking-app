@@ -19,10 +19,10 @@ async function seedReservation(o: { status?: string; issue?: string; staff?: boo
     db.prepare("INSERT INTO staff(id, email, name, role, created_at, updated_at) VALUES (1, 'ada@example.test', 'Ada Approver', 'admin', 0, 0)"),
     db.prepare("INSERT INTO staff(id, email, name, role, created_at, updated_at) VALUES (2, 'tom@example.test', 'Tom Tech', 'technician', 0, 0)"),
     db.prepare(
-      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
          assigned_staff_id, confirmed_by, idempotency_key, created_at, updated_at, close_reason)
-       VALUES ('res-1', 'RS-1001', 1, 'pat@example.test', 'Pat Contact', '+81-3-0000-0000', ?, ?, ?, ?, ?, ?, 'k1', 0, 0, 'No capacity')`,
-    ).bind(o.issue ?? "Printer offline", START, START + 30 * 60_000, o.status ?? "pending", o.staff ? 2 : null, o.staff ? 1 : null),
+       VALUES ('res-1', 'RS-1001', 1, 'pat@example.test', 'Pat Contact', '+81-3-0000-0000', ?, ?, ?, ?, ?, ?, ?, ?, 'k1', 0, 0, 'No capacity')`,
+    ).bind(o.issue ?? "Printer offline", START, START + 30 * 60_000, START, START + 30 * 60_000, o.status ?? "pending", o.staff ? 2 : null, o.staff ? 1 : null),
   ]);
 }
 

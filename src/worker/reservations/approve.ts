@@ -1,5 +1,5 @@
 import { component, solve } from "../../domain/matching";
-import { blockMinutes, occupiedRange } from "../../domain/slots";
+import { rangeBlocks } from "../../domain/slots";
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
 import { assertSql, audit, capacityBatch, withRetry } from "../lib/db";
@@ -7,7 +7,7 @@ import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
-import { blockInserts, ELIGIBLE_SQL, movedPending, NO_BUFFER } from "./holds";
+import { blockInserts, ELIGIBLE_SQL, movedPending } from "./holds";
 import { getReservation, techOptions, type ReservationDTO } from "./queries";
 
 /**
@@ -41,7 +41,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   const now = clock.now();
   const newVersion = version + 1;
   const moved = movedPending(ctx, assignment, id);
-  const targetBlocks = blockMinutes(target.start, target.end, NO_BUFFER);
+  const targetBlocks = rangeBlocks(target.start, target.end);
   const staff = await notifyStaff(db);
 
   await capacityBatch(db, ctx.version, [
@@ -64,7 +64,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
       )
       .bind(staffId, now, actor.id, now, id, version),
     ...blockInserts(db, staffId, targetBlocks, id),
-    ...moved.flatMap((m) => blockInserts(db, m.staffId, blockMinutes(m.hold.start, m.hold.end, NO_BUFFER), m.holdId)),
+    ...moved.flatMap((m) => blockInserts(db, m.staffId, rangeBlocks(m.hold.start, m.hold.end), m.holdId)),
     enqueueEmail(db, { template: "confirmed", to: current.contactEmail, dedupeKey: `confirmed:${id}:v${newVersion}`, reservationId: id }),
     // The approver already knows; everyone else who follows requests is told who got it.
     ...staff

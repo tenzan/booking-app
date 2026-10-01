@@ -52,6 +52,9 @@ export interface ReservationHoldRow {
   status: "pending" | "confirmed";
   startAt: number;
   endAt: number;
+  /** Occupied range (buffers included) fixed when the request was created. */
+  occStart: number;
+  occEnd: number;
   assignedStaffId: number | null;
   provisionalStaffId: number | null;
 }
@@ -60,46 +63,38 @@ export interface OptionHoldRow {
   ref: string;
   startAt: number;
   endAt: number;
+  occStart: number;
+  occEnd: number;
   staffId: number;
 }
 
-/** Pending/confirmed reservations whose occupied range (buffers included) overlaps [fromMs, toMs). */
-export async function loadReservationHolds(
-  db: D1Database,
-  fromMs: number,
-  toMs: number,
-  buffers: { beforeMs: number; afterMs: number },
-): Promise<ReservationHoldRow[]> {
+/** Pending/confirmed reservations whose stored occupied range overlaps [fromMs, toMs). */
+export async function loadReservationHolds(db: D1Database, fromMs: number, toMs: number): Promise<ReservationHoldRow[]> {
   const { results } = await db
     .prepare(
       `SELECT id, ref, status, start_at AS startAt, end_at AS endAt,
-              assigned_staff_id AS assignedStaffId, provisional_staff_id AS provisionalStaffId
+              occ_start AS occStart, occ_end AS occEnd, assigned_staff_id AS assignedStaffId, provisional_staff_id AS provisionalStaffId
        FROM reservations
-       WHERE status IN ('pending','confirmed') AND start_at - ? < ? AND end_at + ? > ?
+       WHERE status IN ('pending','confirmed') AND occ_start < ? AND occ_end > ?
        ORDER BY start_at, id`,
     )
-    .bind(buffers.beforeMs, toMs, buffers.afterMs, fromMs)
+    .bind(toMs, fromMs)
     .all<ReservationHoldRow>();
   return results;
 }
 
 /** Options of open proposals whose occupied range overlaps [fromMs, toMs); `ref` is the proposal's reservation. */
-export async function loadOptionHolds(
-  db: D1Database,
-  fromMs: number,
-  toMs: number,
-  buffers: { beforeMs: number; afterMs: number },
-): Promise<OptionHoldRow[]> {
+export async function loadOptionHolds(db: D1Database, fromMs: number, toMs: number): Promise<OptionHoldRow[]> {
   const { results } = await db
     .prepare(
-      `SELECT o.id AS id, r.ref AS ref, o.start_at AS startAt, o.end_at AS endAt, o.staff_id AS staffId
+      `SELECT o.id AS id, r.ref AS ref, o.start_at AS startAt, o.end_at AS endAt, o.occ_start AS occStart, o.occ_end AS occEnd, o.staff_id AS staffId
        FROM proposal_options o
        JOIN proposals p ON p.id = o.proposal_id
        JOIN reservations r ON r.id = p.reservation_id
-       WHERE p.status = 'open' AND o.start_at - ? < ? AND o.end_at + ? > ?
+       WHERE p.status = 'open' AND o.occ_start < ? AND o.occ_end > ?
        ORDER BY o.start_at, o.id`,
     )
-    .bind(buffers.beforeMs, toMs, buffers.afterMs, fromMs)
+    .bind(toMs, fromMs)
     .all<OptionHoldRow>();
   return results;
 }

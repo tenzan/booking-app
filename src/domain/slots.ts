@@ -45,13 +45,17 @@ export function occupiedRange(startAt: number, endAt: number, cfg: BufferCfg): [
   return [startAt - cfg.bufferBeforeMin * MIN, endAt + cfg.bufferAfterMin * MIN];
 }
 
-export function blockMinutes(startAt: number, endAt: number, cfg: BufferCfg): number[] {
-  const [occStart, occEnd] = occupiedRange(startAt, endAt, cfg);
+/** Epoch-minute starts of the 5-minute blocks an occupied range [occStart, occEnd) touches. */
+export function rangeBlocks(occStart: number, occEnd: number): number[] {
   const out: number[] = [];
   for (let ms = Math.floor(occStart / BLOCK_MS) * BLOCK_MS; ms < occEnd; ms += BLOCK_MS) {
     out.push(ms / MIN);
   }
   return out;
+}
+
+export function blockMinutes(startAt: number, endAt: number, cfg: BufferCfg): number[] {
+  return rangeBlocks(...occupiedRange(startAt, endAt, cfg));
 }
 
 export function findSlot(slots: Slot[], startAt: number): Slot | undefined {

@@ -1,7 +1,7 @@
 import { approvalDeadlines, minNoticeAt } from "../../domain/deadlines";
 import { component, solve, type Hold } from "../../domain/matching";
 import { newRef } from "../../domain/ref";
-import { blockMinutes, findSlot, occupiedRange } from "../../domain/slots";
+import { findSlot, occupiedRange, rangeBlocks } from "../../domain/slots";
 import { addDays, utcToWall } from "../../domain/time";
 import type { Env } from "../env";
 import { clock } from "../lib/clock";
@@ -11,7 +11,7 @@ import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
-import { blockInserts, ELIGIBLE_SQL, movedPending, NO_BUFFER } from "./holds";
+import { blockInserts, ELIGIBLE_SQL, movedPending } from "./holds";
 
 export interface SubmitInput {
   customerId: number;
@@ -120,18 +120,18 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
     ...moved.map((m) =>
       db.prepare("UPDATE reservations SET provisional_staff_id = ?, updated_at = ? WHERE id = ? AND status = 'pending'").bind(m.staffId, now, m.holdId),
     ),
-    ...moved.flatMap((m) => blockInserts(db, m.staffId, blockMinutes(m.hold.start, m.hold.end, NO_BUFFER), m.holdId)),
+    ...moved.flatMap((m) => blockInserts(db, m.staffId, rangeBlocks(m.hold.start, m.hold.end), m.holdId)),
     db
       .prepare(
-        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
            provisional_staff_id, idempotency_key, approval_reminder_at, escalation_at, expires_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
-        id, ref, input.customerId, email, input.contactName, input.phone, input.issue, slot.startAt, slot.endAt,
+        id, ref, input.customerId, email, input.contactName, input.phone, input.issue, slot.startAt, slot.endAt, occStart, occEnd,
         staffId, input.idempotencyKey, deadlines.reminderAt, deadlines.escalationAt, deadlines.expiresAt, now, now,
       ),
-    ...blockInserts(db, staffId, blockMinutes(slot.startAt, slot.endAt, ctx.cfg), id),
+    ...blockInserts(db, staffId, rangeBlocks(occStart, occEnd), id),
     enqueueEmail(db, { template: "request_received", to: email, dedupeKey: `received:${id}`, reservationId: id }),
     ...staff.map((s) => enqueueEmail(db, { template: "new_request", to: s.email, dedupeKey: `new:${id}:${s.id}`, reservationId: id })),
     audit(db, {

@@ -1,5 +1,5 @@
 import { assignableFor } from "../../domain/matching";
-import { findSlot, generateSlots, occupiedRange } from "../../domain/slots";
+import { findSlot, generateSlots } from "../../domain/slots";
 import type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
 import type { Env } from "../env";
 import { loadScheduleCtx } from "../scheduling/context";
@@ -192,7 +192,10 @@ export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOpti
   const ctx = await loadScheduleCtx(env, r.startAt, r.endAt);
   const { results: staff } = await env.DB.prepare("SELECT id, name FROM staff WHERE active = 1 AND bookable = 1").all<{ id: number; name: string }>();
 
-  const [occStart, occEnd] = occupiedRange(r.startAt, r.endAt, ctx.cfg);
+  // A pending request always holds capacity, so its stored range is in the context.
+  const own = ctx.holds.find((h) => h.id === r.id);
+  if (!own) return [];
+  const { start: occStart, end: occEnd } = own;
   const assignable = new Set(assignableFor(ctx.holds, r.id));
   // Scheduled for the slot regardless of time off (the slot's own staff list already excludes those on leave).
   const scheduled = new Set(findSlot(generateSlots({ ...ctx.slotInput, unavailability: [] }), r.startAt)?.staffIds ?? []);

@@ -1,5 +1,5 @@
 import { MIN, utcToWall } from "../../domain/time";
-import { findSlot, generateSlots, occupiedRange, type Slot, type SlotCfg, type SlotInput } from "../../domain/slots";
+import { findSlot, generateSlots, type Slot, type SlotCfg, type SlotInput } from "../../domain/slots";
 import type { Hold } from "../../domain/matching";
 import type { BhCtx } from "../../domain/business-hours";
 import type { Settings } from "../../domain/settings";
@@ -40,7 +40,8 @@ export interface ScheduleCtx {
 
 /**
  * Pure scheduling inputs from the database for dates covering [fromMs - 1 day, toMs + 1 day]:
- * generated slots plus the holds (pending/confirmed reservations, open proposal options) that overlap that range.
+ * generated slots (from the current settings) plus the holds (pending/confirmed reservations, open proposal options)
+ * that overlap that range, each with the occupied range stored when it was created.
  */
 export async function loadScheduleCtx(env: Env, fromMs: number, toMs: number): Promise<ScheduleCtx> {
   const db = env.DB;
@@ -72,16 +73,15 @@ export async function loadScheduleCtx(env: Env, fromMs: number, toMs: number): P
   const slotInput: SlotInput = { fromDate, toDate, windows, overrideDates, holidays, unavailability, bookableStaff, cfg };
   const slots = generateSlots(slotInput);
 
-  const buffers = { beforeMs: cfg.bufferBeforeMin * MIN, afterMs: cfg.bufferAfterMin * MIN };
   const [reservations, options] = await Promise.all([
-    loadReservationHolds(db, lo, hi, buffers),
-    loadOptionHolds(db, lo, hi, buffers),
+    loadReservationHolds(db, lo, hi),
+    loadOptionHolds(db, lo, hi),
   ]);
 
   const holds: Hold[] = [];
   const holdOwners = new Map<string, HoldOwner>();
   for (const r of reservations) {
-    const [start, end] = occupiedRange(r.startAt, r.endAt, cfg);
+    const { occStart: start, occEnd: end } = r;
     if (r.status === "confirmed") {
       holds.push({ id: r.id, start, end, fixed: r.assignedStaffId, eligible: r.assignedStaffId === null ? [] : [r.assignedStaffId], preferred: null });
       holdOwners.set(r.id, { kind: "reservation", id: r.id, status: r.status, staffId: r.assignedStaffId, ref: r.ref });
@@ -92,7 +92,7 @@ export async function loadScheduleCtx(env: Env, fromMs: number, toMs: number): P
     }
   }
   for (const o of options) {
-    const [start, end] = occupiedRange(o.startAt, o.endAt, cfg);
+    const { occStart: start, occEnd: end } = o;
     holds.push({ id: o.id, start, end, fixed: o.staffId, eligible: [o.staffId], preferred: null });
     holdOwners.set(o.id, { kind: "option", id: o.id, status: "open", staffId: o.staffId, ref: o.ref });
   }

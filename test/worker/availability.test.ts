@@ -56,11 +56,11 @@ describe("GET /api/customer/availability", () => {
   it("reduces spots for an existing pending request, including through its buffer", async () => {
     const start = at(FRI, 10);
     await env.DB.prepare(
-      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
          provisional_staff_id, idempotency_key, created_at, updated_at)
-       VALUES ('r1', 'RS-TEST1', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, 'pending', ?, 'k1', 0, 0)`,
+       VALUES ('r1', 'RS-TEST1', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, ?, ?, 'pending', ?, 'k1', 0, 0)`,
     )
-      .bind(customerId, start, start + 30 * MIN, team.a)
+      .bind(customerId, start, start + 30 * MIN, start, start + 40 * MIN, team.a)
       .run();
     for (let ms = start; ms < start + 40 * MIN; ms += 5 * MIN) {
       await env.DB.prepare("INSERT INTO tech_blocks(staff_id, block_start, owner_kind, owner_id) VALUES (?, ?, 'reservation', 'r1')")
@@ -77,11 +77,11 @@ describe("GET /api/customer/availability", () => {
   it("drops fully booked slots", async () => {
     for (const [id, staff] of [["r1", team.a], ["r2", team.b]] as const) {
       await env.DB.prepare(
-        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
            assigned_staff_id, idempotency_key, created_at, updated_at)
-         VALUES (?, ?, ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, 'confirmed', ?, ?, 0, 0)`,
+         VALUES (?, ?, ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, ?, ?, 'confirmed', ?, ?, 0, 0)`,
       )
-        .bind(id, `RS-${id}`, customerId, at(FRI, 10), at(FRI, 10, 30), staff, `k-${id}`)
+        .bind(id, `RS-${id}`, customerId, at(FRI, 10), at(FRI, 10, 30), at(FRI, 10), at(FRI, 10, 40), staff, `k-${id}`)
         .run();
     }
     const res = await availability(FRI, FRI);
@@ -111,9 +111,9 @@ describe("GET /api/customer/accounts", () => {
     const other = await seedCustomer({ email: "pat@example.test", name: "Second Co" });
     const insert = (id: string, cust: number, email: string, phone: string, created: number) =>
       env.DB.prepare(
-        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
            idempotency_key, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'Pat', ?, 'issue', 1, 2, 'completed', ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, 'Pat', ?, 'issue', 1, 2, 1, 2, 'completed', ?, ?, ?)`,
       )
         .bind(id, `RS-${id}`, cust, email, phone, `k-${id}`, created, created)
         .run();
@@ -135,11 +135,11 @@ describe("GET /api/customer/accounts", () => {
 describe("loadScheduleCtx holds", () => {
   const insertReservation = (id: string, status: "pending" | "confirmed", startAt: number, extra: { assigned?: number; provisional?: number } = {}) =>
     env.DB.prepare(
-      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
          assigned_staff_id, provisional_staff_id, idempotency_key, created_at, updated_at)
-       VALUES (?, ?, ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, ?, ?, ?, ?, 0, 0)`,
+       VALUES (?, ?, ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
     )
-      .bind(id, `RS-${id}`, customerId, startAt, startAt + 30 * MIN, status, extra.assigned ?? null, extra.provisional ?? null, `k-${id}`)
+      .bind(id, `RS-${id}`, customerId, startAt, startAt + 30 * MIN, startAt, startAt + 40 * MIN, status, extra.assigned ?? null, extra.provisional ?? null, `k-${id}`)
       .run();
 
   it("includes a reservation whose buffer, not its own time, reaches into the range", async () => {
@@ -169,8 +169,8 @@ describe("loadScheduleCtx holds", () => {
   async function insertProposal(status: string) {
     await insertReservation("r1", "pending", at(FRI, 12), { provisional: team.b }); // far from the option
     await env.DB.prepare("INSERT INTO proposals(id, reservation_id, status, created_at, expires_at) VALUES ('p1', 'r1', ?, 0, 1)").bind(status).run();
-    await env.DB.prepare("INSERT INTO proposal_options(id, proposal_id, start_at, end_at, staff_id) VALUES ('o1', 'p1', ?, ?, ?)")
-      .bind(at(FRI, 10), at(FRI, 10, 30), team.a)
+    await env.DB.prepare("INSERT INTO proposal_options(id, proposal_id, start_at, end_at, occ_start, occ_end, staff_id) VALUES ('o1', 'p1', ?, ?, ?, ?, ?)")
+      .bind(at(FRI, 10), at(FRI, 10, 30), at(FRI, 10), at(FRI, 10, 40), team.a)
       .run();
   }
 

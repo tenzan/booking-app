@@ -120,11 +120,11 @@ describe("POST /api/customer/reservations", () => {
 
     it("does not count a confirmed appointment that has already ended towards the limit", async () => {
       await env.DB.prepare(
-        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
            idempotency_key, created_at, updated_at)
-         VALUES ('past1', 'R-PAST-0001', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, 'confirmed', 'past-key', 0, 0)`,
+         VALUES ('past1', 'R-PAST-0001', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, ?, ?, 'confirmed', 'past-key', 0, 0)`,
       )
-        .bind(pat.id, at(THU, 7), at(THU, 7, 30))
+        .bind(pat.id, at(THU, 7), at(THU, 7, 30), at(THU, 7), at(THU, 7, 30))
         .run();
       expect((await submit(pat, at(FRI, 10))).status).toBe(201);
     });
@@ -217,11 +217,11 @@ describe("POST /api/customer/reservations", () => {
       const other = pStaff === team.a ? team.b : team.a;
       // A confirmed reservation fixed to the other technician, with its blocks.
       await env.DB.prepare(
-        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
            assigned_staff_id, idempotency_key, created_at, updated_at)
-         VALUES ('c1', 'R-TEST-0001', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, 'confirmed', ?, 'k-c1', 0, 0)`,
+         VALUES ('c1', 'R-TEST-0001', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, ?, ?, 'confirmed', ?, 'k-c1', 0, 0)`,
       )
-        .bind(pat.id, at(FRI, 10), at(FRI, 10, 30), other)
+        .bind(pat.id, at(FRI, 10), at(FRI, 10, 30), at(FRI, 10), at(FRI, 10, 40), other)
         .run();
       for (let ms = at(FRI, 10); ms < at(FRI, 10) + 40 * MIN; ms += 5 * MIN) {
         await env.DB.prepare("INSERT INTO tech_blocks(staff_id, block_start, owner_kind, owner_id) VALUES (?, ?, 'reservation', 'c1')")
@@ -350,11 +350,11 @@ describe("POST /api/customer/reservations", () => {
       // Inserted without bumping the schedule version, so the guard passes and only UNIQUE can reject the batch.
       const w = withBatchHook(async () => {
         await env.DB.prepare(
-          `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+          `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
              idempotency_key, created_at, updated_at)
-           VALUES ('dup1', 'R-DUPL-0001', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, 'pending', ?, 0, 0)`,
+           VALUES ('dup1', 'R-DUPL-0001', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, ?, ?, 'pending', ?, 0, 0)`,
         )
-          .bind(pat.id, at(FRI, 10), at(FRI, 10, 30), dup.idempotencyKey)
+          .bind(pat.id, at(FRI, 10), at(FRI, 10, 30), at(FRI, 10), at(FRI, 10, 40), dup.idempotencyKey)
           .run();
       });
       const res = await submitReservation(w.env, "pat@example.test", dup);
@@ -368,11 +368,11 @@ describe("POST /api/customer/reservations", () => {
       const dup = input(pat.id, at(FRI, 10));
       const w = withBatchHook(async () => {
         await env.DB.prepare(
-          `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+          `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
              idempotency_key, created_at, updated_at)
-           VALUES ('dup1', 'R-DUPL-0001', ?, 'sam@example.test', 'Sam', '000', 'issue', ?, ?, 'pending', ?, 0, 0)`,
+           VALUES ('dup1', 'R-DUPL-0001', ?, 'sam@example.test', 'Sam', '000', 'issue', ?, ?, ?, ?, 'pending', ?, 0, 0)`,
         )
-          .bind(sam.id, at(FRI, 10), at(FRI, 10, 30), dup.idempotencyKey)
+          .bind(sam.id, at(FRI, 10), at(FRI, 10, 30), at(FRI, 10), at(FRI, 10, 40), dup.idempotencyKey)
           .run();
       });
       await expect(submitReservation(w.env, "pat@example.test", dup)).rejects.toMatchObject({ status: 409, code: "idempotency_conflict" });
