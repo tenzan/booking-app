@@ -210,11 +210,12 @@ export async function getAudit(db: D1Database, reservationId: string): Promise<A
 
 /**
  * The audit log, newest first, a page after `cursor`. `actor` is the stored actor (a staff id, or a customer email);
- * staff actors are shown by name. `action` ending in "." matches every action with that prefix (`reservation.`), otherwise exactly.
+ * staff actors are shown by name. `action` lists terms, any of which may match: one ending in "." matches every action with
+ * that prefix (`reservation.`), any other exactly.
  */
 export async function listAudit(
   db: D1Database,
-  f: { reservationId?: string; customerId?: number; actor?: string; action?: string; cursor?: string },
+  f: { reservationId?: string; customerId?: number; actor?: string; action?: string[]; cursor?: string },
 ): Promise<AuditListDTO> {
   const where: string[] = [];
   const binds: unknown[] = [];
@@ -230,14 +231,17 @@ export async function listAudit(
     where.push("a.actor = ?");
     binds.push(f.actor);
   }
-  if (f.action !== undefined) {
-    if (f.action.endsWith(".")) {
-      where.push("substr(a.action, 1, length(?)) = ?");
-      binds.push(f.action, f.action);
-    } else {
-      where.push("a.action = ?");
-      binds.push(f.action);
-    }
+  if (f.action !== undefined && f.action.length > 0) {
+    // Any of the terms: `prefix.` matches by prefix, anything else exactly (no LIKE, so `%` and `_` are literal).
+    const terms = f.action.map((term) => {
+      if (term.endsWith(".")) {
+        binds.push(term, term);
+        return "substr(a.action, 1, length(?)) = ?";
+      }
+      binds.push(term);
+      return "a.action = ?";
+    });
+    where.push(`(${terms.join(" OR ")})`);
   }
   if (f.cursor !== undefined) {
     const [at, id] = decodeCursor(f.cursor, ["number", "number"]);

@@ -287,6 +287,28 @@ describe("audit log", () => {
     expect(new Set(named.map((r) => r.actor))).toEqual(new Set(["Ada Admin"]));
   });
 
+  it("matches any of several comma-separated action terms (each exact or `prefix.`)", async () => {
+    const ins = (at_: number, action: string) =>
+      env.DB.prepare("INSERT INTO audit_log(at, actor_kind, actor, action, details) VALUES (?, 'staff', '1', ?, '{}')").bind(at_, action).run();
+    await ins(1, "settings.booking");
+    await ins(2, "schedule.settings.update");
+    await ins(3, "schedule.window.create");
+    await ins(4, "customer.update");
+    await ins(5, "customers.import");
+    await ins(6, "reservation.approved");
+    const actions = async (qs: string) => ((await get(techCookie, `/api/staff/audit?${qs}`)).json.entries as any[]).map((r) => r.action);
+
+    expect(await actions(`action=${encodeURIComponent("settings.,schedule.settings.")}`)).toEqual(["schedule.settings.update", "settings.booking"]);
+    expect(await actions(`action=${encodeURIComponent("customer.,customers.")}`)).toEqual(["customers.import", "customer.update"]);
+    expect(await actions(`action=${encodeURIComponent("reservation.approved,schedule.window.create")}`)).toEqual(["reservation.approved", "schedule.window.create"]);
+    // Blank terms are ignored; a list of only blanks is no filter.
+    expect(await actions(`action=${encodeURIComponent("customers.,,")}`)).toEqual(["customers.import"]);
+    expect(await actions(`action=${encodeURIComponent(",")}`)).toHaveLength(6);
+    // At most 10 terms.
+    const many = Array.from({ length: 11 }, (_, i) => `a${i}.`).join(",");
+    expect((await get(techCookie, `/api/staff/audit?action=${encodeURIComponent(many)}`)).status).toBe(400);
+  });
+
   it("pages 100 at a time without gaps", async () => {
     const stmts = Array.from({ length: 230 }, (_, i) =>
       env.DB.prepare("INSERT INTO audit_log(at, actor_kind, actor, action, details) VALUES (?, 'system', NULL, 'system.tick', '{}')").bind(1000 + (i % 7)),

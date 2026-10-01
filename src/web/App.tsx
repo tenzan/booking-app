@@ -26,6 +26,9 @@ const CustomersPage = lazy(() => import("./pages/staff/customers/CustomersPage")
 const CustomerDetail = lazy(() => import("./pages/staff/customers/CustomerDetail"));
 const NewCustomerPage = lazy(() => import("./pages/staff/customers/CustomerEditor"));
 const CustomerImport = lazy(() => import("./pages/staff/customers/ImportWizard"));
+const CalendarPage = lazy(() => import("./pages/staff/Calendar"));
+const ActivityPage = lazy(() => import("./pages/staff/Activity"));
+const EmailsPage = lazy(() => import("./pages/staff/Emails"));
 
 /** Customer-only pages: without a session, go to the start page and come back here after signing in. */
 function RequireCustomer({ children }: { children: ReactNode }) {
@@ -55,6 +58,9 @@ export default function App() {
           <Route element={<RequireStaff />}>
             <Route index element={<Dashboard />} />
             <Route path="r/:id" element={<ReservationDetail />} />
+            <Route path="calendar" element={<Suspense fallback={<Skeleton className="h-96" />}><CalendarPage /></Suspense>} />
+            <Route path="activity" element={<Suspense fallback={<Skeleton className="h-96" />}><ActivityPage /></Suspense>} />
+            <Route path="emails" element={<Suspense fallback={<Skeleton className="h-96" />}><EmailsPage /></Suspense>} />
             <Route path="schedule" element={<Suspense fallback={<Skeleton className="h-96" />}><SchedulePage /></Suspense>} />
             <Route path="customers" element={<Suspense fallback={<Skeleton className="h-96" />}><CustomersPage /></Suspense>} />
             <Route path="customers/new" element={<Suspense fallback={<Skeleton className="h-96" />}><NewCustomerPage /></Suspense>} />

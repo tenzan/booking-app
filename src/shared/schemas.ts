@@ -306,11 +306,22 @@ export const calendarQuerySchema = z.object({
   status: statusListSchema,
 });
 
+export const AUDIT_ACTION_TERMS_MAX = 10;
+
+/** Comma-separated action terms, each an exact action or a `prefix.`; blank terms are dropped, none left = no filter. */
+const auditActionsSchema = z
+  .preprocess(blankToUndefined, z.string().max(400).optional())
+  .transform((s) => {
+    const terms = (s ?? "").split(",").map((x) => x.trim()).filter((x) => x !== "");
+    return terms.length > 0 ? terms : undefined;
+  })
+  .pipe(z.array(z.string().max(100)).max(AUDIT_ACTION_TERMS_MAX).optional());
+
 export const auditListQuerySchema = z.object({
   reservationId: optionalText(100),
   customerId: optionalInt,
   actor: optionalText(254),
-  action: optionalText(100),
+  action: auditActionsSchema,
   cursor: optionalText(300),
 });
 

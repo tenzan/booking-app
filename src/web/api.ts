@@ -201,6 +201,13 @@ export const queryKeys = {
   staffReservations: ["staff", "reservations"] as const,
   staffReservationList: (query: string) => ["staff", "reservations", "list", query] as const,
   staffReservation: (id: string) => ["staff", "reservations", "detail", id] as const,
+  /** Under staffReservations, so any reservation change refreshes the calendar too. */
+  calendar: (week: string, staffId: string, status: string) => ["staff", "reservations", "calendar", week, staffId, status] as const,
+  audit: (action: string, actor: string) => ["staff", "audit", action, actor] as const,
+  /** Every email-delivery query (lists and the summary); invalidate after a retry. */
+  emails: ["staff", "emails"] as const,
+  emailList: (status: string) => ["staff", "emails", "list", status] as const,
+  emailSummary: ["staff", "emails", "summary"] as const,
   /** Everything schedule-shaped; invalidate after any capacity change. */
   schedule: ["staff", "schedule"] as const,
   scheduleWindows: ["staff", "schedule", "windows"] as const,

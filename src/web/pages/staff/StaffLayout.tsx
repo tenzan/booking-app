@@ -48,14 +48,17 @@ interface NavItem {
 
 /**
  * Staff navigation, in display order: Dashboard · Calendar · Schedule · Customers · Team · Settings · Activity
- * (Team and Settings with `adminOnly`). Only pages that exist are listed; each page adds its entry when it lands.
+ * (Team and Settings with `adminOnly`). Email delivery has no entry of its own: the dashboard's failure banner and the
+ * Activity page link to it.
  */
 const NAV: NavItem[] = [
   { to: "/staff", label: "dashboard", end: true },
+  { to: "/staff/calendar", label: "calendar" },
   { to: "/staff/schedule", label: "schedule" },
   { to: "/staff/customers", label: "customers" },
   { to: "/staff/team", label: "team", adminOnly: true },
   { to: "/staff/settings", label: "settings", adminOnly: true },
+  { to: "/staff/activity", label: "activity" },
 ];
 
 const tabLink = ({ isActive }: { isActive: boolean }) =>
