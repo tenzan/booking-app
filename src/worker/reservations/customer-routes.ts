@@ -9,6 +9,7 @@ import { requireCustomer } from "../middleware/session";
 import { accountIdsForContact, eligibleAccountsForEmail, lastPhonesForEmail } from "../repos/customers";
 import { assertBookingEnabled } from "../repos/settings";
 import { customerAvailability } from "../scheduling/availability";
+import { cancelAsCustomer, customerCancelBody } from "./cancel";
 import { getCustomerReservation, listCustomerReservations } from "./queries";
 import { submitReservation } from "./submit";
 
@@ -67,5 +68,20 @@ customerRoutes.get("/reservations/:id", async (c) => {
   const accountIds = await accountIdsForContact(c.env.DB, c.var.customerEmail!);
   const reservation = await getCustomerReservation(c.env.DB, c.req.param("id"), accountIds);
   if (!reservation) throw new HttpError(404, "not_found");
+  return c.json({ reservation });
+});
+
+/**
+ * Cancel one of the caller's reservations. Ownership is an active contact on the account, nothing else: a deactivated
+ * account or one that lost eligibility can still cancel. Not-owned and non-existent are indistinguishable.
+ */
+customerRoutes.post("/reservations/:id/cancel", async (c) => {
+  const body = await readJson(c, customerCancelBody);
+  const email = c.var.customerEmail!;
+  const id = c.req.param("id");
+  const accountIds = await accountIdsForContact(c.env.DB, email);
+  if (!(await getCustomerReservation(c.env.DB, id, accountIds))) throw new HttpError(404, "not_found");
+  const reservation = await cancelAsCustomer(c.env, email, id, body);
+  kickOutbox(c);
   return c.json({ reservation });
 });

@@ -70,7 +70,7 @@ export const en = {
     cancelled: {
       subject: "Cancelled: remote support on {when} ({ref})",
       byTeam: "Your remote support reservation was cancelled by our team. We're sorry for the inconvenience.",
-      byYou: "Your remote support reservation was cancelled as you requested.",
+      byYou: "You cancelled this appointment.",
       reason: "Reason: {reason}",
       rebook: "Book another time",
     },

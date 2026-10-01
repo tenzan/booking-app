@@ -53,6 +53,23 @@ export async function notifyStaff(db: D1Database): Promise<Array<{ id: number; e
   return results;
 }
 
+/** The active staff among `ids` (people named by an appointment: they hear about it whatever their notify setting). */
+export async function activeStaffByIds(db: D1Database, ids: number[]): Promise<Array<{ id: number; email: string; name: string }>> {
+  const wanted = [...new Set(ids)];
+  if (wanted.length === 0) return [];
+  const { results } = await db
+    .prepare(`SELECT id, email, name FROM staff WHERE active = 1 AND id IN (${wanted.map(() => "?").join(",")}) ORDER BY id`)
+    .bind(...wanted)
+    .all<{ id: number; email: string; name: string }>();
+  return results;
+}
+
+/** Notice recipients: everyone who follows requests plus the technicians involved, once each, minus `exceptId` (the actor, who already knows). */
+export function noticeRecipients<T extends { id: number }>(notify: T[], involved: T[], exceptId?: number): T[] {
+  const seen = new Set<number>();
+  return [...notify, ...involved].filter((s) => s.id !== exceptId && !seen.has(s.id) && seen.add(s.id));
+}
+
 /** Exists while some active admin other than `?` does: the in-batch form of the last-admin rule (use with assertSql). */
 export const OTHER_ACTIVE_ADMIN_SQL = "SELECT 1 FROM staff WHERE role = 'admin' AND active = 1 AND id <> ?";
 

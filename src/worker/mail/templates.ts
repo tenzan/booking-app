@@ -49,6 +49,28 @@ const VALID_STATUS: Record<string, string[]> = {
   reassigned: ["confirmed"],
 };
 
+/** Is a job's message still true of the reservation as it is now? `to` is the technician a reassignment notice names. */
+function stillTrue(template: string, status: string, assignedStaffId: number | null, payload: Record<string, unknown>): boolean {
+  const valid = VALID_STATUS[template];
+  if (!valid || !valid.includes(status)) return false;
+  // A reassignment notice is only true while the appointment is still with the technician it names.
+  return template !== "reassigned" || assignedStaffId === payload.to;
+}
+
+/**
+ * Re-checks, right before sending, that the reservation still permits the job (it may have been cancelled between
+ * the render and now). Jobs that are not about a reservation (logins) always pass. Narrows the race; it cannot close
+ * it, since a state change can still land between this read and the send.
+ */
+export async function jobStillValid(env: Env, job: EmailJobRow): Promise<boolean> {
+  if (!VALID_STATUS[job.template]) return true;
+  if (!job.reservation_id) return false;
+  const r = await env.DB.prepare("SELECT status, assigned_staff_id FROM reservations WHERE id = ?")
+    .bind(job.reservation_id)
+    .first<{ status: string; assigned_staff_id: number | null }>();
+  return r !== null && stillTrue(job.template, r.status, r.assigned_staff_id, parsePayload(job));
+}
+
 function loadReservation(env: Env, id: string): Promise<ReservationData | null> {
   return env.DB.prepare(
     `SELECT r.id, r.ref, r.contact_email, r.contact_name, r.phone, r.issue, r.start_at, r.end_at, r.status, r.close_reason,
@@ -125,13 +147,10 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
   if (job.template === "customer_login") return renderLogin(env, job, s, "customer");
   if (job.template === "staff_login") return renderLogin(env, job, s, "staff");
 
-  const valid = VALID_STATUS[job.template];
-  if (!valid) throw new Error(`unknown email template: ${job.template}`);
+  if (!VALID_STATUS[job.template]) throw new Error(`unknown email template: ${job.template}`);
   const r = job.reservation_id ? await loadReservation(env, job.reservation_id) : null;
-  if (!r || !valid.includes(r.status)) return "skip";
   const payload = parsePayload(job);
-  // A reassignment notice is only true while the appointment is still with the technician it names.
-  if (job.template === "reassigned" && r.assigned_staff_id !== payload.to) return "skip";
+  if (!r || !stillTrue(job.template, r.status, r.assigned_staff_id, payload)) return "skip";
 
   const locale = env.APP_LOCALE || "en-US";
   const when = `${fmtDateTime(r.start_at, env.APP_TIMEZONE, locale)} ${tzLabel(env.APP_TIMEZONE, r.start_at, locale)}`;
@@ -148,9 +167,13 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
   switch (job.template) {
     case "request_received":
     case "confirmed": {
-      const viewUrl = `${env.APP_BASE_URL}/r#t=${await mintAccessToken(env, r)}`;
-      // No cancel link yet: customers cannot cancel online until cancellation is built.
-      const actions = [{ label: t("common.viewReservation"), url: viewUrl, primary: true }];
+      const accessToken = await mintAccessToken(env, r);
+      const viewUrl = `${env.APP_BASE_URL}/r#t=${accessToken}`;
+      // Valid only while pending or confirmed (see VALID_STATUS), exactly when the customer can still cancel.
+      const actions = [
+        { label: t("common.viewReservation"), url: viewUrl, primary: true },
+        { label: t("common.cancelReservation"), url: `${viewUrl}&action=cancel` },
+      ];
       if (job.template === "request_received") {
         return {
           subject: t("email.requestReceived.subject", { ref: r.ref }),
@@ -245,7 +268,10 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
             banner: { text: t("status.confirmed"), tone: "green" },
             paragraphs: [t("email.reassignedCustomer.intro"), t("email.confirmed.call", { phone: r.phone, tool: s.remoteToolName })],
             facts: common,
-            actions: [{ label: t("common.viewReservation"), url: viewUrl, primary: true }],
+            actions: [
+              { label: t("common.viewReservation"), url: viewUrl, primary: true },
+              { label: t("common.cancelReservation"), url: `${viewUrl}&action=cancel` },
+            ],
             footer: customerFooter,
           }),
         };

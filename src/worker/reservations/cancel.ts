@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { MIN } from "../../domain/time";
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
@@ -5,8 +6,8 @@ import { assertSql, audit, capacityBatch, readScheduleVersion, withRetry } from 
 import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { getSettings } from "../repos/settings";
-import { notifyStaff } from "../repos/staff";
-import { getReservation, type ReservationDTO } from "./queries";
+import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
+import { getReservation, toCustomerView, type CustomerReservationDTO, type ReservationDTO } from "./queries";
 
 export type CancelActor = { kind: "staff"; staff: StaffPrincipal } | { kind: "customer"; email: string };
 
@@ -23,6 +24,9 @@ const OBSOLETE_TEMPLATES = [
 ] as const;
 
 const REASON_MAX = 500;
+
+/** Body of both customer cancel endpoints (the access-token one adds the token). */
+export const customerCancelBody = z.object({ reason: z.string().max(REASON_MAX).optional(), version: z.number().int() });
 
 /**
  * Cancel a pending or confirmed reservation: frees its blocks and any open proposal's option holds, closes the
@@ -75,14 +79,16 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
   } else {
     if (current.startAt <= now) throw new HttpError(409, "too_late");
     if (current.status === "confirmed") {
-      const { cancelCutoffMin } = await getSettings(db, env);
-      if (current.startAt - cancelCutoffMin * MIN <= now) throw new HttpError(409, "past_cutoff");
+      const { cancelCutoffMin, supportPhone } = await getSettings(db, env);
+      if (current.startAt - cancelCutoffMin * MIN <= now) throw new HttpError(409, "past_cutoff", { cutoffMin: cancelCutoffMin, supportPhone });
     }
   }
 
   const closedBy = actor.kind === "staff" ? String(actor.staff.id) : actor.email;
-  // A staff actor already knows; everyone else who follows requests is told.
-  const team = (await notifyStaff(db)).filter((s) => actor.kind !== "staff" || s.id !== actor.staff.id);
+  // Everyone who follows requests is told, and the technician the appointment is with whatever their notify setting.
+  // A staff actor already knows.
+  const involved = current.assignedStaff ? await activeStaffByIds(db, [current.assignedStaff.id]) : [];
+  const team = noticeRecipients(await notifyStaff(db), involved, actor.kind === "staff" ? actor.staff.id : undefined);
   const templates = OBSOLETE_TEMPLATES.map(() => "?").join(",");
 
   await capacityBatch(db, scheduleVersion, [
@@ -120,4 +126,18 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
     }),
   ]);
   return (await getReservation(db, id))!;
+}
+
+/**
+ * Cancel on behalf of the customer who proved ownership (an active contact's session, or an access token: then the
+ * reservation's own contact email). The answer, and the current state of a stale 409, are the customer's view: never
+ * technician or approver data.
+ */
+export async function cancelAsCustomer(env: Env, email: string, id: string, input: { reason?: string; version: number }): Promise<CustomerReservationDTO> {
+  try {
+    return toCustomerView(await cancelReservation(env, { kind: "customer", email }, id, input));
+  } catch (e) {
+    if (e instanceof HttpError && e.code === "stale") throw new HttpError(409, "stale", { current: toCustomerView((e.details as { current: ReservationDTO }).current) });
+    throw e;
+  }
 }

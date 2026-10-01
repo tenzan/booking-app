@@ -129,6 +129,25 @@ describe("reassign (same time)", () => {
     expect(m!.text).toContain((await row(id)).ref);
   });
 
+  it("tells both technicians involved even with notify off, once each, and never the acting one", async () => {
+    await env.DB.prepare("UPDATE staff SET notify = 0 WHERE id IN (?, ?, ?)").bind(team.a, team.b, team.c).run();
+    const id = await confirmedWith(pat, at(FRI, 10), team.a);
+    expect((await reassign(adminCookie, id, team.b)).status).toBe(200);
+    const to = (email: string) => count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'reassigned' AND to_email = ?", email);
+    expect([await to("tech-a@example.test"), await to("tech-b@example.test")]).toEqual([1, 1]);
+    expect(await to("tech-c@example.test")).toBe(0);
+    expect(await to("admin@example.test")).toBe(0);
+    expect(await jobStatus(`reassigned:${id}:v3:${team.a}`)).toBe("sent");
+    expect(await jobStatus(`reassigned:${id}:v3:${team.b}`)).toBe("sent");
+
+    // The technician who hands their own appointment on is the actor: only the new technician is told.
+    const res = await reassign(await loginStaff("tech-b@example.test"), id, team.admin, 3);
+    expect(res.status).toBe(200);
+    expect(await jobStatus(`reassigned:${id}:v4:${team.admin}`)).toBe("sent");
+    expect(await jobStatus(`reassigned:${id}:v4:${team.b}`)).toBeNull();
+    expect(await jobStatus(`reassigned:${id}:v4:${team.a}`)).toBeNull();
+  });
+
   it("lets a technician reassign, and moves a pending request off the new technician", async () => {
     const pId = await confirmedWith(pat, at(FRI, 10), team.a);
     const sId = await submit(sam, at(FRI, 10));
@@ -309,6 +328,22 @@ describe("staff cancellation", () => {
     expect(await jobStatus(`cancelled-team:${id}:${team.admin}`)).toBeNull();
   });
 
+  it("tells the assigned technician even with notify off (once), unless they are the one cancelling", async () => {
+    await env.DB.prepare("UPDATE staff SET notify = 0 WHERE id IN (?, ?)").bind(team.a, team.b).run();
+    const id = await confirmedWith(pat, at(FRI, 10), team.a);
+    expect((await cancel(adminCookie, id, "Technician ill", 2)).status).toBe(200);
+    expect(await jobStatus(`cancelled-team:${id}:${team.a}`)).toBe("sent");
+    expect(await jobStatus(`cancelled-team:${id}:${team.b}`)).toBeNull();
+    expect(await teamCancelJobs(id)).toBe(3); // c, d (notify; the admin cancelled) + tech a (involved)
+  });
+
+  it("does not mail the technician who cancels their own appointment", async () => {
+    await env.DB.prepare("UPDATE staff SET notify = 0 WHERE id = ?").bind(team.a).run();
+    const id = await confirmedWith(pat, at(FRI, 10), team.a);
+    expect((await cancel(techCookie, id, "No answer", 2)).status).toBe(200);
+    expect(await jobStatus(`cancelled-team:${id}:${team.a}`)).toBeNull();
+  });
+
   it("customer and team mails carry the facts with time zone labels", async () => {
     const id = await confirmedWith(pat, at(FRI, 10), team.a);
     const ref = (await row(id)).ref as string;
@@ -446,7 +481,7 @@ describe("customer cancellation (core, used by the Plan 3 routes)", () => {
 
     await processOutbox(env, 50);
     const [c] = await mailsTo("pat@example.test", "Cancelled%");
-    expect(c!.text).toContain("cancelled as you requested");
+    expect(c!.text).toContain("You cancelled this appointment.");
     expect(c!.text).not.toContain("our team");
     const [tm] = await mailsTo("admin@example.test", "%cancelled%");
     expect(tm!.text).toContain("The customer (pat@example.test) cancelled this reservation.");

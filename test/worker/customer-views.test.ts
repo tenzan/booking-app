@@ -76,6 +76,7 @@ describe("GET /api/customer/reservations", () => {
       issue: "Printer is offline",
       createdAt: at(THU, 8),
       closeReason: null,
+      version: 1,
     });
   });
 
@@ -159,7 +160,7 @@ describe("GET /api/customer/reservations/:id", () => {
     expect(text).not.toContain("Test Person");
     expect(text).not.toContain("example.test");
     expect(Object.keys(res.json.reservation).sort()).toEqual(
-      ["accountName", "closeReason", "contactName", "createdAt", "customerNumber", "endAt", "id", "issue", "phone", "ref", "startAt", "status"],
+      ["accountName", "closeReason", "contactName", "createdAt", "customerNumber", "endAt", "id", "issue", "phone", "ref", "startAt", "status", "version"],
     );
   });
 });

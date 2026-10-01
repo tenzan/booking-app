@@ -116,6 +116,22 @@ describe("staged resolutions", () => {
     expect(JSON.parse(sched!.details)).toMatchObject({ id: fri, moved: [], resolved: [{ id: r.id, ref: r.ref, from: team.a, to: team.c }] });
   });
 
+  it("tells both technicians involved even with notify off, and the apply route delivers the mail itself", async () => {
+    await env.DB.prepare("UPDATE staff SET notify = 0 WHERE id IN (?, ?)").bind(team.a, team.c).run();
+    const r = await confirmed(pat, team.a);
+    const change = { type: "window.update", id: fri, window: weekly([team.c]) };
+    const { version } = await previewChange(env, change as ScheduleChange, [{ reservationId: r.id, staffId: team.c }]);
+    const res = await apply(change, version, [{ reservationId: r.id, staffId: team.c }]);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    const to = (email: string) => count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'reassigned' AND to_email = ?", email);
+    // from (a) and to (c) despite notify off; b and d follow requests; the acting admin is not told.
+    expect([await to("tech-a@example.test"), await to("tech-c@example.test"), await to("tech-b@example.test"), await to("tech-d@example.test")]).toEqual([1, 1, 1, 1]);
+    expect(await to("admin@example.test")).toBe(0);
+    // Sent by the route's own outbox kick, not by a later sweep.
+    expect(await count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'reassigned' AND status = 'sent'")).toBe(4);
+    expect(await count("SELECT COUNT(*) AS n FROM dev_mailbox WHERE to_email = 'tech-c@example.test' AND subject LIKE '%reassigned%'")).toBe(1);
+  });
+
   it("the customer is told too when the setting asks for it", async () => {
     await env.DB.prepare("INSERT INTO settings(key, value) VALUES ('notifyCustomerOnReassign', 'true')").run();
     const r = await confirmed(pat, team.a);
@@ -258,6 +274,9 @@ describe("staged resolutions", () => {
     });
     expect(res.status, JSON.stringify(res.json)).toBe(200);
     expect((await row(r.id)).assigned_staff_id).toBe(team.b);
+    // The apply route delivers the reassignment notices itself.
+    expect(await count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'reassigned' AND status = 'queued'")).toBe(0);
+    expect(await count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'reassigned' AND status = 'sent'")).toBeGreaterThan(0);
 
     const settings = await api("POST", "/api/staff/settings/preview", { cookie: adminCookie, body: { patch: { durationMin: 45 }, resolutions: [{ reservationId: r.id, staffId: team.b }] } });
     expect(settings.json.impact.invalidResolutions).toEqual([{ reservationId: r.id, staffId: team.b, reason: "same_tech" }]);

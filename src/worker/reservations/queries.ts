@@ -128,7 +128,7 @@ export async function listReservations(
   return { reservations: page, nextCursor: results.length > limit && last ? encodeCursor([last.startAt, last.createdAt, last.id]) : null };
 }
 
-const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
+const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
     r.contact_name, r.phone, r.issue, r.created_at, r.close_reason
   FROM reservations r JOIN customers c ON c.id = r.customer_id`;
 
@@ -136,6 +136,7 @@ interface CustomerRow {
   id: string;
   ref: string;
   status: ReservationStatus;
+  version: number;
   start_at: number;
   end_at: number;
   account_name: string;
@@ -151,6 +152,7 @@ const toCustomerDTO = (r: CustomerRow): CustomerReservationDTO => ({
   id: r.id,
   ref: r.ref,
   status: r.status,
+  version: r.version,
   startAt: r.start_at,
   endAt: r.end_at,
   accountName: r.account_name,
@@ -160,6 +162,23 @@ const toCustomerDTO = (r: CustomerRow): CustomerReservationDTO => ({
   issue: r.issue,
   createdAt: r.created_at,
   closeReason: r.close_reason,
+});
+
+/** The customer's view of a staff DTO: no technician, approver or contact-email fields ever cross over. */
+export const toCustomerView = (r: ReservationDTO): CustomerReservationDTO => ({
+  id: r.id,
+  ref: r.ref,
+  status: r.status,
+  version: r.version,
+  startAt: r.startAt,
+  endAt: r.endAt,
+  accountName: r.customer.name,
+  customerNumber: r.customer.number,
+  contactName: r.contactName,
+  phone: r.phone,
+  issue: r.issue,
+  createdAt: r.createdAt,
+  closeReason: r.closeReason,
 });
 
 const placeholders = (n: number) => Array.from({ length: n }, () => "?").join(",");
@@ -191,6 +210,15 @@ export async function getCustomerReservationByAccessToken(db: D1Database, tokenH
     .bind(tokenHash, now)
     .first<CustomerRow>();
   return row ? toCustomerDTO(row) : null;
+}
+
+/** The reservation (id and contact email) an unexpired access token points at; the contact is who acts through the link. */
+export async function getAccessTokenTarget(db: D1Database, tokenHash: string, now: number): Promise<{ id: string; contactEmail: string } | null> {
+  const row = await db
+    .prepare("SELECT r.id, r.contact_email FROM reservations r JOIN access_tokens t ON t.reservation_id = r.id WHERE t.token_hash = ? AND t.expires_at > ?")
+    .bind(tokenHash, now)
+    .first<{ id: string; contact_email: string }>();
+  return row ? { id: row.id, contactEmail: row.contact_email } : null;
 }
 
 /** Audit trail of one reservation, oldest first; staff actors are shown by name. */

@@ -32,6 +32,8 @@ export interface CustomerReservationDTO {
   id: string;
   ref: string;
   status: ReservationStatus;
+  /** Optimistic-concurrency token for customer actions (cancel). */
+  version: number;
   startAt: number;
   endAt: number;
   accountName: string;

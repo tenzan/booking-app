@@ -5,7 +5,7 @@ import { clock } from "../lib/clock";
 import { assertSql, audit, capacityBatch, withRetry } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
-import { notifyStaff } from "../repos/staff";
+import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
 import { blockInsert, movedPending, movePendingStatements } from "./holds";
 import { getReservation, techOptions, type ReservationDTO } from "./queries";
@@ -41,6 +41,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   const newVersion = version + 1;
   const moved = movedPending(ctx, assignment, id);
   const staff = await notifyStaff(db);
+  const involved = await activeStaffByIds(db, [from, staffId]);
 
   await capacityBatch(db, ctx.version, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'confirmed' AND version = ? AND assigned_staff_id = ?", id, version, from),
@@ -54,7 +55,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
       )
       .bind(staffId, now, id, version),
     blockInsert(db, staffId, rangeBlocks(target.start, target.end), id),
-    ...reassignedEmails(db, { id, newVersion, from, to: staffId, actorId: actor.id, staff, contactEmail: current.contactEmail, notifyCustomer: ctx.settings.notifyCustomerOnReassign }),
+    ...reassignedEmails(db, { id, newVersion, from, to: staffId, actorId: actor.id, staff, involved, contactEmail: current.contactEmail, notifyCustomer: ctx.settings.notifyCustomerOnReassign }),
     audit(db, {
       actorKind: "staff",
       actor: String(actor.id),
@@ -68,8 +69,9 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
 }
 
 /**
- * The `reassigned` notices for a confirmed appointment now at `newVersion`: every notified team member except the
- * actor, plus the customer when the setting asks for it. Shared by the direct reassign and schedule resolutions.
+ * The `reassigned` notices for a confirmed appointment now at `newVersion`: every notified team member and the two
+ * technicians involved (whatever their notify setting), once each and except the actor, plus the customer when the
+ * setting asks for it. Shared by the direct reassign and schedule resolutions.
  */
 export function reassignedEmails(
   db: D1Database,
@@ -80,14 +82,14 @@ export function reassignedEmails(
     to: number;
     actorId: number;
     staff: Array<{ id: number; email: string }>;
+    /** The technicians this appointment moved from and to (active ones only). */
+    involved: Array<{ id: number; email: string }>;
     contactEmail: string;
     notifyCustomer: boolean;
   },
 ): D1PreparedStatement[] {
   return [
-    ...o.staff
-      .filter((s) => s.id !== o.actorId)
-      .map((s) =>
+    ...noticeRecipients(o.staff, o.involved, o.actorId).map((s) =>
         enqueueEmail(db, {
           template: "reassigned",
           to: s.email,

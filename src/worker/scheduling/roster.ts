@@ -12,7 +12,7 @@ import { assertSql, audit, capacityBatch, readScheduleVersion, withRetry } from 
 import { HttpError } from "../lib/http";
 import { getHolidays, getSettings } from "../repos/settings";
 import { loadOverrideDates, loadWindows } from "../repos/schedule";
-import { notifyStaff } from "../repos/staff";
+import { activeStaffByIds, notifyStaff } from "../repos/staff";
 import { blockInsert, movePendingStatements, type PendingMove } from "../reservations/holds";
 import { reassignedEmails } from "../reservations/reassign";
 import { resolveChange } from "./changes";
@@ -342,7 +342,10 @@ export async function applyChange(
     const now = clock.now();
     const holds = new Map(state.holds.map((h) => [h.id, h]));
     const moves: PendingMove[] = impact.moved.map((m) => ({ id: m.id, from: m.from, to: m.to, occStart: holds.get(m.id)!.occStart, occEnd: holds.get(m.id)!.occEnd }));
-    const team = accepted.some((a) => a.hold.status === "confirmed") ? await notifyStaff(db) : [];
+    const confirmedMoves = accepted.filter((a) => a.hold.status === "confirmed");
+    const team = confirmedMoves.length > 0 ? await notifyStaff(db) : [];
+    // The technicians each moved appointment leaves and joins hear about it whatever their notify setting.
+    const involvedStaff = new Map((await activeStaffByIds(db, confirmedMoves.flatMap((a) => [a.hold.staffId, a.to].filter((id): id is number => id !== null)))).map((s) => [s.id, s]));
     const res = accepted.map((a) => ({ ...a, meta: state.reservations.get(a.hold.id)!, from: a.hold.staffId }));
     await capacityBatch(db, state.version, [
       ...resolved.statements(db, now),
@@ -363,6 +366,7 @@ export async function applyChange(
                 to: r.to,
                 actorId: actor.id,
                 staff: team,
+                involved: [r.from, r.to].flatMap((id) => (id !== null && involvedStaff.has(id) ? [involvedStaff.get(id)!] : [])),
                 contactEmail: r.meta.contactEmail,
                 notifyCustomer: state.settings.notifyCustomerOnReassign,
               }),
