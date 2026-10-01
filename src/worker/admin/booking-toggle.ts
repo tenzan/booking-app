@@ -7,7 +7,7 @@ import { requireStaff } from "../middleware/session";
 
 const body = z.object({ enabled: z.boolean() });
 
-/** Admin switch for online booking (the setting `bookingEnabled`); the full settings API comes later. */
+/** Dedicated admin switch for online booking (the setting `bookingEnabled`, also editable through the settings API). */
 export const bookingToggleRoutes = new Hono<AppEnv>();
 
 bookingToggleRoutes.post("/settings/booking", requireStaff("admin"), async (c) => {

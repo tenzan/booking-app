@@ -4,7 +4,7 @@
 import type { SlotInput, WindowDef } from "../../domain/slots";
 import { DEFAULT_SETTINGS, type Settings } from "../../domain/settings";
 import type { ScheduleChange, WindowInput } from "../../shared/types";
-import { windowInputSchema } from "../../shared/schemas";
+import { MAX_HOLIDAY_IMPORT_ROWS, windowInputSchema } from "../../shared/schemas";
 import { assertSql } from "../lib/db";
 import { HttpError } from "../lib/http";
 import type { RosterState } from "./roster";
@@ -208,6 +208,18 @@ export async function resolveChange(db: D1Database, state: RosterState, change: 
           db.prepare("INSERT INTO holidays(date, name) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET name = excluded.name").bind(change.date, change.name),
         ],
         details: { date: change.date, name: change.name },
+      };
+    }
+    case "holiday.bulk": {
+      if (change.set.length === 0 || change.set.length > MAX_HOLIDAY_IMPORT_ROWS) throw new HttpError(400, "invalid", [{ path: ["set"], message: "1 to 400 holidays" }]);
+      for (const h of change.set) next.holidays.add(h.date);
+      return {
+        slotInput: next,
+        statements: (db) =>
+          change.set.map((h) =>
+            db.prepare("INSERT INTO holidays(date, name) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET name = excluded.name").bind(h.date, h.name),
+          ),
+        details: { set: change.set },
       };
     }
     case "holiday.delete": {

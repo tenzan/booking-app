@@ -93,6 +93,8 @@ export type ScheduleChange =
   | { type: "unavailability.delete"; id: number }
   | { type: "holiday.set"; date: string; name: string }
   | { type: "holiday.delete"; date: string }
+  /** Sets many holidays at once (CSV import); the combined impact is evaluated and applied as one change. */
+  | { type: "holiday.bulk"; set: Array<{ date: string; name: string }> }
   | { type: "staff.update"; id: number; active?: boolean; bookable?: boolean }
   | { type: "settings.update"; patch: SettingsPatch };
 

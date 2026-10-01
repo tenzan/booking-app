@@ -535,9 +535,9 @@ describe("versioning and concurrency", () => {
 });
 
 describe("change types outside this API", () => {
-  it("staff.update and holiday.set are not accepted by the schedule routes (400), for technicians and admins", async () => {
+  it("staff.update and holiday.bulk are not accepted by the schedule routes (400), for technicians and admins", async () => {
     for (const cookie of [techCookie, adminCookie]) {
-      for (const change of [{ type: "staff.update", id: team.a, active: false }, { type: "holiday.set", date: FRI, name: "Day off" }]) {
+      for (const change of [{ type: "staff.update", id: team.a, active: false }, { type: "holiday.bulk", set: [{ date: FRI, name: "Day off" }] }]) {
         expect([(await preview(cookie, change)).status, (await apply(cookie, change, 0)).status], JSON.stringify(change)).toEqual([400, 400]);
       }
     }

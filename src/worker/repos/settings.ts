@@ -1,5 +1,6 @@
 import type { Env } from "../env";
 import { HttpError } from "../lib/http";
+import { settingsShape } from "../../shared/schemas";
 import { DEFAULT_SETTINGS, type Settings } from "../../domain/settings";
 import type { BhCtx } from "../../domain/business-hours";
 
@@ -19,12 +20,13 @@ export async function getSettings(db: D1Database, env: Env): Promise<Settings> {
       console.warn(`settings: ignoring unparseable value for key "${key}"`);
       continue;
     }
-    // A boolean switch with a stored non-boolean keeps its default (a bad row must not flip it).
-    if (typeof DEFAULT_SETTINGS[key as keyof Settings] === "boolean" && typeof parsed !== "boolean") {
-      console.warn(`settings: ignoring non-boolean value for key "${key}"`);
+    // Each stored value must pass its setting's own validator; a bad row keeps the default and never leaks its value.
+    const valid = settingsShape[key as keyof Settings].safeParse(parsed);
+    if (!valid.success) {
+      console.warn(`settings: ignoring invalid stored value for key "${key}"`);
       continue;
     }
-    target[key] = parsed;
+    target[key] = valid.data;
   }
   return s;
 }

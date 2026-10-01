@@ -165,8 +165,8 @@ describe("POST /api/customer/reservations", () => {
     it("rejects a start that is not a slot and one beyond the booking horizon", async () => {
       const off = await submit(pat, at(FRI, 10, 15));
       expect([off.status, off.json.error]).toEqual([409, "slot_unavailable"]);
-      await env.DB.prepare("INSERT INTO settings(key, value) VALUES ('bookingHorizonDays', '0')").run();
-      const far = await submit(pat, at(FRI, 10));
+      await env.DB.prepare("INSERT INTO settings(key, value) VALUES ('bookingHorizonDays', '1')").run();
+      const far = await submit(pat, at("2026-10-09", 10));
       expect([far.status, far.json.error]).toEqual([409, "slot_unavailable"]);
     });
 
