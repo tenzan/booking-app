@@ -7,6 +7,7 @@ import { kickOutbox } from "../mail/outbox";
 import { rateLimit } from "../lib/rate-limit";
 import { requireCustomer } from "../middleware/session";
 import { accountIdsForContact, eligibleAccountsForEmail, lastPhonesForEmail } from "../repos/customers";
+import { assertBookingEnabled } from "../repos/settings";
 import { customerAvailability } from "../scheduling/availability";
 import { getCustomerReservation, listCustomerReservations } from "./queries";
 import { submitReservation } from "./submit";
@@ -33,6 +34,7 @@ customerRoutes.get("/accounts", async (c) => {
 });
 
 customerRoutes.get("/availability", async (c) => {
+  await assertBookingEnabled(c.env.DB, c.env);
   const { from, to } = availabilityQuery.parse({ from: c.req.query("from"), to: c.req.query("to") });
   return c.json(await customerAvailability(c.env, from, to));
 });
@@ -47,6 +49,7 @@ const submitBody = z.object({
 });
 
 customerRoutes.post("/reservations", async (c) => {
+  await assertBookingEnabled(c.env.DB, c.env);
   if (!(await rateLimit(c.env.DB, `submit:${c.var.sessionHash}`, SUBMIT_LIMIT, HOUR_MS))) throw new HttpError(429, "rate_limited");
   const input = await readJson(c, submitBody);
   const { created, ...reservation } = await submitReservation(c.env, c.var.customerEmail!, input);

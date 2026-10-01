@@ -10,10 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run config && vitest run",
     "test:watch": "npm run config && vitest",
-    "test:scripts": "node --test scripts/render-wrangler.test.mjs",
+    "test:scripts": "node --test scripts/render-wrangler.test.mjs scripts/sync-secrets.test.mjs",
     "e2e": "playwright test",
     "seed": "npm run config && node scripts/seed-dev.mjs",
-    "deploy": "node scripts/render-wrangler.mjs --strict && vite build && wrangler d1 migrations apply DB --remote && wrangler deploy"
+    "deploy": "node scripts/render-wrangler.mjs --strict && vite build && wrangler d1 migrations apply DB --remote && wrangler deploy && node scripts/sync-secrets.mjs"
   },
   "dependencies": {
     "@date-fns/tz": "^1.5.0",

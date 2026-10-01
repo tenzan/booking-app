@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 import { Link, type LinkProps } from "react-router";
 import { Spinner } from "./Spinner";
 
@@ -29,6 +29,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Disables the button and shows a spinner; `children` should then say what is happening. */
   loading?: boolean;
   children: ReactNode;
+  ref?: Ref<HTMLButtonElement>;
 }
 
 export function Button({ variant, size, block, loading = false, disabled, className = "", children, type = "button", ...rest }: ButtonProps) {

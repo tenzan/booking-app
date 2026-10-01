@@ -50,6 +50,9 @@ export interface Me {
   turnstileSiteKey: string | null;
   orgName: string;
   timezone: string;
+  /** Admin switch: false while online booking is paused. */
+  bookingEnabled: boolean;
+  supportPhone: string;
 }
 
 export interface Account {

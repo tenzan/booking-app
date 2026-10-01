@@ -11,6 +11,7 @@ Implemented now (core flow):
 - Customer magic-link sign-in for registered contacts, slot availability with technician-aware capacity (business hours, holidays, buffers, minimum notice) and atomic, idempotent booking requests that hold a technician.
 - Staff magic-link sign-in, request dashboard and detail, approval with technician assignment (moving other pending requests when needed) and decline with a reason.
 - Customer "My reservations" and per-reservation access links from emails.
+- An administrator switch on the staff dashboard pauses and resumes online booking (to stop spam); existing reservations, their links and all staff features keep working.
 - Email outbox with retries for every notification, a local development mailbox, audit log entries, rate limits and optional Turnstile.
 
 Planned:
