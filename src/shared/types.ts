@@ -1,3 +1,6 @@
+import type { ConflictReason } from "../domain/roster";
+import type { Settings } from "../domain/settings";
+
 export type ReservationStatus = "pending" | "confirmed" | "declined" | "expired" | "cancelled" | "completed";
 
 export interface ReservationDTO {
@@ -58,4 +61,70 @@ export interface AuditRow {
   actor: string | null;
   action: string;
   details: unknown;
+}
+
+/** An availability window as the schedule editor sends it (minutes since local midnight, 5-minute grid). */
+export interface WindowInput {
+  kind: "weekly" | "date";
+  weekday: number | null;
+  date: string | null;
+  startMin: number;
+  endMin: number;
+  staffIds: number[];
+}
+
+/** A stored availability window. */
+export interface WindowDTO extends WindowInput {
+  id: number;
+}
+
+/** Settings fields a schedule change may patch. */
+export type SettingsPatch = Partial<Settings>;
+
+/** Every capacity-affecting edit; each is previewed (roster impact) before it is applied. */
+export type ScheduleChange =
+  | { type: "window.create"; window: WindowInput }
+  | { type: "window.update"; id: number; window: WindowInput }
+  | { type: "window.delete"; id: number }
+  /** Replaces the date's windows; `windows: []` closes the date. */
+  | { type: "override.set"; date: string; windows: WindowInput[]; note?: string }
+  | { type: "override.clear"; date: string }
+  | { type: "unavailability.create"; staffId: number; startAt: number; endAt: number; reason?: string }
+  | { type: "unavailability.delete"; id: number }
+  | { type: "holiday.set"; date: string; name: string }
+  | { type: "holiday.delete"; date: string }
+  | { type: "staff.update"; id: number; active?: boolean; bookable?: boolean }
+  | { type: "settings.update"; patch: SettingsPatch };
+
+export type { ConflictReason };
+
+/** What a schedule change would do to existing holds. Staff are shown by name. */
+export interface ImpactDTO {
+  /** Pending requests that move to another technician (applied together with the change). */
+  moved: Array<{ id: string; ref: string; startAt: number; from: string | null; to: string }>;
+  /** Holds that would lose their place; the change cannot be applied while any remain. */
+  conflicts: Array<{
+    /** Reservation id, or proposal option id for kind "option". */
+    id: string;
+    kind: "reservation" | "option";
+    status: "pending" | "confirmed" | "option";
+    /** The reservation the hold belongs to (same as `id` for reservations). */
+    reservationId: string;
+    ref: string;
+    startAt: number;
+    staffName: string | null;
+    reason: ConflictReason;
+    /** Technicians who could take this hold at the same time, and the pending requests that would then lose their place. */
+    alternatives: Array<{ id: number; name: string; displaces: Array<{ id: string; ref: string }> }>;
+    customerName: string;
+  }>;
+}
+
+export interface UnavailabilityDTO {
+  id: number;
+  staffId: number;
+  staffName: string;
+  startAt: number;
+  endAt: number;
+  reason: string | null;
 }

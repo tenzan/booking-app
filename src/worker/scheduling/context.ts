@@ -87,6 +87,9 @@ export async function loadScheduleCtx(env: Env, fromMs: number, toMs: number): P
       holdOwners.set(r.id, { kind: "reservation", id: r.id, status: r.status, staffId: r.assignedStaffId, ref: r.ref });
     } else {
       // Eligibility comes from the hold's own data (its window and stored range), not from today's duration/buffers.
+      // When nobody is free any more, the request keeps its provisional technician here so that it goes on holding
+      // capacity while it waits (other requests are matched around it). This fallback is for matching only:
+      // approve and techOptions use `freeStaffAt` exactly, so a technician on leave is never offered nor accepted.
       const free = freeStaffAt(slotInput, r.startAt, start, end);
       const eligible = free.length > 0 ? free : r.provisionalStaffId !== null ? [r.provisionalStaffId] : [];
       holds.push({ id: r.id, start, end, fixed: null, eligible, preferred: r.provisionalStaffId });

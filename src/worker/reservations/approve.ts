@@ -1,5 +1,5 @@
 import { component, solve } from "../../domain/matching";
-import { rangeBlocks } from "../../domain/slots";
+import { freeStaffAt, rangeBlocks } from "../../domain/slots";
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
 import { assertSql, audit, capacityBatch, withRetry } from "../lib/db";
@@ -34,8 +34,11 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   // Pending a moment ago but no longer holding capacity: it changed under us.
   if (!target) throw new HttpError(409, "stale", { current: (await getReservation(db, id)) ?? current });
 
+  // Only a technician free on the request's own window and stored range may take it: never the provisional fallback
+  // the context keeps for holding capacity (that technician may be on leave).
+  const free = freeStaffAt(ctx.slotInput, current.startAt, target.start, target.end);
   const fixedHolds = ctx.holds.map((h) => (h.id === id ? { ...h, fixed: staffId } : h));
-  const assignment = target.eligible.includes(staffId) ? solve(component(fixedHolds, target.start, target.end)) : null;
+  const assignment = free.includes(staffId) ? solve(component(fixedHolds, target.start, target.end)) : null;
   if (!assignment) throw new HttpError(409, "tech_unavailable", { options: await techOptions(env, current) });
 
   const now = clock.now();

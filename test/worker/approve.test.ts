@@ -381,6 +381,25 @@ describe("when a pending request holds a technician another request needs", () =
   });
 });
 
+describe("when the only technician of a pending request goes on leave", () => {
+  it("is never offered nor accepted, even though the request still holds them provisionally", async () => {
+    await seedWeekly(5, 600, 660, [team.a]);
+    const id = await submit(pat, at(FRI, 10));
+    expect((await row(id)).provisional_staff_id).toBe(team.a);
+    // The leave touches only the stored buffer (10:30–10:40) of the 10:00–10:30 appointment.
+    await env.DB.prepare("INSERT INTO staff_unavailability(staff_id, start_at, end_at) VALUES (?, ?, ?)").bind(team.a, at(FRI, 10, 35), at(FRI, 12)).run();
+
+    const d = await detail(adminCookie, id);
+    expect(d.json.techOptions.find((o: any) => o.id === team.a)).toMatchObject({ assignable: false, reason: "unavailable" });
+    expect(d.json.techOptions.every((o: any) => !o.assignable)).toBe(true);
+
+    const res = await approve(adminCookie, id, team.a);
+    expect([res.status, res.json.error]).toEqual([409, "tech_unavailable"]);
+    expect(res.json.details.options.find((o: any) => o.id === team.a)).toMatchObject({ assignable: false, reason: "unavailable" });
+    expect(await row(id)).toMatchObject({ status: "pending", version: 1, provisional_staff_id: team.a });
+  });
+});
+
 describe("access", () => {
   it("rejects customers and anonymous callers on every staff reservation route", async () => {
     await seedWeekly(5, 600, 660, [team.a]);

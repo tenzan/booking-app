@@ -196,10 +196,13 @@ export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOpti
   const own = ctx.holds.find((h) => h.id === r.id);
   if (!own) return [];
   const { start: occStart, end: occEnd } = own;
-  const assignable = new Set(assignableFor(ctx.holds, r.id));
   // Scheduled on the window covering the request, regardless of time off and of today's duration.
   const scheduled = new Set(windowStaffAt(ctx.slotInput, r.startAt));
-  const free = new Set(freeStaffAt(ctx.slotInput, r.startAt, occStart, occEnd));
+  const freeList = freeStaffAt(ctx.slotInput, r.startAt, occStart, occEnd);
+  const free = new Set(freeList);
+  // Exactly the free technicians: the context's provisional fallback (which only keeps capacity held) is no option.
+  const holds = ctx.holds.map((h) => (h.id === r.id ? { ...h, eligible: freeList } : h));
+  const assignable = new Set(assignableFor(holds, r.id));
 
   const options = staff.map((s): TechOption => {
     if (assignable.has(s.id)) return { id: s.id, name: s.name, assignable: true, reason: null };
@@ -207,7 +210,7 @@ export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOpti
     if (!free.has(s.id)) {
       return { id: s.id, name: s.name, assignable: false, reason: "unavailable" };
     }
-    const fixed = ctx.holds.find((h) => h.id !== r.id && h.fixed === s.id && h.start < occEnd && occStart < h.end);
+    const fixed = holds.find((h) => h.id !== r.id && h.fixed === s.id && h.start < occEnd && occStart < h.end);
     if (fixed) {
       const conflictRef = ctx.holdOwners.get(fixed.id)?.ref ?? undefined;
       return { id: s.id, name: s.name, assignable: false, reason: "busy", ...(conflictRef ? { conflictRef } : {}) };
