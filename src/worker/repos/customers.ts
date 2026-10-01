@@ -96,12 +96,14 @@ export async function listCustomers(
     binds.push(f.status === "active" ? 1 : 0);
   }
   if (f.query !== "") {
-    // Substring match, case-insensitive (ASCII); instr has no wildcards to escape and no pattern length limit (unlike LIKE on D1).
+    // Substring match. ASCII letters match case-insensitively; other scripts match exactly (SQLite's lower() only folds ASCII, and
+    // CJK has no case). instr has no wildcards to escape and no pattern length limit (unlike LIKE on D1).
     where.push(
       `(instr(lower(c.customer_number), ?) > 0 OR instr(lower(c.name), ?) > 0
         OR EXISTS (SELECT 1 FROM customer_contacts m WHERE m.customer_id = c.id AND instr(lower(m.email), ?) > 0))`,
     );
-    const needle = f.query.trim().toLowerCase();
+    // Fold exactly what SQLite's lower() folds, so both sides of the comparison agree.
+    const needle = f.query.replace(/[A-Z]/g, (ch) => ch.toLowerCase());
     binds.push(needle, needle, needle);
   }
   if (f.cursor !== undefined) {

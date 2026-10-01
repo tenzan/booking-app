@@ -223,6 +223,19 @@ describe("list and search", () => {
     expect(await q("\\%")).toEqual([]);
   });
 
+  it("folds only ASCII case: accented capitals and Japanese names are found by their exact spelling", async () => {
+    await seedCustomer({ number: "J-1", name: "サンプル歯科", email: "dental@example.test" });
+    await seedCustomer({ number: "J-2", name: "Émile Café", email: "emile@example.test" });
+    const q = async (text: string) => (await list(`?status=all&query=${encodeURIComponent(text)}`)).json.customers.map((c: any) => c.customerNumber);
+    expect(await q("Émile")).toEqual(["J-2"]);
+    expect(await q("Émile Café")).toEqual(["J-2"]);
+    expect(await q("émile")).toEqual([]); // SQLite cannot fold non-ASCII capitals
+    expect(await q("ÉMILE")).toEqual(["J-2"]); // only the ASCII letters fold, so the capital É still matches itself
+    expect(await q("EMILE")).toEqual(["J-2"]); // the ASCII e-mail address still folds
+    expect(await q("プル歯")).toEqual(["J-1"]);
+    expect(await q("サンプル歯科")).toEqual(["J-1"]);
+  });
+
   it("finds a customer by a contact email longer than 48 characters, and caps the search text at 200", async () => {
     const email = `${"long.mailbox.name".repeat(3)}@subdomain.example.test`;
     expect(email.length).toBeGreaterThan(48);
@@ -266,6 +279,18 @@ describe("list and search", () => {
     expect(seen).toHaveLength(50 + 50 + p3.json.customers.length);
   });
 
+  it("pages unpadded numbers in plain string order across a page boundary", async () => {
+    await env.DB.batch(
+      Array.from({ length: 49 }, (_, i) => env.DB.prepare("INSERT INTO customers(customer_number, name, created_at, updated_at) VALUES (?, 'Filler', 0, 0)").bind(`A-${String(i).padStart(2, "0")}`)),
+    );
+    for (const n of ["C-9", "C-10", "C-100"]) await env.DB.prepare("INSERT INTO customers(customer_number, name, created_at, updated_at) VALUES (?, 'Unpadded', 0, 0)").bind(n).run();
+    const p1 = await list();
+    expect(p1.json.customers.at(-1).customerNumber).toBe("C-10");
+    const p2 = await list(`?cursor=${p1.json.nextCursor}`);
+    expect(p2.json.customers.map((c: any) => c.customerNumber)).toEqual(["C-100", "C-9"]);
+    expect(p2.json.nextCursor).toBeNull();
+  });
+
   it("combines the cursor with a search and the status filter, and ends exactly on a full page", async () => {
     await env.DB.batch(
       Array.from({ length: 50 }, (_, i) => env.DB.prepare("INSERT INTO customers(customer_number, name, created_at, updated_at) VALUES (?, 'Fifty', 0, 0)").bind(`F-${String(i).padStart(2, "0")}`)),
@@ -296,7 +321,7 @@ describe("patch", () => {
     expect(res.json.customer).toMatchObject({ name: "Acme Renamed", phone: null, notes: "Moved to the new office" });
     const a = (await audits("customer.update"))[0];
     expect(a).toMatchObject({ actor: String(team.admin), customer_id: id });
-    expect(a.details).toEqual({ fields: ["name", "phone", "notes"], name: "Acme Renamed", phone: null });
+    expect(a.details).toEqual({ fields: ["name", "phone", "notes"], name: "Acme Renamed", phone: null, from: { name: "Acme Test Co" } });
     expect(JSON.stringify(a)).not.toContain("new office");
 
     expect((await patch(id, { notes: "" })).json.customer.notes).toBeNull();
@@ -317,7 +342,7 @@ describe("patch", () => {
     expect([clash.status, clash.json.error]).toEqual([409, "number_taken"]);
     const res = await patch(id, { customerNumber: " NEW-1 " });
     expect(res.json.customer.customerNumber).toBe("NEW-1");
-    expect((await audits("customer.update"))[0].details).toEqual({ fields: ["customerNumber"], customerNumber: "NEW-1" });
+    expect((await audits("customer.update"))[0].details).toEqual({ fields: ["customerNumber"], customerNumber: "NEW-1", from: { customerNumber: "OLD-1" } });
   });
 
   it("locks the number once the customer has any reservation, even a cancelled one", async () => {

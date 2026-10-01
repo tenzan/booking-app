@@ -108,8 +108,12 @@ customerAdminRoutes.patch("/customers/:id", requireStaff("admin"), async (c) => 
         actor: actor(c),
         action: "customer.update",
         customerId: id,
-        // Which fields changed, with the new values of all but the free-text notes.
-        details: { fields: changed, ...Object.fromEntries(changed.filter((k) => k !== "notes").map((k) => [k, next[k]])) },
+        // Which fields changed, with the new values of all but the free-text notes, and the previous number and name.
+        details: {
+          fields: changed,
+          ...Object.fromEntries(changed.filter((k) => k !== "notes").map((k) => [k, next[k]])),
+          from: Object.fromEntries(changed.filter((k) => k === "customerNumber" || k === "name").map((k) => [k, current[k]])),
+        },
       }),
     ]);
   } catch (e) {
