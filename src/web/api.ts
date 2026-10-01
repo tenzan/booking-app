@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { AuditRow, CustomerReservationDTO, ImpactDTO, ReservationDTO, TechOption, UnavailabilityDTO, WindowDTO } from "../shared/types";
+import type { CodedMessage } from "../domain/csv";
+import type { Settings } from "../domain/settings";
+import type { AuditRow, CustomerReservationDTO, ImpactDTO, ReservationDTO, StaffDTO, TechOption, UnavailabilityDTO, WindowDTO } from "../shared/types";
 
 /** A non-2xx API response (`status` 0 = the request never reached the server). */
 export class ApiError extends Error {
@@ -134,6 +136,32 @@ export interface Previewed {
   impact: ImpactDTO;
 }
 
+/** GET /api/staff/settings. */
+export interface SettingsView {
+  settings: Settings;
+  timezone: string;
+}
+
+/** One row of a holiday CSV import as previewed. */
+export interface HolidayImportRowView {
+  line: number;
+  date: string;
+  name: string;
+  status: "new" | "changed" | "unchanged" | "error";
+  previousName?: string;
+  error?: CodedMessage;
+  /** Appointments or requests on this date the holiday would take away. */
+  conflicts: number;
+}
+
+export interface HolidayImportPreview extends Previewed {
+  rows: HolidayImportRowView[];
+}
+
+export interface TeamList {
+  staff: StaffDTO[];
+}
+
 export interface DevMessage {
   id: number;
   to: string;
@@ -157,6 +185,8 @@ export const queryKeys = {
   scheduleWindows: ["staff", "schedule", "windows"] as const,
   scheduleUnavailability: (query: string) => ["staff", "schedule", "unavailability", query] as const,
   holidays: (year: number) => ["staff", "schedule", "holidays", year] as const,
+  settings: ["staff", "settings"] as const,
+  team: ["staff", "team"] as const,
   devMail: ["dev", "mail"] as const,
 };
 

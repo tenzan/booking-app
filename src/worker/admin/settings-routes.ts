@@ -66,7 +66,8 @@ async function planImport(c: { env: AppEnv["Bindings"] }, csv: string) {
   try {
     rows = planHolidayImport(csv, new Map(results.map((h) => [h.date, h.name])));
   } catch (e) {
-    if (e instanceof HolidayImportError) throw new HttpError(400, e.code, e.line === undefined ? undefined : { line: e.line, message: e.message });
+    // Same shape as the customer import: `code` + `params` for the catalog, plus where it happened.
+    if (e instanceof HolidayImportError) throw new HttpError(400, e.code, { ...e.reason, line: e.line, column: e.column });
     throw e;
   }
   const set = rows.filter((r) => r.status === "new" || r.status === "changed").map((r) => ({ date: r.date, name: r.name }));

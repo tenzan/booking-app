@@ -2,6 +2,17 @@ import { useEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject }
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+/**
+ * Focus what `find` returns once it can take focus: right after a change the target may still be disabled, or behind a
+ * modal dialog that is about to close (the page is inert until then). Retries for a few frames, then gives up.
+ */
+export function focusWhenReady(find: () => HTMLElement | null | undefined, tries = 10): void {
+  const el = find();
+  el?.focus();
+  if ((el && document.activeElement === el) || tries <= 0) return;
+  setTimeout(() => focusWhenReady(find, tries - 1), 30);
+}
+
 interface DialogProps {
   open: boolean;
   /** Esc or a close button asked to close; ignored while `closable` is false. */

@@ -448,9 +448,9 @@ describe("holiday CSV import", () => {
       { line: 2, date: "2026-11-03", name: "Culture Day", status: "unchanged", conflicts: 0 },
       { line: 3, date: "2026-11-23", name: "Labour Thanksgiving Day", status: "changed", previousName: "Old Name", conflicts: 0 },
       { line: 4, date: "2026-12-23", name: "Emperor's, Birthday", status: "new", conflicts: 0 },
-      { line: 5, date: "2026-13-01", name: "Bad Month", status: "error", error: "invalid_date", conflicts: 0 },
-      { line: 6, date: "2026-12-24", name: "", status: "error", error: "missing_name", conflicts: 0 },
-      { line: 7, date: "2026-12-25", name: "", status: "error", error: "missing_name", conflicts: 0 },
+      { line: 5, date: "2026-13-01", name: "Bad Month", status: "error", error: { code: "invalid_date" }, conflicts: 0 },
+      { line: 6, date: "2026-12-24", name: "", status: "error", error: { code: "required", params: { field: "name" } }, conflicts: 0 },
+      { line: 7, date: "2026-12-25", name: "", status: "error", error: { code: "required", params: { field: "name" } }, conflicts: 0 },
     ]);
     expect(res.json.impact).toEqual({ moved: [], conflicts: [], warnings: [] });
     expect(await holidays()).toEqual([{ date: "2026-11-03", name: "Culture Day" }, { date: "2026-11-23", name: "Old Name" }]);
@@ -478,21 +478,25 @@ describe("holiday CSV import", () => {
     ].join("\n");
     const rows = (await importPreview(csv)).json.rows as any[];
     expect(rows.map((r) => [r.date, r.status, r.error])).toEqual([
-      ["2026-11-03", "error", "too_many_columns"],
-      ["2026-11-04", "error", "name_too_long"],
-      ["2026/11/05", "error", "invalid_date"],
-      ["2026-02-30", "error", "invalid_date"],
-      ["2026-11-06", "error", "duplicate_date"],
-      ["2026-11-06", "error", "duplicate_date"],
+      ["2026-11-03", "error", { code: "holiday_column_count", params: { found: 3 } }],
+      ["2026-11-04", "error", { code: "too_long", params: { field: "name", max: 100 } }],
+      ["2026/11/05", "error", { code: "invalid_date" }],
+      ["2026-02-30", "error", { code: "invalid_date" }],
+      ["2026-11-06", "error", { code: "duplicate_date", params: { date: "2026-11-06", lines: "5, 6" } }],
+      ["2026-11-06", "error", { code: "duplicate_date", params: { date: "2026-11-06", lines: "5, 6" } }],
       ["2026-11-07", "new", undefined],
     ]);
   });
 
   it("rejects malformed CSV, more than 400 rows and non-string bodies with 400", async () => {
     const quote = await importPreview('2026-11-03,"open');
-    expect([quote.status, quote.json.error, quote.json.details.line]).toEqual([400, "invalid_csv", 1]);
+    // Coded like the customer import: the UI renders `code` + `params` from the catalog.
+    expect([quote.status, quote.json.error, quote.json.details]).toEqual([400, "invalid_csv", { code: "csv_unterminated_quote", params: { line: 1, column: 12 }, line: 1, column: 12 }]);
+    const stray = await importPreview('2026-11-03,Cul"ture Day');
+    expect(stray.json.details).toEqual({ code: "csv_stray_quote", params: { line: 1, column: 15 }, line: 1, column: 15 });
     const many = Array.from({ length: 401 }, (_, i) => `${new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10)},Day ${i}`).join("\n");
-    expect([(await importPreview(many)).status, (await importPreview(many)).json.error]).toEqual([400, "too_many_rows"]);
+    const tooMany = await importPreview(many);
+    expect([tooMany.status, tooMany.json.error, tooMany.json.details]).toEqual([400, "too_many_rows", { code: "too_many_rows", params: { max: 400 } }]);
     expect((await importApply(many, 0)).json.error).toBe("too_many_rows");
     expect((await importPreview(many.split("\n").slice(0, 400).join("\n"))).status).toBe(200);
     expect((await importPreview(5)).status).toBe(400);
@@ -543,7 +547,7 @@ describe("holiday CSV import", () => {
     const v0 = await version();
     const bad = await importApply("2026-11-03,Culture Day\nnot-a-date,Oops", v0);
     expect([bad.status, bad.json.error]).toEqual([400, "invalid_rows"]);
-    expect(bad.json.details.rows).toEqual([expect.objectContaining({ line: 2, status: "error", error: "invalid_date" })]);
+    expect(bad.json.details.rows).toEqual([expect.objectContaining({ line: 2, status: "error", error: { code: "invalid_date" } })]);
     expect(await holidays()).toEqual([]);
 
     await env.DB.prepare("INSERT INTO holidays(date, name) VALUES ('2026-11-03', 'Culture Day')").run();

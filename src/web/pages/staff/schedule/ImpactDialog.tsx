@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import type { ConflictDTO, ImpactDTO, ReservationDTO, ScheduleChange } from "../../../../shared/types";
 import { apiFetch, isApiError, queryKeys, type Previewed, type StaffReservationView } from "../../../api";
 import { Button } from "../../../components/Button";
@@ -21,10 +21,17 @@ export interface ChangeRequest {
   apply: (version: number) => Promise<unknown>;
   /** Runs once the change is applied (e.g. close the edit form). */
   onApplied?: () => void;
+  /** Text for errors this kind of change has its own words for (null: the generic schedule message). */
+  errorText?: (e: unknown) => string | null;
 }
 
-/** "applied": saved at once; "review": the impact dialog is open; otherwise the error to show next to the form. */
-export type SubmitResult = { status: "applied" } | { status: "review" } | { status: "failed"; message: string };
+/**
+ * "applied": saved at once; "review": the impact dialog is open; otherwise the error to show next to the form
+ * (`error` is the raw failure, e.g. to point at the invalid fields).
+ */
+export type SubmitResult = { status: "applied" } | { status: "review" } | { status: "failed"; message: string; error: unknown };
+
+const errorTextFor = (req: ChangeRequest, e: unknown) => req.errorText?.(e) ?? scheduleErrorText(e);
 
 export type Submit = (req: ChangeRequest) => Promise<SubmitResult>;
 
@@ -88,8 +95,9 @@ interface Review extends Previewed {
 /**
  * Every capacity change goes through here: preview first; with nothing moved and no conflicts it is applied at once
  * (and `onDone` gets the confirmation), otherwise the impact dialog opens. Render `dialog` once on the page.
+ * The schedule and reservations are refetched after every change; `refresh` names further queries the page shows.
  */
-export function useImpactFlow({ tz, onDone }: { tz: string; onDone: (text: string) => void }) {
+export function useImpactFlow({ tz, onDone, refresh }: { tz: string; onDone: (text: string) => void; refresh?: readonly QueryKey[] }) {
   const qc = useQueryClient();
   const [review, setReview] = useState<Review | null>(null);
 
@@ -107,13 +115,14 @@ export function useImpactFlow({ tz, onDone }: { tz: string; onDone: (text: strin
     [qc],
   );
 
+  // Joined so a fresh array literal from the caller doesn't change the callback on every render.
+  const extra = JSON.stringify(refresh ?? []);
   const refreshLists = useCallback(
     () =>
-      Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.schedule }),
-        qc.invalidateQueries({ queryKey: queryKeys.staffReservations }),
-      ]).then(() => undefined),
-    [qc],
+      Promise.all(
+        [queryKeys.schedule, queryKeys.staffReservations, ...(JSON.parse(extra) as QueryKey[])].map((queryKey) => qc.invalidateQueries({ queryKey })),
+      ).then(() => undefined),
+    [qc, extra],
   );
 
   const finish = useCallback(
@@ -146,7 +155,7 @@ export function useImpactFlow({ tz, onDone }: { tz: string; onDone: (text: strin
       } catch (e) {
         signedOut(e);
         if (isApiError(e, 404) || isApiError(e, 400, "invalid_staff")) void refreshLists();
-        return { status: "failed", message: scheduleErrorText(e) };
+        return { status: "failed", message: errorTextFor(req, e), error: e };
       }
     },
     [finish, refreshLists, signedOut],
@@ -222,7 +231,7 @@ function ImpactDialog({
       focusNotice.current = true;
       setReview((r) => (r ? { ...r, ...fresh, notice: { tone, text: message } } : r));
     } catch (e) {
-      if (!signedOut(e)) say("error", scheduleErrorText(e));
+      if (!signedOut(e)) say("error", errorTextFor(review!.req, e));
     }
     void refreshLists();
   }
@@ -237,7 +246,7 @@ function ImpactDialog({
         setReview((r) => (r ? { ...r, ...out.previewed, notice: { tone: "warning", text: k("impact.changedMeanwhile") } } : r));
       }
     } catch (e) {
-      if (!signedOut(e)) say("error", scheduleErrorText(e));
+      if (!signedOut(e)) say("error", errorTextFor(req, e));
     } finally {
       setBusy(null);
     }

@@ -37,6 +37,9 @@ export const fmtTz = (tz: string, atMs: number = Date.now()): string => tzLabel(
 /** The YYYY-MM-DD an instant falls on in `tz`. */
 export const dateIn = (ms: number, tz: string): string => utcToWall(ms, tz).date;
 
+/** "Thu, Oct 1, 2026". */
+export const fmtDateWithYear = (date: string): string => fmtDate(date, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+
 /** "Thu, Oct 1". */
 export const fmtShortDate = (date: string): string => fmtDate(date, { weekday: "short", month: "short", day: "numeric" });
 

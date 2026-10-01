@@ -20,6 +20,8 @@ import StaffVerify from "./pages/staff/Verify";
 
 /** Staff-only and heavier (it carries the shared Zod validators): loaded on first visit, not with the customer pages. */
 const SchedulePage = lazy(() => import("./pages/staff/schedule/SchedulePage"));
+const SettingsPage = lazy(() => import("./pages/staff/settings/SettingsPage"));
+const TeamPage = lazy(() => import("./pages/staff/team/TeamPage"));
 
 /** Customer-only pages: without a session, go to the start page and come back here after signing in. */
 function RequireCustomer({ children }: { children: ReactNode }) {
@@ -50,6 +52,8 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="r/:id" element={<ReservationDetail />} />
             <Route path="schedule" element={<Suspense fallback={<Skeleton className="h-96" />}><SchedulePage /></Suspense>} />
+            <Route path="team" element={<Suspense fallback={<Skeleton className="h-96" />}><TeamPage /></Suspense>} />
+            <Route path="settings" element={<Suspense fallback={<Skeleton className="h-96" />}><SettingsPage /></Suspense>} />
             <Route path="*" element={<NotFound home="/staff" homeLabel={t("web.staff.nav.dashboard")} />} />
           </Route>
         </Route>
