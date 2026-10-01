@@ -106,21 +106,24 @@ export function ApprovePanel({ r, options, myId, assignMe, onOptions, onDone, on
         </div>
       </fieldset>
       {!anyFree && <Notice tone="warning">{t("web.staff.detail.approve.noneFree")}</Notice>}
-      <div aria-live="polite" className="empty:hidden">
-        {problem && (
-          <Notice tone={problem.tone} className="flex flex-wrap items-center justify-between gap-3">
-            <span>{problem.text}</span>
-            {problem.retry && selected !== null && (
-              <Button variant="secondary" onClick={confirm} loading={approve.isPending}>
-                {t("web.common.retry")}
-              </Button>
-            )}
-          </Notice>
-        )}
+      <div>
+        {/* Always rendered so problems are announced; it takes no space while empty. */}
+        <div aria-live="polite">
+          {problem && (
+            <Notice tone={problem.tone} className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <span>{problem.text}</span>
+              {problem.retry && selected !== null && (
+                <Button variant="secondary" onClick={confirm} loading={approve.isPending}>
+                  {t("web.common.retry")}
+                </Button>
+              )}
+            </Notice>
+          )}
+        </div>
+        <Button size="lg" block loading={approve.isPending} disabled={!anyFree} onClick={confirm}>
+          {approve.isPending ? t("web.staff.detail.approve.confirming") : t("web.staff.detail.approve.confirm")}
+        </Button>
       </div>
-      <Button size="lg" block loading={approve.isPending} disabled={!anyFree} onClick={confirm}>
-        {approve.isPending ? t("web.staff.detail.approve.confirming") : t("web.staff.detail.approve.confirm")}
-      </Button>
     </div>
   );
 }

@@ -1,9 +1,8 @@
 import type { ReactNode } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 import { signInPath, useMe } from "./api";
-import { ButtonLink } from "./components/Button";
-import { EmptyState } from "./components/EmptyState";
-import { Layout, usePageTitle } from "./components/Layout";
+import { Layout } from "./components/Layout";
+import { NotFound } from "./components/NotFound";
 import { Skeleton } from "./components/Spinner";
 import { t } from "./i18n";
 import Book from "./pages/customer/Book";
@@ -26,17 +25,6 @@ function RequireCustomer({ children }: { children: ReactNode }) {
   if (me.isPending) return <Skeleton className="h-96" />;
   if (!me.data?.customer) return <Navigate to={signInPath(location.pathname + location.search)} replace />;
   return children;
-}
-
-function NotFound({ home = "/", homeLabel = t("web.common.homeLink") }: { home?: string; homeLabel?: string }) {
-  usePageTitle(t("web.common.notFoundHeading"));
-  return (
-    <EmptyState
-      title={t("web.common.notFoundHeading")}
-      body={t("web.common.notFoundBody")}
-      action={<ButtonLink to={home}>{homeLabel}</ButtonLink>}
-    />
-  );
 }
 
 export default function App() {

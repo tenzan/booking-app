@@ -1,4 +1,4 @@
-import type { HTMLAttributes } from "react";
+import type { ComponentProps, HTMLAttributes } from "react";
 
 /** The standard surface: rounded, bordered, padded. */
 export function Card({ className = "", flush = false, ...rest }: HTMLAttributes<HTMLDivElement> & { flush?: boolean }) {
@@ -19,6 +19,6 @@ const tones: Record<Tone, string> = {
 };
 
 /** Inline message banner. Render it inside an always-present `aria-live` region to have it announced. */
-export function Notice({ tone = "info", className = "", ...rest }: HTMLAttributes<HTMLDivElement> & { tone?: Tone }) {
+export function Notice({ tone = "info", className = "", ...rest }: ComponentProps<"div"> & { tone?: Tone }) {
   return <div className={`rounded-xl border px-4 py-3 ${tones[tone]} ${className}`} {...rest} />;
 }

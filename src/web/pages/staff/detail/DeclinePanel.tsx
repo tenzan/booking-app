@@ -68,12 +68,13 @@ export function DeclinePanel({ r, onDone, onStale }: PanelProps) {
           />
         )}
       </Field>
-      <div aria-live="polite" className="empty:hidden">
-        {problem && <Notice tone="error">{problem}</Notice>}
+      <div>
+        {/* Always rendered so problems are announced; it takes no space while empty. */}
+        <div aria-live="polite">{problem && <Notice tone="error" className="mb-4">{problem}</Notice>}</div>
+        <Button type="submit" variant="danger" size="lg" block loading={decline.isPending}>
+          {decline.isPending ? t("web.staff.detail.decline.confirming") : t("web.staff.detail.decline.confirm")}
+        </Button>
       </div>
-      <Button type="submit" variant="danger" size="lg" block loading={decline.isPending}>
-        {decline.isPending ? t("web.staff.detail.decline.confirming") : t("web.staff.detail.decline.confirm")}
-      </Button>
     </form>
   );
 }

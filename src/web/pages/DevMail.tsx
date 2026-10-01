@@ -4,15 +4,17 @@ import { apiFetch, isApiError, queryKeys, useMe, type DevMessage } from "../api"
 import { Button, buttonClass } from "../components/Button";
 import { Card, Notice } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
-import { PageHeading, SkipLink, usePageTitle, useRouteChange } from "../components/Layout";
+import { Layout, PageHeading, SkipLink, usePageTitle, useRouteChange } from "../components/Layout";
+import { NotFound } from "../components/NotFound";
 import { Skeleton } from "../components/Spinner";
+import { TimezoneNote } from "../components/TimezoneNote";
 import { fmtStamp } from "../format";
 import { fmtDateTime, LOCALE, t } from "../i18n";
 
 /** Links in the preview replace the app tab instead of navigating inside the sandboxed frame. */
 function withTopTarget(html: string): string {
   const base = '<base target="_top">';
-  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + base) : base + html;
+  return /<head(\s[^>]*)?>/i.test(html) ? html.replace(/<head(\s[^>]*)?>/i, (m) => m + base) : base + html;
 }
 
 /** The first http(s) link in the message (HTML first, then the plain text). */
@@ -24,20 +26,54 @@ function firstLink(m: DevMessage): string | null {
   return href ?? m.text.match(/https?:\/\/\S+/)?.[0] ?? null;
 }
 
-/** `/dev/mail`: what the app would have emailed, when MAIL_MODE=dev. Polls so new messages appear on their own. */
+/**
+ * `/dev/mail`: what the app would have emailed, when MAIL_MODE=dev. Polls so new messages appear on their own.
+ * Anywhere else the API answers 404 and this is the app's ordinary not-found page: nothing hints at a mailbox.
+ */
 export default function DevMail() {
-  usePageTitle(t("web.devMail.heading"));
-  useRouteChange();
-  const tz = useMe().data?.timezone ?? "UTC";
   const q = useQuery({
     queryKey: queryKeys.devMail,
     queryFn: () => apiFetch<{ messages: DevMessage[] }>("/api/dev/mail").then((r) => r.messages),
     refetchInterval: (query) => (isApiError(query.state.error, 404) ? false : 2000),
     retry: false,
   });
+
+  if (q.isPending) {
+    return (
+      <div className="mx-auto w-full max-w-6xl px-4 pt-6 sm:px-6" aria-busy="true">
+        <span className="sr-only">{t("web.common.loading")}</span>
+        <Skeleton className="h-96" />
+      </div>
+    );
+  }
+  if (isApiError(q.error, 404)) {
+    return (
+      <Layout>
+        <NotFound />
+      </Layout>
+    );
+  }
+  if (q.isError && q.data === undefined) {
+    return (
+      <Layout>
+        <Notice tone="error" className="flex flex-wrap items-center justify-between gap-3">
+          {t("web.errors.generic")}
+          <Button variant="secondary" onClick={() => void q.refetch()}>
+            {t("web.common.retry")}
+          </Button>
+        </Notice>
+      </Layout>
+    );
+  }
+  return <Mailbox messages={q.data ?? []} />;
+}
+
+function Mailbox({ messages }: { messages: DevMessage[] }) {
+  usePageTitle(t("web.devMail.heading"));
+  useRouteChange();
+  const tz = useMe().data?.timezone ?? "UTC";
   // null = nothing picked yet: phones show the list, wide screens preview the newest message.
   const [pickedId, setPickedId] = useState<number | null>(null);
-  const messages = q.data ?? [];
   const picked = messages.find((m) => m.id === pickedId) ?? null;
   const shown = picked ?? messages[0] ?? null;
 
@@ -53,23 +89,11 @@ export default function DevMail() {
         </div>
       </header>
       <main id="main" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 space-y-6 px-4 pt-6 pb-16 outline-none sm:px-6">
-        <PageHeading>{t("web.devMail.heading")}</PageHeading>
-        {q.isPending ? (
-          <div className="grid gap-6 lg:grid-cols-[20rem_1fr]" aria-busy="true">
-            <span className="sr-only">{t("web.common.loading")}</span>
-            <Skeleton className="h-96" />
-            <Skeleton className="hidden h-96 lg:block" />
-          </div>
-        ) : isApiError(q.error, 404) ? (
-          <Notice tone="info">{t("web.devMail.unavailable")}</Notice>
-        ) : q.isError && messages.length === 0 ? (
-          <Notice tone="error" className="flex flex-wrap items-center justify-between gap-3">
-            {t("web.errors.generic")}
-            <Button variant="secondary" onClick={() => void q.refetch()}>
-              {t("web.common.retry")}
-            </Button>
-          </Notice>
-        ) : messages.length === 0 ? (
+        <div className="space-y-1">
+          <PageHeading>{t("web.devMail.heading")}</PageHeading>
+          <TimezoneNote tz={tz} />
+        </div>
+        {messages.length === 0 ? (
           <EmptyState title={t("web.devMail.empty")} body={t("web.devMail.emptyBody")} />
         ) : (
           <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">

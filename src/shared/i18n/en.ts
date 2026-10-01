@@ -347,7 +347,6 @@ export const en = {
     devMail: {
       heading: "Development mailbox",
       banner: "Development mailbox — emails are not sent. Everything the app would email appears here.",
-      unavailable: "The development mailbox is only available when MAIL_MODE is \"dev\".",
       listLabel: "Messages",
       empty: "No messages yet",
       emptyBody: "Request a sign-in link or book a session, and the emails show up here.",

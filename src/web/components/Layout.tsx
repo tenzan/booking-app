@@ -125,7 +125,8 @@ export const SignOutIcon = () => (
   </svg>
 );
 
-export function Layout() {
+/** The customer frame; renders `children` instead of the route outlet when given (e.g. a not-found page outside the customer routes). */
+export function Layout({ children }: { children?: ReactNode }) {
   const me = useMe();
   const signOut = useSignOut();
   useRouteChange();
@@ -162,7 +163,7 @@ export function Layout() {
         <SignedInBanner email={customer?.email ?? null} onSignOut={() => signOut.mutate()} />
       </div>
       <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[40rem] flex-1 px-4 pt-6 pb-16 outline-none sm:px-6 sm:pt-10">
-        <Outlet />
+        {children ?? <Outlet />}
       </main>
     </div>
   );

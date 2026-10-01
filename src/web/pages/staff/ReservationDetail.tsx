@@ -50,8 +50,9 @@ export default function ReservationDetail() {
   });
   usePageTitle(q.data ? t("web.staff.detail.heading", { ref: q.data.reservation.ref }) : t("web.common.loading"));
 
+  // The panel that had focus is gone after approve/decline/stale: move focus to the result instead of <body>.
   useEffect(() => {
-    if (notice) noticeRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (notice) noticeRef.current?.focus();
   }, [notice]);
 
   const openPanel = (a: Action | null) => setParams(a ? { action: a } : {}, { replace: true });
@@ -127,26 +128,29 @@ export default function ReservationDetail() {
         </Notice>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-3">
-            <PageHeading>{t("web.staff.detail.heading", { ref: q.data.reservation.ref })}</PageHeading>
-            <StatusBadge status={q.data.reservation.status} />
-          </div>
-          <div ref={noticeRef} aria-live="polite" className="empty:hidden">
-            {notice && (
-              <Notice tone={notice.tone} className="flex items-start justify-between gap-3">
-                <span className="pt-0.5">{notice.text}</span>
-                <button
-                  type="button"
-                  onClick={() => setNotice(null)}
-                  className="-my-1 -mr-2 grid size-9 shrink-0 place-items-center rounded-lg hover:bg-black/5 dark:hover:bg-white/10"
-                  aria-label={t("web.common.dismiss")}
-                >
-                  <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  </svg>
-                </button>
-              </Notice>
-            )}
+          <div>
+            <div className="flex flex-wrap items-center gap-3">
+              <PageHeading>{t("web.staff.detail.heading", { ref: q.data.reservation.ref })}</PageHeading>
+              <StatusBadge status={q.data.reservation.status} />
+            </div>
+            {/* Always rendered so the result is announced; it takes no space while empty. */}
+            <div aria-live="polite">
+              {notice && (
+                <Notice ref={noticeRef} tabIndex={-1} tone={notice.tone} className="mt-6 flex items-start justify-between gap-3">
+                  <span className="pt-0.5">{notice.text}</span>
+                  <button
+                    type="button"
+                    onClick={() => setNotice(null)}
+                    className="-my-2 -mr-2 grid size-11 shrink-0 place-items-center rounded-lg hover:bg-black/5 dark:hover:bg-white/10"
+                    aria-label={t("web.common.dismiss")}
+                  >
+                    <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                </Notice>
+              )}
+            </div>
           </div>
           <div className="grid items-start gap-6 lg:grid-cols-5">
             <div className="min-w-0 space-y-6 lg:col-span-3">
@@ -305,7 +309,7 @@ function ActionsCard({ action, onOpen, children }: { action: Action | null; onOp
         key={a}
         type="button"
         aria-expanded={active}
-        aria-controls="action-panel"
+        aria-controls={active ? "action-panel" : undefined}
         onClick={() => {
           opened.current = true;
           onOpen(active ? null : a);
