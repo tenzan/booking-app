@@ -4,21 +4,23 @@ An open-source, self-hostable appointment-request app for small service teams th
 
 ## Status
 
-Under active development; not production-ready yet. The feature list below describes the finished app.
+Under active development; not production-ready yet. The feature list below describes the finished app. Plan 1 (the core booking flow) and Plan 2 (administration and scheduling) are done.
 
-Implemented now (core flow):
+Implemented now:
 
 - Customer magic-link sign-in for registered contacts, slot availability with technician-aware capacity (business hours, holidays, buffers, minimum notice) and atomic, idempotent booking requests that hold a technician.
-- Staff magic-link sign-in, request dashboard and detail, approval with technician assignment (moving other pending requests when needed) and decline with a reason.
+- Staff magic-link sign-in, request dashboard and detail, approval with technician assignment (moving other pending requests when needed), decline with a reason, reassignment to another technician and staff cancellation with a reason.
 - Customer "My reservations" and per-reservation access links from emails.
-- An administrator switch on the staff dashboard pauses and resumes online booking (to stop spam); existing reservations, their links and all staff features keep working.
+- Staff scheduling: weekly hours per technician, date-specific schedules, holidays and technician time off. Every change is previewed first: affected requests and appointments are listed, and anything that would lose its technician must be reassigned, cancelled or declined before the change is saved.
+- Customer administration (accounts and contacts) with CSV import (preview, then apply), team management (roles, bookable, notifications, deactivation) and settings (organisation details, appointment length and buffers, booking window, business hours).
+- Calendar, activity log and an email page where administrators retry failed emails.
+- An administrator switch (Settings or the staff dashboard) pauses and resumes online booking (to stop spam); existing reservations, their links and all staff features keep working.
 - Email outbox with retries for every notification, a local development mailbox, audit log entries, rate limits and optional Turnstile.
 
-Planned:
+Still to come:
 
-- Administration: staff scheduling (weekly patterns, date overrides, technician unavailability), customer administration with CSV import, staff management and settings. Until then, `npm run seed` creates sample data locally.
-- Lifecycle: cancellation, rescheduling proposals, approval reminders, escalation and expiry, customer reminders, completion and `.ics` export.
-- Deployment: automated first deployment, runtime secrets and the remaining steps in `docs/SETUP.md`.
+- Plan 3 (lifecycle): customer cancellation, rescheduling proposals, the approval-reminder, escalation, expiry and customer-reminder jobs, completion, `.ics` export and relaying customers' email replies to the staff.
+- Plan 4 (deployment): the remaining deployment hardening and the steps still missing from `docs/SETUP.md`.
 
 ## Who it is for
 
@@ -105,9 +107,9 @@ npm run seed     # in another terminal: sample staff, customers and a weekly sch
 
 Open `http://localhost:5173`. With `MAIL_MODE=dev`, outgoing email is written to a local mailbox instead of being sent; read it at `http://localhost:5173/dev/mail` (this includes the magic links).
 
-Other scripts: `npm test` (Vitest), `npm run test:scripts` (Node tests for the config renderer), `npm run typecheck`, `npm run build`, `npm run e2e` (Playwright smoke tests).
+Other scripts: `npm test` (Vitest), `npm run test:scripts` (Node tests for the config renderer, secret sync and dev seed), `npm run typecheck`, `npm run build`, `npm run e2e` (Playwright end-to-end tests on a desktop and a phone viewport: booking and approval, schedule change with reassignment, CSV import, staff cancellation, pausing online booking).
 
-The seed is synthetic and idempotent: staff `admin@example.test` and `tech1@`–`tech3@example.test`, the customers in `docs/sample-customers.csv` (e.g. `frontdesk@example.test`) and Mon–Fri 09:00–12:00 / 13:00–17:00. Staff sign in at `http://localhost:5173/staff/login`. `npm run e2e` starts (or reuses) the dev server on port 5173 and runs `npm run seed -- --reset` first, which also clears local reservations, emails, sessions and rate-limit counters.
+`npm run seed` is synthetic, idempotent and non-destructive: it adds whatever is missing of staff `admin@example.test` and `tech1@`–`tech3@example.test`, the customers in `docs/sample-customers.csv` (e.g. `frontdesk@example.test`) and — only while there are no weekly hours at all — Mon–Fri 09:00–12:00 / 13:00–17:00; it never deletes or rewrites anything. `npm run seed -- --reset` restores that baseline: it deletes local reservations, emails, sessions, rate-limit counters, the audit log, date schedules, holidays, time off, saved settings and any other staff or customers. Staff sign in at `http://localhost:5173/staff/login`. `npm run e2e` starts (or reuses) the dev server on port 5173 and runs `npm run seed -- --reset` first.
 
 ## Configuration reference
 

@@ -99,3 +99,16 @@ Administrators can import customers from a CSV file in the staff area (Customers
 The import page offers `docs/sample-customers.csv` for download at `/samples/customers.csv`. That file is the only copy: a small plugin in `vite.config.ts` serves it from the dev server and adds it to the client build, so edit it in `docs/` (the dev seed reads it too).
 
 The import is written to D1 in batches of at most 100 statements, and every batch is one request from the Worker to D1. A large file therefore needs the **Workers Paid plan's subrequest allowance**; on the free plan (50 subrequests per request) keep files under about 1000 rows, or split them. If an import stops part way, importing the same file again finishes it safely.
+
+## 7. Initial data
+
+A new deployment starts empty: no staff, no customers and no weekly hours, so nobody can book yet. Set it up in this order from the staff area (`https://booking.example.com/staff`):
+
+1. **First administrator.** Open `/staff/login` and request a sign-in link with an address listed in `BOOTSTRAP_ADMIN_EMAILS` (section 2). While there is no active administrator, that address becomes one when it asks for a link; once an administrator exists the setting has no effect (it only recovers access if every administrator has been deactivated). The new administrator is named after the address and takes bookings: rename them, or turn off "Takes bookings", in **Team**.
+2. **Team.** In **Team → Add a team member**, add each technician (and any further administrators) with their work email. Each signs in with a link sent to that address. "Takes bookings" decides who can be assigned to appointments; "New-request emails" decides who is told about new requests.
+3. **Weekly schedule.** In **Schedule → Weekly**, add the hours customers can book on each weekday and choose the technicians who work them (**Add hours**). Close single dates or give them other hours under **Dates**, add public holidays in **Settings → Holidays**, and record time off under **Time off**. Customers only see times when a technician on the schedule is free.
+4. **Customers.** Import your customers in **Customers → Import CSV** (see section 6 for the columns and rules; a sample file is offered at `/samples/customers.csv`), or add them one by one in **Customers**. Only the contacts listed there can request a booking link.
+5. **Settings.** In **Settings**, check the organisation name and set the **Support phone**: customers see it while online booking is paused and on their reservation page. Review the appointment length, buffers, booking window and business hours.
+6. **Online booking.** Online booking is on unless an administrator has paused it. If you paused it while setting up (with the switch in **Settings → Online booking** or on the staff dashboard), resume it there now. You can pause it again at any time, for example to stop a wave of spam requests: customers then see a notice with your support phone, while existing reservations, their email links and all staff features keep working.
+
+To try the app with sample data on your own machine instead, see "Quick start" in the README (`npm run seed`).

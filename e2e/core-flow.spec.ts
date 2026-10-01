@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { followEmailLink } from "./helpers";
 
 /**
  * Seeded people per project. An account may have one open request, and global setup resets the database once,
@@ -8,18 +9,6 @@ const people = {
   desktop: { customer: "frontdesk@example.test", contact: "Jamie Doe", account: "Example Dental Clinic", tech: "tech1@example.test", techName: "Blake Tech" },
   mobile: { customer: "office@example.test", contact: "Sam Poe", account: "Sample Eye Care", tech: "tech2@example.test", techName: "Casey Tech" },
 } as const;
-
-/** Open the dev mailbox, pick the newest message to `to` whose subject matches, and click `linkName` inside the email. */
-async function followEmailLink(page: Page, to: string, subject: RegExp, linkName: string) {
-  await page.goto("/dev/mail");
-  await expect(page.getByText("Development mailbox — emails are not sent")).toBeVisible();
-  const messages = page.getByRole("list", { name: "Messages" });
-  const item = messages.getByRole("button").filter({ hasText: to }).filter({ hasText: subject }).first();
-  await expect(item).toBeVisible();
-  await item.click();
-  const email = page.frameLocator('iframe[title^="Email preview"]:visible');
-  await email.getByRole("link", { name: linkName }).click();
-}
 
 test("customer books, staff approves, customer sees it confirmed", async ({ page }, testInfo) => {
   const { customer: CUSTOMER, contact, account, tech: TECH, techName } = people[testInfo.project.name as keyof typeof people];

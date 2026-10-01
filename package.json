@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run config && vitest run",
     "test:watch": "npm run config && vitest",
-    "test:scripts": "node --test scripts/render-wrangler.test.mjs scripts/sync-secrets.test.mjs",
+    "test:scripts": "node --disable-warning=ExperimentalWarning --test scripts/render-wrangler.test.mjs scripts/sync-secrets.test.mjs scripts/seed-dev.test.mjs",
     "e2e": "playwright test",
     "seed": "npm run config && node scripts/seed-dev.mjs",
     "deploy": "node scripts/render-wrangler.mjs --strict && vite build && wrangler d1 migrations apply DB --remote && wrangler deploy && node scripts/sync-secrets.mjs"
