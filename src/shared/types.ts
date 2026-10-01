@@ -135,3 +135,13 @@ export interface UnavailabilityDTO {
   endAt: number;
   reason: string | null;
 }
+
+export interface StaffDTO {
+  id: number;
+  email: string;
+  name: string;
+  role: "admin" | "technician";
+  bookable: boolean;
+  notify: boolean;
+  active: boolean;
+}

@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { clock } from "../lib/clock";
 import { randomToken, sha256Hex } from "../lib/crypto";
+import { safeRedirect } from "../lib/redirect";
 import { getSettings } from "../repos/settings";
 import { fmtDateTime, t, tzLabel } from "../../shared/i18n/i18n";
 import type { Settings } from "../../domain/settings";
@@ -55,11 +56,6 @@ function loadReservation(env: Env, id: string): Promise<ReservationData | null> 
   )
     .bind(id)
     .first<ReservationData>();
-}
-
-/** Only same-origin absolute paths are kept as post-login redirects. */
-function safeRedirect(p: unknown): string | null {
-  return typeof p === "string" && p.startsWith("/") && !p.startsWith("//") && !p.includes("\\") ? p : null;
 }
 
 /** Mint a single-use login token; only its sha256 is stored. */

@@ -22,6 +22,7 @@ const DAY = 24 * 60 * MIN;
 export interface StaffInfo {
   id: number;
   name: string;
+  role: "admin" | "technician";
   active: boolean;
   bookable: boolean;
 }
@@ -80,7 +81,7 @@ export async function loadRosterState(env: Env): Promise<RosterState> {
   const [settings, holidays, staffRows, reservations, options] = await Promise.all([
     getSettings(db, env),
     getHolidays(db),
-    db.prepare("SELECT id, name, active, bookable FROM staff ORDER BY id").all<{ id: number; name: string; active: number; bookable: number }>(),
+    db.prepare("SELECT id, name, role, active, bookable FROM staff ORDER BY id").all<{ id: number; name: string; role: "admin" | "technician"; active: number; bookable: number }>(),
     db
       .prepare(
         `SELECT r.id, r.ref, r.status, r.start_at AS startAt, r.occ_start AS occStart, r.occ_end AS occEnd,
@@ -143,7 +144,7 @@ export async function loadRosterState(env: Env): Promise<RosterState> {
   ]);
 
   const staff = new Map(
-    staffRows.results.map((s) => [s.id, { id: s.id, name: s.name, active: s.active === 1, bookable: s.bookable === 1 }]),
+    staffRows.results.map((s) => [s.id, { id: s.id, name: s.name, role: s.role, active: s.active === 1, bookable: s.bookable === 1 }]),
   );
   const bookableStaff = new Set([...staff.values()].filter((s) => s.active && s.bookable).map((s) => s.id));
   const cfg: SlotCfg = {

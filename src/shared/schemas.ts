@@ -177,3 +177,27 @@ export function settingsPatchIssues(current: Settings, patch: Partial<Settings>)
     return touched.has(key) || (ordered && (APPROVAL_ORDER_KEYS as readonly string[]).includes(key));
   });
 }
+
+// ---- Staff ------------------------------------------------------------------------------------------------------
+
+export const emailSchema = z.string().trim().max(254).pipe(z.email()).transform((e) => e.toLowerCase());
+const staffNameSchema = z.string().trim().min(1).max(100);
+export const staffRoleSchema = z.enum(["admin", "technician"]);
+
+export const staffCreateSchema = z.object({
+  email: emailSchema,
+  name: staffNameSchema,
+  role: staffRoleSchema,
+  bookable: z.boolean(),
+  notify: z.boolean(),
+});
+
+/** Non-capacity fields only. Unknown keys (email, active, bookable) are rejected: those have their own paths. */
+export const staffPatchSchema = z
+  .strictObject({ name: staffNameSchema.optional(), role: staffRoleSchema.optional(), notify: z.boolean().optional() })
+  .refine((p) => Object.values(p).some((v) => v !== undefined), "empty patch");
+
+const staffCapacityShape = { active: z.boolean().optional(), bookable: z.boolean().optional() };
+const hasCapacityField = (b: { active?: boolean; bookable?: boolean }) => b.active !== undefined || b.bookable !== undefined;
+export const staffPreviewBodySchema = z.object(staffCapacityShape).refine(hasCapacityField, "nothing to change");
+export const staffApplyBodySchema = z.object({ ...staffCapacityShape, version: z.number().int().nonnegative() }).refine(hasCapacityField, "nothing to change");

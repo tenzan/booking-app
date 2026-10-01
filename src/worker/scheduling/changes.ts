@@ -7,6 +7,7 @@ import type { ScheduleChange, WindowInput } from "../../shared/types";
 import { MAX_HOLIDAY_IMPORT_ROWS, windowInputSchema } from "../../shared/schemas";
 import { assertSql } from "../lib/db";
 import { HttpError } from "../lib/http";
+import { OTHER_ACTIVE_ADMIN_SQL } from "../repos/staff";
 import type { RosterState } from "./roster";
 
 export interface ResolvedChange {
@@ -236,14 +237,22 @@ export async function resolveChange(db: D1Database, state: RosterState, change: 
       if (!current) throw new HttpError(404, "not_found");
       const active = change.active ?? current.active;
       const bookable = change.bookable ?? current.bookable;
+      // Deactivating the last active admin would lock everyone out of administration. Re-checked in the batch below.
+      const dropsAdmin = current.role === "admin" && current.active && !active;
+      if (dropsAdmin && ![...state.staff.values()].some((s) => s.id !== change.id && s.role === "admin" && s.active)) throw new HttpError(409, "last_admin");
       if (active && bookable) next.bookableStaff.add(change.id);
       else next.bookableStaff.delete(change.id);
       return {
         slotInput: next,
         statements: (db, now) => [
+          ...(dropsAdmin ? [assertSql(db, OTHER_ACTIVE_ADMIN_SQL, change.id)] : []),
           db
             .prepare("UPDATE staff SET active = ?, bookable = ?, updated_at = ? WHERE id = ?")
             .bind(active ? 1 : 0, bookable ? 1 : 0, now, change.id),
+          // A deactivated member is signed out everywhere in the same commit; reactivating does not bring sessions back.
+          ...(change.active === false
+            ? [db.prepare("UPDATE sessions SET revoked_at = ? WHERE staff_id = ? AND revoked_at IS NULL").bind(now, change.id)]
+            : []),
         ],
         details: { id: change.id, ...(change.active === undefined ? {} : { active }), ...(change.bookable === undefined ? {} : { bookable }) },
       };
