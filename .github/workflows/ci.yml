@@ -2,6 +2,9 @@ name: CI
 on:
   push:
   pull_request:
+permissions:
+  contents: read
+  pull-requests: read # gitleaks-action lists a pull request's commits
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -18,4 +21,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npm run typecheck
+      - run: npm run test:scripts
       - run: npm test
+      - run: npm run build

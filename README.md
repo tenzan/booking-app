@@ -2,6 +2,23 @@
 
 An open-source, self-hostable appointment-request app for small service teams that deliver remote support. Customers ask for a time through an emailed magic link; staff review each request, approve it and assign a technician; everything else happens by email. The support session itself is a phone call plus your remote-access tool of choice (TeamViewer, AnyDesk, and so on). Nothing about the session is stored or brokered by this app, and no remote-access credentials are ever collected.
 
+## Status
+
+Under active development; not production-ready yet. The feature list below describes the finished app.
+
+Implemented now (core flow):
+
+- Customer magic-link sign-in for registered contacts, slot availability with technician-aware capacity (business hours, holidays, buffers, minimum notice) and atomic, idempotent booking requests that hold a technician.
+- Staff magic-link sign-in, request dashboard and detail, approval with technician assignment (moving other pending requests when needed) and decline with a reason.
+- Customer "My reservations" and per-reservation access links from emails.
+- Email outbox with retries for every notification, a local development mailbox, audit log entries, rate limits and optional Turnstile.
+
+Planned:
+
+- Administration: staff scheduling (weekly patterns, date overrides, technician unavailability), customer administration with CSV import, staff management and settings. Until then, `npm run seed` creates sample data locally.
+- Lifecycle: cancellation, rescheduling proposals, approval reminders, escalation and expiry, customer reminders, completion and `.ics` export.
+- Deployment: automated first deployment, runtime secrets and the remaining steps in `docs/SETUP.md`.
+
 ## Who it is for
 
 Small technical-service teams (IT support, equipment vendors, clinics' IT providers and similar) that:
@@ -72,7 +89,7 @@ Every deployment-specific value and every secret is supplied through environment
 doppler run -- npm run deploy
 ```
 
-Any other secret manager works the same way, as does a local `.env` file (copy `.env.example`). `scripts/render-wrangler.mjs` reads the environment and renders `wrangler.jsonc` (gitignored) before each dev, test or deploy run.
+Any other secret manager works the same way. For local development, copy `.env.example` to `.env` (its values are local-only placeholders, and `MAIL_MODE=dev` there is refused by the deploy). `scripts/render-wrangler.mjs` reads the environment (and `.env`, without overriding real variables) and renders `wrangler.jsonc` (gitignored) before each dev, test or deploy run.
 
 ## Quick start
 
@@ -87,7 +104,7 @@ npm run seed     # in another terminal: sample staff, customers and a weekly sch
 
 Open `http://localhost:5173`. With `MAIL_MODE=dev`, outgoing email is written to a local mailbox instead of being sent; read it at `http://localhost:5173/dev/mail` (this includes the magic links).
 
-Other scripts: `npm test` (Vitest), `npm run typecheck`, `npm run build`, `npm run e2e` (Playwright smoke tests).
+Other scripts: `npm test` (Vitest), `npm run test:scripts` (Node tests for the config renderer), `npm run typecheck`, `npm run build`, `npm run e2e` (Playwright smoke tests).
 
 The seed is synthetic and idempotent: staff `admin@example.test` and `tech1@`–`tech3@example.test`, the customers in `docs/sample-customers.csv` (e.g. `frontdesk@example.test`) and Mon–Fri 09:00–12:00 / 13:00–17:00. Staff sign in at `http://localhost:5173/staff/login`. `npm run e2e` starts (or reuses) the dev server on port 5173 and runs `npm run seed -- --reset` first, which also clears local reservations, emails, sessions and rate-limit counters.
 
@@ -100,13 +117,13 @@ The seed is synthetic and idempotent: staff `admin@example.test` and `tech1@`–
 | `MAIL_FROM` | config | `no-reply@booking.example.com` (also the only allowed sender) |
 | `MAIL_FROM_NAME` | config | `Example Support` |
 | `MAIL_REPLY_FORWARD_TO` | config | Team mailbox for inbound replies (optional) |
-| `MAIL_MODE` | config | `cloudflare` (production) or `dev` (local mailbox at `/dev/mail`) |
+| `MAIL_MODE` | config | `cloudflare` (required for deployments) or `dev` (local mailbox at `/dev/mail`, localhost only) |
 | `APP_TIMEZONE` | config | `UTC` by default; any IANA timezone, for example `Asia/Tokyo` |
 | `APP_LOCALE` | config | `en` |
 | `CLOUDFLARE_ACCOUNT_ID` | config | Your Cloudflare account ID |
 | `D1_DATABASE_ID` | config | UUID of your D1 database |
 | `TURNSTILE_SITE_KEY` | config | Optional |
-| `CLOUDFLARE_API_TOKEN` | secret (deploy) | Scoped to Workers Scripts, D1 and Workers Routes on the zone |
+| `CLOUDFLARE_API_TOKEN` | secret (deploy) | Custom token with the account and zone permissions listed in `docs/SETUP.md` |
 | `TURNSTILE_SECRET_KEY` | secret (runtime) | Optional; Turnstile is skipped when unset |
 | `BOOTSTRAP_ADMIN_EMAILS` | secret (runtime) | Comma-separated emails that become the first administrators |
 
@@ -114,7 +131,9 @@ Optional: `WORKER_NAME`, `D1_DATABASE_NAME` and `APP_BASE_URL` (local only) over
 
 ## Deployment
 
-See `docs/SETUP.md` for step-by-step deployment (D1, custom domain, email sending domain, Turnstile, first administrator). That guide is written in a later development plan.
+See [`docs/SETUP.md`](docs/SETUP.md) for the Cloudflare API token, the configuration values and how to keep them in a secret manager. Step-by-step instructions for the remaining pieces (D1, custom domain, email sending domain, Turnstile, first administrator) are added there as deployment support lands.
+
+`npm run deploy` renders `wrangler.jsonc` with `--strict`, which refuses to continue when a required value is missing, when `MAIL_MODE` is not `cloudflare` (including a `dev` value picked up from a local `.env`), when the account or D1 ID is all zeros, or when a value is still a `REPLACE_ME…`/`SET_BY…` placeholder.
 
 ## Security notes
 
@@ -122,7 +141,9 @@ See `docs/SETUP.md` for step-by-step deployment (D1, custom domain, email sendin
 - Tokens travel in URL fragments (`#t=...`) and are POSTed by the front end, so they do not reach server logs or `Referer` headers.
 - No GET request changes state. Every non-GET API request must carry an `Origin` equal to the app origin and the header `X-Requested-With: fetch`.
 - Login and submission endpoints are rate limited, and email-entry forms can be protected with Turnstile.
-- Responses carry a strict Content-Security-Policy, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and `frame-ancestors 'none'`.
+- The front end is served with a strict Content-Security-Policy from `public/_headers`: scripts, styles, fetches and images from the app's own origin only (no inline scripts or styles), Cloudflare Turnstile as the only third-party script and frame, no plugins, `frame-ancestors 'none'`. It also sends `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and a `Permissions-Policy` that turns off camera, microphone and geolocation. Only `/dev/*` (the local development mailbox, which previews emails with inline styles) allows inline styles.
+- API responses carry `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
+- The development mailbox (`MAIL_MODE=dev`) works only when `APP_BASE_URL` is `localhost` or `127.0.0.1`; anywhere else its route answers 404 and sending mail fails with a configuration error instead of writing to the local mailbox.
 - Outgoing mail can only use the sender allow-listed in the `send_email` binding.
 - CI runs [gitleaks](https://github.com/gitleaks/gitleaks) on every push; keep real secrets out of the repository.
 

@@ -33,7 +33,7 @@ If you prefer not to grant the two email permissions, you can instead onboard th
 
 ## 2. Configuration values
 
-Every deployment-specific value is an environment variable. Nothing organisation-specific is committed to the repository. `scripts/render-wrangler.mjs --strict` builds `wrangler.jsonc` from these at deploy time and refuses to run if a required value is missing.
+Every deployment-specific value is an environment variable. Nothing organisation-specific is committed to the repository. `scripts/render-wrangler.mjs --strict` builds `wrangler.jsonc` from these at deploy time and refuses to run if a required value is missing or still a placeholder (all-zero IDs, `REPLACE_ME…`, `SET_BY…`), or if `MAIL_MODE` is anything other than `cloudflare`.
 
 | Variable | Kind | Example | Notes |
 |---|---|---|---|
