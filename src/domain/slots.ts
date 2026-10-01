@@ -75,18 +75,33 @@ function windowsForDate(input: SlotInput, date: string): WindowDef[] {
   return input.windows.filter((w) => w.kind === "weekly" && w.weekday === weekday);
 }
 
+function windowsCovering(input: SlotInput, startAt: number): WindowDef[] {
+  const { date, minute } = utcToWall(startAt, input.cfg.tz);
+  return windowsForDate(input, date).filter((win) => win.startMin <= minute && minute < win.endMin);
+}
+
+/** Does any availability window (under overrides and holidays) cover `startAt`, whoever is listed on it? */
+export function windowExistsAt(input: SlotInput, startAt: number): boolean {
+  return windowsCovering(input, startAt).length > 0;
+}
+
 /**
  * Bookable technicians listed on the windows covering `startAt`, ignoring the current duration/step (does the slot
  * still fit?) and time off. This is who an existing hold may be (re)assigned to, independent of settings changes.
  */
 export function windowStaffAt(input: SlotInput, startAt: number): number[] {
-  const { date, minute } = utcToWall(startAt, input.cfg.tz);
   const staff = new Set<number>();
-  for (const win of windowsForDate(input, date)) {
-    if (win.startMin > minute || minute >= win.endMin) continue;
+  for (const win of windowsCovering(input, startAt)) {
     for (const id of win.staffIds) if (input.bookableStaff.has(id)) staff.add(id);
   }
   return [...staff].sort((a, b) => a - b);
+}
+
+/** `windowStaffAt` minus technicians whose time off overlaps the hold's own occupied range [occStart, occEnd). */
+export function freeStaffAt(input: SlotInput, startAt: number, occStart: number, occEnd: number): number[] {
+  return windowStaffAt(input, startAt).filter(
+    (id) => !input.unavailability.some((u) => u.staffId === id && u.startAt < occEnd && occStart < u.endAt),
+  );
 }
 
 export function generateSlots(input: SlotInput): Slot[] {

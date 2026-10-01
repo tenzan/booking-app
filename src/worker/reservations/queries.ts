@@ -1,5 +1,5 @@
 import { assignableFor } from "../../domain/matching";
-import { windowStaffAt } from "../../domain/slots";
+import { freeStaffAt, windowStaffAt } from "../../domain/slots";
 import type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
 import type { Env } from "../env";
 import { loadScheduleCtx } from "../scheduling/context";
@@ -199,11 +199,12 @@ export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOpti
   const assignable = new Set(assignableFor(ctx.holds, r.id));
   // Scheduled on the window covering the request, regardless of time off and of today's duration.
   const scheduled = new Set(windowStaffAt(ctx.slotInput, r.startAt));
+  const free = new Set(freeStaffAt(ctx.slotInput, r.startAt, occStart, occEnd));
 
   const options = staff.map((s): TechOption => {
     if (assignable.has(s.id)) return { id: s.id, name: s.name, assignable: true, reason: null };
     if (!scheduled.has(s.id)) return { id: s.id, name: s.name, assignable: false, reason: "not_scheduled" };
-    if (ctx.slotInput.unavailability.some((u) => u.staffId === s.id && u.startAt < occEnd && occStart < u.endAt)) {
+    if (!free.has(s.id)) {
       return { id: s.id, name: s.name, assignable: false, reason: "unavailable" };
     }
     const fixed = ctx.holds.find((h) => h.id !== r.id && h.fixed === s.id && h.start < occEnd && occStart < h.end);

@@ -1,5 +1,5 @@
 import { MIN, utcToWall } from "../../domain/time";
-import { generateSlots, windowStaffAt, type Slot, type SlotCfg, type SlotInput } from "../../domain/slots";
+import { freeStaffAt, generateSlots, type Slot, type SlotCfg, type SlotInput } from "../../domain/slots";
 import type { Hold } from "../../domain/matching";
 import type { BhCtx } from "../../domain/business-hours";
 import type { Settings } from "../../domain/settings";
@@ -87,9 +87,7 @@ export async function loadScheduleCtx(env: Env, fromMs: number, toMs: number): P
       holdOwners.set(r.id, { kind: "reservation", id: r.id, status: r.status, staffId: r.assignedStaffId, ref: r.ref });
     } else {
       // Eligibility comes from the hold's own data (its window and stored range), not from today's duration/buffers.
-      const free = windowStaffAt(slotInput, r.startAt).filter(
-        (id) => !unavailability.some((u) => u.staffId === id && u.startAt < end && start < u.endAt),
-      );
+      const free = freeStaffAt(slotInput, r.startAt, start, end);
       const eligible = free.length > 0 ? free : r.provisionalStaffId !== null ? [r.provisionalStaffId] : [];
       holds.push({ id: r.id, start, end, fixed: null, eligible, preferred: r.provisionalStaffId });
       holdOwners.set(r.id, { kind: "reservation", id: r.id, status: r.status, staffId: r.provisionalStaffId, ref: r.ref });
