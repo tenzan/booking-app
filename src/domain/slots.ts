@@ -1,4 +1,4 @@
-import { MIN, eachDate, wallToUtc } from "./time";
+import { MIN, eachDate, utcToWall, wallToUtc } from "./time";
 
 export interface WindowDef {
   id: number;
@@ -73,6 +73,20 @@ function windowsForDate(input: SlotInput, date: string): WindowDef[] {
   if (input.holidays.has(date)) return [];
   const weekday = weekdayOf(date);
   return input.windows.filter((w) => w.kind === "weekly" && w.weekday === weekday);
+}
+
+/**
+ * Bookable technicians listed on the windows covering `startAt`, ignoring the current duration/step (does the slot
+ * still fit?) and time off. This is who an existing hold may be (re)assigned to, independent of settings changes.
+ */
+export function windowStaffAt(input: SlotInput, startAt: number): number[] {
+  const { date, minute } = utcToWall(startAt, input.cfg.tz);
+  const staff = new Set<number>();
+  for (const win of windowsForDate(input, date)) {
+    if (win.startMin > minute || minute >= win.endMin) continue;
+    for (const id of win.staffIds) if (input.bookableStaff.has(id)) staff.add(id);
+  }
+  return [...staff].sort((a, b) => a - b);
 }
 
 export function generateSlots(input: SlotInput): Slot[] {

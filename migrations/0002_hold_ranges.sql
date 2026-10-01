@@ -18,3 +18,11 @@ WHERE EXISTS (SELECT 1 FROM tech_blocks b WHERE b.owner_kind = 'option' AND b.ow
 -- Rows without blocks (terminal reservations, closed options) hold nothing: zero buffers.
 UPDATE reservations SET occ_start = start_at, occ_end = end_at WHERE occ_start = 0 AND occ_end = 0;
 UPDATE proposal_options SET occ_start = start_at, occ_end = end_at WHERE occ_start = 0 AND occ_end = 0;
+
+-- Future insert paths must state a real range; a zero-length hold would silently hold nothing.
+CREATE TRIGGER reservations_occ_required BEFORE INSERT ON reservations
+WHEN NEW.occ_end <= NEW.occ_start
+BEGIN SELECT RAISE(ABORT, 'occupied range required'); END;
+CREATE TRIGGER proposal_options_occ_required BEFORE INSERT ON proposal_options
+WHEN NEW.occ_end <= NEW.occ_start
+BEGIN SELECT RAISE(ABORT, 'occupied range required'); END;

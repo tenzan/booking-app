@@ -5,6 +5,7 @@ import { loginCustomer, loginStaff, seedCustomer, seedTeam, seedWeekly, TZ } fro
 import { setNow } from "../../src/worker/lib/clock";
 import { MIN, wallToUtc } from "../../src/domain/time";
 import { blockMinutes, rangeBlocks } from "../../src/domain/slots";
+import { loadScheduleCtx } from "../../src/worker/scheduling/context";
 
 afterEach(() => setNow(null));
 
@@ -79,6 +80,54 @@ describe("stored occupied ranges", () => {
     expect(res.status).toBe(200);
     expect(await blocksOf(id)).toEqual(before);
     expect(await rangeOf(id)).toEqual({ s: at(FRI, 10), e: at(FRI, 10, 40) });
+  });
+});
+
+describe("eligibility of existing pending holds", () => {
+  it("keeps time off against the stored range after a buffer change", async () => {
+    // B is on leave from 10:35: the 10:00-10:30 request (occupied until 10:40) can only go to A.
+    await env.DB.prepare("INSERT INTO staff_unavailability(staff_id, start_at, end_at) VALUES (?, ?, ?)").bind(team.b, at(FRI, 10, 35), at(FRI, 12)).run();
+    const id = await submit(pat, at(FRI, 10));
+    expect((await rangeOf(id))!.e).toBe(at(FRI, 10, 40));
+    expect((await env.DB.prepare("SELECT provisional_staff_id AS p FROM reservations WHERE id = ?").bind(id).first<{ p: number }>())!.p).toBe(team.a);
+
+    await setSetting("bufferAfterMin", 0); // today's buffers would end at 10:30 and free B
+    const ctx = await loadScheduleCtx(env, at(FRI, 10), at(FRI, 10, 30));
+    expect(ctx.holds.find((h) => h.id === id)!.eligible).toEqual([team.a]);
+
+    const admin = await loginStaff("admin@example.test");
+    const d = await api("GET", `/api/staff/reservations/${id}`, { cookie: admin });
+    expect(d.json.techOptions.find((o: any) => o.id === team.b)).toMatchObject({ assignable: false, reason: "unavailable" });
+    const res = await api("POST", `/api/staff/reservations/${id}/approve`, { cookie: admin, body: { staffId: team.b, version: 1 } });
+    expect([res.status, res.json.error]).toEqual([409, "tech_unavailable"]);
+  });
+
+  it("stays eligible when a longer duration no longer fits the window", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await setSetting("durationMin", 90); // the 10:00-11:00 window can no longer fit a slot at all
+    const ctx = await loadScheduleCtx(env, at(FRI, 10), at(FRI, 10, 30));
+    expect(ctx.slots).toEqual([]);
+    expect(ctx.holds.find((h) => h.id === id)!.eligible).toEqual([team.a, team.b]);
+    const d = await api("GET", `/api/staff/reservations/${id}`, { cookie: await loginStaff("admin@example.test") });
+    expect(d.json.techOptions.filter((o: any) => o.assignable).map((o: any) => o.id).sort()).toEqual([team.a, team.b].sort());
+  });
+});
+
+describe("occupied range guard", () => {
+  it("rejects inserts without a real range", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    const insert = (occ: [number, number]) =>
+      env.DB.prepare(
+        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
+           idempotency_key, created_at, updated_at)
+         VALUES ('x1', 'R-X-1', ?, 'pat@example.test', 'Pat', '0', 'i', 1, 2, ?, ?, 'completed', 'kx', 0, 0)`,
+      ).bind(pat.id, ...occ).run();
+    await expect(insert([0, 0])).rejects.toThrow(/occupied range required/);
+    await expect(insert([1, 2])).resolves.toBeDefined();
+    await expect(
+      env.DB.prepare("INSERT INTO proposal_options(id, proposal_id, start_at, end_at, staff_id) VALUES ('o9', 'nope', 1, 2, ?)").bind(team.a).run(),
+    ).rejects.toThrow(/occupied range required/);
+    expect(id).toBeTruthy();
   });
 });
 

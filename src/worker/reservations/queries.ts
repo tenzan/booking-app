@@ -1,5 +1,5 @@
 import { assignableFor } from "../../domain/matching";
-import { findSlot, generateSlots } from "../../domain/slots";
+import { windowStaffAt } from "../../domain/slots";
 import type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
 import type { Env } from "../env";
 import { loadScheduleCtx } from "../scheduling/context";
@@ -197,8 +197,8 @@ export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOpti
   if (!own) return [];
   const { start: occStart, end: occEnd } = own;
   const assignable = new Set(assignableFor(ctx.holds, r.id));
-  // Scheduled for the slot regardless of time off (the slot's own staff list already excludes those on leave).
-  const scheduled = new Set(findSlot(generateSlots({ ...ctx.slotInput, unavailability: [] }), r.startAt)?.staffIds ?? []);
+  // Scheduled on the window covering the request, regardless of time off and of today's duration.
+  const scheduled = new Set(windowStaffAt(ctx.slotInput, r.startAt));
 
   const options = staff.map((s): TechOption => {
     if (assignable.has(s.id)) return { id: s.id, name: s.name, assignable: true, reason: null };
