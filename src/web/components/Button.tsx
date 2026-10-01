@@ -8,7 +8,7 @@ type Size = "md" | "lg";
 const base =
   "inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-colors select-none disabled:cursor-not-allowed disabled:opacity-60";
 const variants: Record<Variant, string> = {
-  primary: "bg-blue-700 text-white hover:bg-blue-800 active:bg-blue-900 dark:bg-blue-600 dark:hover:bg-blue-500",
+  primary: "bg-blue-700 text-white hover:bg-blue-800 active:bg-blue-900 dark:bg-blue-600 dark:hover:bg-blue-700",
   secondary:
     "border border-slate-300 bg-white text-slate-900 hover:bg-slate-100 active:bg-slate-200 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800",
   ghost: "text-blue-700 hover:bg-blue-50 active:bg-blue-100 dark:text-blue-300 dark:hover:bg-slate-800",

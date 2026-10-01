@@ -26,7 +26,9 @@ function Redeem({ token }: { token: string | null }) {
   const redeem = useMutation({
     mutationFn: (tok: string) => apiFetch<Redeemed>("/api/auth/redeem", { method: "POST", body: { token: tok } }),
     onSuccess: async (r) => {
-      // Refresh "who am I" first, so the destination header can say whose session this is.
+      // A new session may be a different person: drop everything cached for the previous one, then refresh
+      // "who am I" before navigating so the destination header can say whose session this is.
+      qc.removeQueries({ queryKey: ["customer"] });
       await qc.invalidateQueries({ queryKey: queryKeys.me });
       const dest = safePath(r.redirectPath) ?? (r.kind === "staff" ? "/staff" : "/book");
       navigate(dest, { replace: true, state: { signedIn: true } satisfies SignedInState });
@@ -49,7 +51,7 @@ function Redeem({ token }: { token: string | null }) {
   if (isApiError(redeem.error, 410)) {
     return (
       <Shell icon="clock" heading={t("web.verify.expiredHeading")} body={t("web.verify.expiredBody")}>
-        <div aria-live="polite" className="empty:hidden">
+        <div aria-live="polite" className="empty:mb-0">
           {resend.isSuccess && <Notice tone="success">{t("web.verify.resent")}</Notice>}
           {resend.isError && <Notice tone="error">{errorText(resend.error)}</Notice>}
         </div>
@@ -80,7 +82,7 @@ function Redeem({ token }: { token: string | null }) {
   const busy = redeem.isPending || redeem.isSuccess;
   return (
     <Shell icon="key" heading={t("web.verify.heading")} body={t("web.verify.lead")}>
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0">
         {redeem.isError && <Notice tone="error">{errorText(redeem.error)}</Notice>}
       </div>
       <Button size="lg" block loading={busy} onClick={() => redeem.mutate(token)}>

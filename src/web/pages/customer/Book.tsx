@@ -8,7 +8,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { PageHeading, usePageTitle } from "../../components/Layout";
 import { Skeleton } from "../../components/Spinner";
 import { TimezoneNote } from "../../components/TimezoneNote";
-import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtTimeRange, todayIn } from "../../format";
+import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtTimeRange, fmtTz, todayIn } from "../../format";
 import { t } from "../../i18n";
 import { AccountPicker } from "./book/AccountPicker";
 import { DateStrip } from "./book/DateStrip";
@@ -51,7 +51,8 @@ export default function Book() {
   );
 }
 
-type Banner = { tone: "warning" | "error"; text: string; action?: "retry" | "my" };
+/** A message tied to the step it belongs to; leaving that step drops it. */
+type Banner = { step: Step; tone: "warning" | "error"; text: string; action?: "retry" | "my" };
 
 const prefill = (a: Account): Details => ({
   contactName: a.contactName ?? "",
@@ -97,7 +98,8 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
   const selectedDay = days.find((d) => d.date === date) ?? null;
 
   // ---- step, kept in the URL so the browser back button walks back through the steps
-  const account = accounts.find((a) => a.id === accountId) ?? null;
+  // Derived from the current list, so a refetched list (access revoked, account added) can't leave a stale pick.
+  const account = accounts.length === 1 ? accounts[0]! : (accounts.find((a) => a.id === accountId) ?? null);
   const requested = stepFromName(params.get("step"));
   const detailsOk = Object.keys(validateDetails(details)).length === 0;
   const step: Step = account && slot ? (requested === 3 && !detailsOk ? 2 : requested) : 1;
@@ -108,6 +110,23 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
   useEffect(() => {
     if (step !== requested) goTo(step, true);
   }, [step, requested]);
+
+  useEffect(() => {
+    if (accountId !== null && !accounts.some((a) => a.id === accountId)) setAccountId(null);
+  }, [accounts, accountId]);
+
+  // Prefill contact name and phone from the chosen account, keeping anything the customer typed.
+  const prefilledFor = useRef(single?.id ?? null);
+  useEffect(() => {
+    if (!account || prefilledFor.current === account.id) return;
+    prefilledFor.current = account.id;
+    const p = prefill(account);
+    setDetails((d) => ({
+      contactName: edited.current.has("contactName") ? d.contactName : p.contactName,
+      phone: edited.current.has("phone") ? d.phone : p.phone,
+      issue: d.issue,
+    }));
+  }, [account]);
 
   // Pick the first day with times, and re-pick when the chosen day runs out of times.
   useEffect(() => {
@@ -127,28 +146,26 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
     prevStep.current = step;
     window.scrollTo(0, 0);
     stepHeading.current?.focus({ preventScroll: true });
-  }, [step]);
-
-  // One idempotency key per exact request; retries of the same request reuse it.
-  useEffect(() => {
-    if (step !== 3 || !account || !slot) return;
-    const fingerprint = JSON.stringify([account.id, slot.startAt, details.contactName.trim(), details.phone, details.issue.trim()]);
-    if (idempotency.current?.fingerprint !== fingerprint) idempotency.current = { key: crypto.randomUUID(), fingerprint };
+    setBanner((b) => (b && b.step === step ? b : null));
   }, [step]);
 
   const submit = useMutation({
-    mutationFn: () =>
-      apiFetch<{ reservation: SubmittedReservation }>("/api/customer/reservations", {
+    mutationFn: () => {
+      const body = {
+        customerId: account!.id,
+        startAt: slot!.startAt,
+        contactName: details.contactName.trim(),
+        phone: details.phone,
+        issue: details.issue.trim(),
+      };
+      // One key per exact request: a retry of the same request reuses it, any changed fact gets a new one.
+      const fingerprint = JSON.stringify(body);
+      if (idempotency.current?.fingerprint !== fingerprint) idempotency.current = { key: crypto.randomUUID(), fingerprint };
+      return apiFetch<{ reservation: SubmittedReservation }>("/api/customer/reservations", {
         method: "POST",
-        body: {
-          customerId: account!.id,
-          startAt: slot!.startAt,
-          contactName: details.contactName.trim(),
-          phone: details.phone,
-          issue: details.issue.trim(),
-          idempotencyKey: idempotency.current!.key,
-        },
-      }),
+        body: { ...body, idempotencyKey: idempotency.current.key },
+      });
+    },
     onMutate: () => setBanner(null),
     onSuccess: ({ reservation }) => {
       qc.removeQueries({ queryKey: queryKeys.availability });
@@ -159,40 +176,33 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
     onError: (e) => {
       if (isApiError(e, 409, "slot_unavailable") || isApiError(e, 400, "too_soon")) {
         setSlot(null);
-        setBanner({ tone: "warning", text: t(e.code === "too_soon" ? "web.book.errors.tooSoon" : "web.book.errors.slotTaken") });
+        setBanner({ step: 1, tone: "warning", text: t(e.code === "too_soon" ? "web.book.errors.tooSoon" : "web.book.errors.slotTaken") });
         void qc.invalidateQueries({ queryKey: queryKeys.availability });
         goTo(1, true);
       } else if (isApiError(e, 409, "limit_reached")) {
-        setBanner({ tone: "warning", text: t("web.book.errors.limitReached"), action: "my" });
+        setBanner({ step: 3, tone: "warning", text: t("web.book.errors.limitReached"), action: "my" });
       } else if (isApiError(e, 403, "not_eligible")) {
-        setBanner({ tone: "error", text: t("web.book.errors.notEligible") });
+        setBanner({ step: 3, tone: "error", text: t("web.book.errors.notEligible") });
         void qc.invalidateQueries({ queryKey: queryKeys.accounts });
       } else if (isApiError(e, 409, "idempotency_conflict")) {
         idempotency.current = null;
         goTo(2, true);
-        setBanner({ tone: "error", text: t("web.errors.generic") });
+        setBanner({ step: 2, tone: "error", text: t("web.errors.generic") });
       } else if (isApiError(e, 400)) {
         goTo(2, true);
-        setBanner({ tone: "error", text: t("web.book.errors.invalid") });
+        setBanner({ step: 2, tone: "error", text: t("web.book.errors.invalid") });
       } else if (isApiError(e, 429)) {
-        setBanner({ tone: "error", text: t("web.errors.rateLimited") });
+        setBanner({ step: 3, tone: "error", text: t("web.errors.rateLimited") });
       } else if (isApiError(e, 503)) {
-        setBanner({ tone: "warning", text: t("web.errors.busy"), action: "retry" });
+        setBanner({ step: 3, tone: "warning", text: t("web.errors.busy"), action: "retry" });
       } else if (!isApiError(e, 401)) {
-        setBanner({ tone: "error", text: t(isApiError(e, 0) ? "web.errors.network" : "web.errors.generic"), action: "retry" });
+        setBanner({ step: 3, tone: "error", text: t(isApiError(e, 0) ? "web.errors.network" : "web.errors.generic"), action: "retry" });
       }
     },
   });
 
   function chooseAccount(id: number) {
-    const a = accounts.find((x) => x.id === id)!;
-    const p = prefill(a);
     setAccountId(id);
-    setDetails((d) => ({
-      contactName: edited.current.has("contactName") ? d.contactName : p.contactName,
-      phone: edited.current.has("phone") ? d.phone : p.phone,
-      issue: d.issue,
-    }));
     setBanner(null);
   }
 
@@ -205,7 +215,7 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
 
   function continueFromTime() {
     if (!account) {
-      setBanner({ tone: "error", text: t("web.book.account.required") });
+      setBanner({ step: 1, tone: "error", text: t("web.book.account.required") });
       return;
     }
     setBanner(null);
@@ -229,6 +239,7 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
     <>
       <span className="block font-semibold">{fmtShortDate(dateIn(slot.startAt, tz))}</span>
       <span className="block text-slate-600 tabular-nums dark:text-slate-400">{fmtTimeRange(slot.startAt, slot.endAt, tz)}</span>
+      <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{fmtTz(tz, slot.startAt)}</span>
     </>
   ) : (
     <span className="text-slate-600 dark:text-slate-400">{t("web.book.bar.noSelection")}</span>
@@ -240,8 +251,8 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
     <div className="space-y-6 pb-28 sm:pb-0">
       <Steps current={step} onGo={(s) => goTo(s)} />
 
-      <div aria-live="polite" className="empty:hidden">
-        {banner && (
+      <div aria-live="polite" className="empty:mb-0">
+        {banner && banner.step === step && (
           <Notice tone={banner.tone} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             <span>{banner.text}</span>
             {banner.action === "my" && (
@@ -249,7 +260,7 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
                 {t("web.book.errors.limitLink")}
               </Link>
             )}
-            {banner.action === "retry" && (
+            {banner.action === "retry" && step === 3 && (
               <Button variant="secondary" onClick={() => submit.mutate()} loading={submit.isPending}>
                 {t("web.common.retry")}
               </Button>
@@ -305,7 +316,7 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
                 selected={slot?.startAt ?? null}
                 onSelect={(s) => {
                   setSlot(s);
-                  if (banner?.tone === "warning") setBanner(null);
+                  setBanner(null);
                 }}
               />
             ) : days.length > 0 && avail.hasNextPage ? (

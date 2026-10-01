@@ -2,9 +2,10 @@ import type { ReactNode } from "react";
 
 export const inputClass =
   "block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-base text-slate-900 placeholder:text-slate-400 " +
-  "focus:border-blue-600 focus:outline-2 focus:outline-offset-0 focus:outline-blue-600/30 " +
+  "focus:border-blue-600 " +
   "aria-[invalid=true]:border-red-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 " +
   "dark:focus:border-blue-400 dark:aria-[invalid=true]:border-red-400";
+// Focus ring: the global :focus-visible outline in index.css (text inputs match it on every focus).
 
 interface FieldProps {
   id: string;

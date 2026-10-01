@@ -111,7 +111,7 @@ function EmailForm({ siteKey, next, onSent }: { siteKey: string | null; next: st
             }}
           />
         )}
-        <div aria-live="polite" className="empty:hidden">
+        <div aria-live="polite" className="empty:mb-0">
           {captchaFailed ? (
             <Notice tone="error">{t("web.start.turnstileFailed")}</Notice>
           ) : error ? (
