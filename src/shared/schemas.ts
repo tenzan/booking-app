@@ -242,7 +242,7 @@ export const contactPatchSchema = z
 export const customerActiveSchema = z.object({ active: z.boolean() });
 
 export const customerListQuerySchema = z.object({
-  query: z.string().trim().max(100).default(""),
+  query: z.string().trim().max(200).default(""),
   status: z.enum(["active", "inactive", "all"]).default("active"),
   cursor: z.string().max(300).optional(),
 });

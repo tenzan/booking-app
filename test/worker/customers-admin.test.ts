@@ -206,7 +206,7 @@ describe("list and search", () => {
     expect(await q("")).toEqual(["AB-100", "XY-200"]);
   });
 
-  it("treats % _ and \\ in the search text literally", async () => {
+  it("matches % _ and \\ in the search text as literal characters", async () => {
     await seedCustomer({ number: "P-1", name: "100% Pure", email: "p1@example.test" });
     await seedCustomer({ number: "P-2", name: "1000 Pure", email: "p2@example.test" });
     await seedCustomer({ number: "U_1", name: "Under_score", email: "u1@example.test" });
@@ -223,11 +223,18 @@ describe("list and search", () => {
     expect(await q("\\%")).toEqual([]);
   });
 
-  it("rejects a search text too long for the database's LIKE limit", async () => {
-    const res = await list(`?query=${"a".repeat(60)}`);
-    expect([res.status, res.json.error]).toEqual([400, "query_too_long"]);
-    expect((await list(`?query=${"%".repeat(30)}`)).status).toBe(400); // escaping doubles it
-    expect((await list(`?query=${"a".repeat(48)}`)).status).toBe(200);
+  it("finds a customer by a contact email longer than 48 characters, and caps the search text at 200", async () => {
+    const email = `${"long.mailbox.name".repeat(3)}@subdomain.example.test`;
+    expect(email.length).toBeGreaterThan(48);
+    await seedCustomer({ number: "L-1", name: "Long Mail", email });
+    await seedCustomer({ number: "L-2", name: "Other", email: "other@example.test" });
+    const q = async (text: string) => (await list(`?status=all&query=${encodeURIComponent(text)}`)).json.customers.map((c: any) => c.customerNumber);
+    expect(await q(email)).toEqual(["L-1"]);
+    expect(await q(email.toUpperCase())).toEqual(["L-1"]);
+    expect(await q("%".repeat(60))).toEqual([]);
+    expect((await list(`?query=${"a".repeat(200)}`)).status).toBe(200);
+    const res = await list(`?query=${"a".repeat(201)}`);
+    expect([res.status, res.json.error]).toEqual([400, "invalid"]);
   });
 
   it("pages by 50 with a cursor that stays stable when customers are added or removed between pages", async () => {

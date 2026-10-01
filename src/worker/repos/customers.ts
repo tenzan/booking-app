@@ -59,9 +59,6 @@ export async function lastPhonesForEmail(db: D1Database, email: string): Promise
 
 // ---- Administration reads ---------------------------------------------------------------------------------------
 
-/** D1 refuses LIKE patterns longer than this many bytes. */
-const MAX_LIKE_PATTERN_BYTES = 50;
-
 const encodeCursor = (number: string, id: number): string =>
   btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify([number, id])))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 
@@ -76,9 +73,6 @@ function decodeCursor(cursor: string): [string, number] {
   }
   throw new HttpError(400, "invalid_cursor");
 }
-
-/** `%` and `_` in the search text match themselves (LIKE ... ESCAPE '\'). */
-const likeContains = (text: string): string => `%${text.replace(/[\\%_]/g, "\\$&")}%`;
 
 interface ListRow {
   id: number;
@@ -102,13 +96,13 @@ export async function listCustomers(
     binds.push(f.status === "active" ? 1 : 0);
   }
   if (f.query !== "") {
-    const pattern = likeContains(f.query);
-    if (new TextEncoder().encode(pattern).length > MAX_LIKE_PATTERN_BYTES) throw new HttpError(400, "query_too_long");
+    // Substring match, case-insensitive (ASCII); instr has no wildcards to escape and no pattern length limit (unlike LIKE on D1).
     where.push(
-      `(c.customer_number LIKE ? ESCAPE '\\' OR c.name LIKE ? ESCAPE '\\'
-        OR EXISTS (SELECT 1 FROM customer_contacts m WHERE m.customer_id = c.id AND m.email LIKE ? ESCAPE '\\'))`,
+      `(instr(lower(c.customer_number), ?) > 0 OR instr(lower(c.name), ?) > 0
+        OR EXISTS (SELECT 1 FROM customer_contacts m WHERE m.customer_id = c.id AND instr(lower(m.email), ?) > 0))`,
     );
-    binds.push(pattern, pattern, pattern);
+    const needle = f.query.trim().toLowerCase();
+    binds.push(needle, needle, needle);
   }
   if (f.cursor !== undefined) {
     const [number, id] = decodeCursor(f.cursor);
