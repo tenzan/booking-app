@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CodedMessage } from "../../../../domain/csv";
 import { holidayNameSchema, isoDateSchema, MAX_HOLIDAY_IMPORT_ROWS } from "../../../../shared/schemas";
-import { apiFetch, isApiError, queryKeys, type Holiday, type HolidayImportPreview, type HolidayImportRowView } from "../../../api";
+import { apiFetch, handleSignedOut, isApiError, queryKeys, type Holiday, type HolidayImportPreview, type HolidayImportRowView } from "../../../api";
 import { Button } from "../../../components/Button";
 import { Notice } from "../../../components/Card";
 import { focusWhenReady } from "../../../components/Dialog";
@@ -196,7 +196,7 @@ function HolidayRow({ holiday, past, canEdit, submit }: { holiday: Holiday; past
             </Button>
           )}
         </div>
-        <div aria-live="polite" className="empty:hidden">
+        <div aria-live="polite" className="empty:mb-0 empty:last:-mt-2">
           {problem && <Notice tone="error">{problem}</Notice>}
         </div>
         {canEdit && asking && (
@@ -333,7 +333,7 @@ function AddHoliday({ submit, onAdded, existing, shownYear }: { submit: Submit; 
         </Button>
       </div>
       {current && <p className="text-sm font-medium text-amber-800 dark:text-amber-300">{h("renames", { date: fmtDateWithYear(date), name: current.name })}</p>}
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0 empty:last:-mt-4">
         {errors.form && <Notice tone="error">{errors.form}</Notice>}
       </div>
     </form>
@@ -366,6 +366,7 @@ const request = (csv: string, version?: number) => ({ method: "POST", body: vers
 /** Two steps: add the file (upload or paste) → check the planned rows and import. */
 function ImportWizard({ submit, onClose }: { submit: Submit; onClose: (importedYear?: number) => void }) {
   const id = useId();
+  const qc = useQueryClient();
   const [csv, setCsv] = useState("");
   const [fileNote, setFileNote] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [plan, setPlan] = useState<HolidayImportPreview | null>(null);
@@ -403,7 +404,7 @@ function ImportWizard({ submit, onClose }: { submit: Submit; onClose: (importedY
     try {
       setPlan(await apiFetch<HolidayImportPreview>("/api/staff/holidays/import/preview", request(csv)));
     } catch (e) {
-      if (!isApiError(e, 401)) setProblem(importErrorText(e) ?? actionErrorText(e));
+      if (!handleSignedOut(qc, e)) setProblem(importErrorText(e) ?? actionErrorText(e));
     } finally {
       setBusy(false);
     }
@@ -481,7 +482,7 @@ function ImportWizard({ submit, onClose }: { submit: Submit; onClose: (importedY
               onChange={(e) => void readFile(e.target.files?.[0])}
               className="block w-full text-sm file:mr-3 file:min-h-11 file:cursor-pointer file:rounded-xl file:border file:border-slate-300 file:bg-white file:px-4 file:font-semibold file:text-slate-900 hover:file:bg-slate-100 dark:file:border-slate-600 dark:file:bg-slate-900 dark:file:text-slate-100"
             />
-            <div aria-live="polite" className="empty:hidden">
+            <div aria-live="polite" className="empty:mb-0">
               {fileNote && <p className={`mt-1.5 text-sm font-medium ${fileNote.tone === "error" ? "text-red-700 dark:text-red-400" : "text-green-800 dark:text-green-300"}`}>{fileNote.text}</p>}
             </div>
           </div>
@@ -500,7 +501,7 @@ function ImportWizard({ submit, onClose }: { submit: Submit; onClose: (importedY
               className={`${inputClass} min-h-32 resize-y font-mono text-sm`}
             />
           </div>
-          <div aria-live="polite" className="empty:hidden">
+          <div aria-live="polite" className="empty:mb-0">
             {problem && <Notice tone="error">{problem}</Notice>}
           </div>
           <div className="grid grid-cols-2 gap-3 sm:flex">
@@ -528,7 +529,7 @@ function ImportWizard({ submit, onClose }: { submit: Submit; onClose: (importedY
           {plan.rows.length > 0 && <PlanTable rows={plan.rows} />}
 
           {counts!.conflicts > 0 && !blockedReason && <Notice tone="warning">{h("import.conflictsNote")}</Notice>}
-          <div aria-live="polite" className="empty:hidden">
+          <div aria-live="polite" className="empty:mb-0">
             {problem && <Notice tone="error">{problem}</Notice>}
           </div>
           {blockedReason && (

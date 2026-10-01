@@ -98,7 +98,7 @@ export function BookingCard({ enabled, isAdmin }: { enabled: boolean; isAdmin: b
       )}
 
       {/* Always rendered so the outcome is announced; it takes no space while empty. */}
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0 empty:last:-mt-4">
         {result && <Notice tone={result.tone}>{result.text}</Notice>}
       </div>
     </Card>

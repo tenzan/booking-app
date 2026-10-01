@@ -232,7 +232,7 @@ function OverrideRow({
         {o?.note && <p className="text-sm break-words text-slate-600 italic dark:text-slate-400">{o.note}</p>}
         {o && r.holiday && <p className="text-sm text-slate-500 dark:text-slate-400">{k("overrides.overridesHoliday")}</p>}
 
-        <div aria-live="polite" className="empty:hidden">
+        <div aria-live="polite" className="empty:mb-0 empty:last:-mt-2">
           {problem && <Notice tone="error">{problem}</Notice>}
         </div>
 
@@ -541,7 +541,7 @@ function OverrideForm({
         </p>
       </div>
 
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0">
         {errors.form && <Notice tone="error">{errors.form}</Notice>}
       </div>
       <div className="flex flex-wrap gap-2">

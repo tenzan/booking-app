@@ -75,12 +75,31 @@ export function errorsFrom(issues: readonly Issue[]): FieldErrors {
 /** A whole number typed into a text field; null when it isn't one. */
 export const readInt = (raw: string): number | null => (/^\s*\d+\s*$/.test(raw) ? Number(raw) : null);
 
-/** A section's form: its draft, how to read settings from it, and what to say about saving it. */
-export interface SectionSpec<D> {
-  keys: readonly Key[];
-  toDraft: (settings: Settings) => D;
-  /** The settings in the draft; fields that can't be read (e.g. "abc" for a number) go to `errors` instead. */
-  read: (draft: D) => { values: Partial<Settings>; errors: FieldErrors };
+/** What reading one setting's control gives: the value to send, or why it can't be read. */
+export type Read = { value: unknown } | { error: string };
+
+/** How one setting is shown in its control (`toRaw`) and read back (`fromRaw`). */
+export interface Codec<R> {
+  toRaw: (value: unknown) => R;
+  fromRaw: (raw: R) => Read;
+}
+
+/** The control holds the value as it is. */
+export const plain = <R,>(): Codec<R> => ({ toRaw: (v) => v as R, fromRaw: (r) => ({ value: r }) });
+/** Text the schema trims: surrounding spaces are no change. */
+export const trimmed: Codec<string> = { toRaw: (v) => v as string, fromRaw: (r) => ({ value: r.trim() }) };
+/** A whole number typed as text, so partial input isn't lost. */
+export const intText: Codec<string> = {
+  toRaw: (v) => String(v),
+  fromRaw: (r) => {
+    const n = readInt(r);
+    return n === null ? { error: s("errors.wholeNumber") } : { value: n };
+  },
+};
+
+/** A section's form: one codec per setting it edits, and what to say about saving it. */
+export interface SectionSpec<D extends Record<string, unknown>> {
+  codecs: { [K in keyof D]: Codec<D[K]> };
   summary: string;
   done: string;
 }
@@ -88,33 +107,40 @@ export interface SectionSpec<D> {
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 /**
- * The state of one settings card: the draft starts from the saved settings (and follows them while untouched), Save
- * sends only the settings that changed, validated first with the shared schemas, then through preview → apply.
+ * The state of one settings card. `base` is the server's settings as last seen and `draft` what the form shows; a
+ * setting is touched when the two read differently. Only touched settings are sent. When fresh settings arrive,
+ * untouched ones follow them (so the card shows current data and never sends back a stale value), touched ones keep
+ * the edit. Save validates with the shared schemas, then goes through preview → apply.
  */
-export function useSection<D>(spec: SectionSpec<D>, settings: Settings, submit: Submit) {
-  const saved = spec.toDraft(settings);
-  const savedJson = JSON.stringify(saved);
-  const [draft, setDraftState] = useState<D>(saved);
+export function useSection<D extends Record<string, unknown>>(spec: SectionSpec<D>, settings: Settings, submit: Submit) {
+  const keys = Object.keys(spec.codecs) as Array<keyof D & string>;
+  const read = (d: D, k: keyof D & string): Read => spec.codecs[k].fromRaw(d[k]);
+  const fresh = Object.fromEntries(keys.map((k) => [k, spec.codecs[k].toRaw(settings[k as Key])])) as D;
+  const freshJson = JSON.stringify(fresh);
+  const [state, setState] = useState<{ draft: D; base: D }>({ draft: fresh, base: fresh });
   const [errors, setErrors] = useState<FieldErrors>({});
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
   /** Set once a save is applied: the heading takes focus when the saved values come back. */
   const focusOnSaved = useRef(false);
-  const dirty = JSON.stringify(draft) !== savedJson;
-  const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty;
+  const touched = (k: keyof D & string, st = state) => !same(read(st.draft, k), read(st.base, k));
+  const dirty = keys.some((k) => touched(k));
 
-  // Fresh settings from the server replace an untouched draft; after a save, focus goes to the card's heading
-  // (the Save button is disabled again by then, and the toast says what happened).
   useEffect(() => {
+    const next = JSON.parse(freshJson) as D;
     if (focusOnSaved.current) {
+      // Saved: the form shows what the server holds now; the Save button is disabled again, so focus goes to the
+      // card's heading (the toast says what happened).
       focusOnSaved.current = false;
-      setDraftState(JSON.parse(savedJson) as D);
+      setState({ draft: next, base: next });
       setErrors({});
       headingRef.current?.focus();
-    } else if (!dirtyRef.current) setDraftState(JSON.parse(savedJson) as D);
-  }, [savedJson]);
+      return;
+    }
+    setState((st) => ({ base: next, draft: Object.fromEntries(keys.map((k) => [k, touched(k, st) ? st.draft[k] : next[k]])) as D }));
+    // `keys` and `touched` only depend on the spec's settings, which never change for a card.
+  }, [freshJson]);
 
   // Leaving the page with unsaved changes asks first.
   useEffect(() => {
@@ -126,32 +152,34 @@ export function useSection<D>(spec: SectionSpec<D>, settings: Settings, submit: 
 
   /** Change the draft; the edited fields' errors go away. */
   const update = (fn: (d: D) => D, ...fields: string[]) => {
-    setDraftState(fn);
+    setState((st) => ({ ...st, draft: fn(st.draft) }));
     if (fields.length > 0) setErrors((e) => Object.fromEntries(Object.entries(e).filter(([f]) => !fields.includes(f))));
   };
 
   const focusFirst = (errs: FieldErrors) => {
-    // Fields are laid out in key order; the first erroneous one in the document takes focus.
+    // The first erroneous field in the document takes focus.
     const ids = Object.keys(errs).map(fieldId);
     const first = [...document.querySelectorAll<HTMLElement>("[id^='settings-']")].find((el) => ids.includes(el.id));
     first?.focus();
   };
 
   async function save() {
-    const { values, errors: unreadable } = spec.read(draft);
-    const patch = Object.fromEntries(spec.keys.filter((k) => values[k] !== undefined && !same(values[k], settings[k])).map((k) => [k, values[k]])) as Partial<Settings>;
-    const found = { ...errorsFrom(settingsPatchIssues(settings, patch)), ...unreadable };
+    const unreadable: FieldErrors = {};
+    const patch: Record<string, unknown> = {};
+    for (const k of keys) {
+      if (!touched(k)) continue;
+      const r = read(state.draft, k);
+      if ("error" in r) unreadable[k] = r.error;
+      else patch[k] = r.value;
+    }
+    const found = { ...errorsFrom(settingsPatchIssues(settings, patch as Partial<Settings>)), ...unreadable };
     setErrors(found);
     setProblem(null);
     if (Object.keys(found).length > 0) {
       focusFirst(found);
       return;
     }
-    if (Object.keys(patch).length === 0) {
-      // Only cosmetic differences (e.g. " 30" for 30): nothing to send.
-      setDraftState(saved);
-      return;
-    }
+    if (Object.keys(patch).length === 0) return;
     setBusy(true);
     const result = await submit({
       summary: spec.summary,
@@ -174,12 +202,12 @@ export function useSection<D>(spec: SectionSpec<D>, settings: Settings, submit: 
   }
 
   const discard = () => {
-    setDraftState(saved);
+    setState((st) => ({ ...st, draft: st.base }));
     setErrors({});
     setProblem(null);
   };
 
-  return { draft, update, errors, problem, busy, dirty, save, discard, headingRef };
+  return { draft: state.draft, update, errors, problem, busy, dirty, save, discard, headingRef };
 }
 
 /** A settings card: titled region with an optional lead, its fields, and (for administrators) the save bar. */
@@ -224,7 +252,7 @@ export function SectionCard({
 export function SaveBar({ busy, dirty, problem, onSave, onDiscard }: { busy: boolean; dirty: boolean; problem: string | null; onSave: () => void; onDiscard: () => void }) {
   return (
     <div className="space-y-3 rounded-b-2xl border-t border-slate-200 bg-slate-50 px-5 py-3 sm:px-6 dark:border-slate-800 dark:bg-slate-900/60">
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0">
         {problem && <Notice tone="error">{problem}</Notice>}
       </div>
       <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">

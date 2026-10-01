@@ -282,7 +282,7 @@ function WindowForm({
       </div>
       <StaffPicker staff={staff} value={staffIds} onChange={setStaffIds} myId={myId} error={errors.staff} />
       {/* Always rendered so problems are announced; it takes no space while empty. */}
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0">
         {errors.form && <Notice tone="error">{errors.form}</Notice>}
       </div>
       {askDelete ? (

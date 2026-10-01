@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { z } from "zod";
 import { staffCreateSchema } from "../../../../shared/schemas";
 import type { StaffDTO } from "../../../../shared/types";
-import { apiFetch, isApiError, queryKeys } from "../../../api";
+import { apiFetch, handleSignedOut, isApiError, queryKeys } from "../../../api";
 import { Button } from "../../../components/Button";
 import { Notice } from "../../../components/Card";
 import { inputClass } from "../../../components/Field";
@@ -41,18 +41,27 @@ function fieldErrors(issues: readonly Issue[]): Errors {
 
 const focusFirst = (id: string, errors: Errors) => document.getElementById(errors.name ? `${id}-name` : `${id}-email`)?.focus();
 
-/** Administrator / technician as two radio cards with what each may do. */
-function RoleChoice({ name, value, onChange, disabled }: { name: string; value: Role; onChange: (r: Role) => void; disabled?: boolean }) {
+/**
+ * Administrator / technician as two radio cards with what each may do. `adminOnly` locks the choice to administrator
+ * and says why (your own role: someone else has to change it).
+ */
+function RoleChoice({ name, value, onChange, adminOnly }: { name: string; value: Role; onChange: (r: Role) => void; adminOnly?: string }) {
+  const noteId = useId();
   return (
-    <fieldset>
+    <fieldset aria-describedby={adminOnly ? noteId : undefined}>
       <legend className="mb-1.5 font-medium">{tm("role")}</legend>
+      {adminOnly && (
+        <p id={noteId} className="mb-2 text-sm text-slate-600 dark:text-slate-400">
+          {adminOnly}
+        </p>
+      )}
       <div className="grid gap-2 sm:grid-cols-2">
         {(["technician", "admin"] as const).map((r) => (
           <label
             key={r}
             className="flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border border-slate-300 bg-white px-4 py-2.5 has-checked:border-blue-700 has-checked:bg-blue-50 has-checked:ring-1 has-checked:ring-blue-700 has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-blue-600 has-disabled:cursor-not-allowed has-disabled:opacity-60 dark:border-slate-600 dark:bg-slate-900 dark:has-checked:border-blue-400 dark:has-checked:bg-blue-400/10 dark:has-checked:ring-blue-400"
           >
-            <input type="radio" name={name} checked={value === r} disabled={disabled} onChange={() => onChange(r)} className="mt-0.5 size-5 shrink-0 accent-blue-700 focus-visible:outline-none" />
+            <input type="radio" name={name} checked={value === r} disabled={Boolean(adminOnly) && r !== "admin"} onChange={() => onChange(r)} className="mt-0.5 size-5 shrink-0 accent-blue-700 focus-visible:outline-none" />
             <span>
               <span className="block font-medium">{r === "admin" ? tm("roleAdmin") : tm("roleTechnician")}</span>
               <span className="block text-sm text-slate-600 dark:text-slate-400">{r === "admin" ? tm("roleAdminHint") : tm("roleTechnicianHint")}</span>
@@ -170,7 +179,7 @@ export function AddStaffForm({ onClose, onDone }: { onClose: () => void; onDone:
       void qc.invalidateQueries({ queryKey: queryKeys.schedule });
       onDone(tm("done.created", { name: staff.name, email: staff.email }), staff);
     } catch (e) {
-      if (isApiError(e, 401)) return;
+      if (handleSignedOut(qc, e)) return;
       if (isApiError(e, 409, "email_taken")) {
         setErrors({ email: tm("errors.emailTaken") });
         document.getElementById(`${id}-email`)?.focus();
@@ -195,7 +204,7 @@ export function AddStaffForm({ onClose, onDone }: { onClose: () => void; onDone:
         <Switch checked={form.bookable} onChange={(v) => set("bookable", v)} label={tm("bookable")} hint={tm("bookableHint")} className="-mx-2 w-auto" />
         <Switch checked={form.notify} onChange={(v) => set("notify", v)} label={tm("notify")} hint={tm("notifyHint")} className="-mx-2 w-auto" />
       </div>
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0">
         {errors.form && <Notice tone="error">{errors.form}</Notice>}
       </div>
       <Actions busy={busy} label={tm("create")} busyLabel={tm("creating")} onCancel={onClose} />
@@ -235,7 +244,7 @@ export function EditStaffForm({ member, isSelf, onClose, onDone }: { member: Sta
       if (isSelf) void qc.invalidateQueries({ queryKey: queryKeys.me });
       onDone(tm("done.saved", { name: staff.name }));
     } catch (e) {
-      if (isApiError(e, 401)) return;
+      if (handleSignedOut(qc, e)) return;
       if (isApiError(e, 404)) void qc.invalidateQueries({ queryKey: queryKeys.team });
       setErrors({ form: teamErrorText(e, "demote") });
     } finally {
@@ -263,8 +272,8 @@ export function EditStaffForm({ member, isSelf, onClose, onDone }: { member: Sta
           <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-400">{tm("emailFixed")}</p>
         </div>
       </div>
-      <RoleChoice name={`${id}-role`} value={role} onChange={setRole} />
-      <div aria-live="polite" className="empty:hidden">
+      <RoleChoice name={`${id}-role`} value={role} onChange={setRole} adminOnly={isSelf && member.role === "admin" ? tm("errors.selfDemote") : undefined} />
+      <div aria-live="polite" className="empty:mb-0">
         {errors.form && <Notice tone="error">{errors.form}</Notice>}
       </div>
       <Actions busy={busy} label={tm("save")} busyLabel={tm("saving")} onCancel={onClose} />

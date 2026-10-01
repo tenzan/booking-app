@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import type { CodedMessage } from "../domain/csv";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
+import type { HolidayImportRow } from "../domain/holiday-import";
 import type { Settings } from "../domain/settings";
 import type { AuditRow, CustomerReservationDTO, ImpactDTO, ReservationDTO, StaffDTO, TechOption, UnavailabilityDTO, WindowDTO } from "../shared/types";
 
@@ -38,6 +38,16 @@ export async function apiFetch<T>(path: string, opts: { method?: string; body?: 
 
 export const isApiError = (e: unknown, status?: number, code?: string): e is ApiError =>
   e instanceof ApiError && (status === undefined || e.status === status) && (code === undefined || e.code === code);
+
+/**
+ * For apiFetch calls made outside React Query (whose global handler does this for queries and mutations): on a 401
+ * re-ask "who am I", so the route guard sends the person to sign in. True when `e` was a 401.
+ */
+export function handleSignedOut(qc: QueryClient, e: unknown): boolean {
+  if (!isApiError(e, 401)) return false;
+  void qc.invalidateQueries({ queryKey: queryKeys.me });
+  return true;
+}
 
 /** Same-origin absolute path, or null. Mirrors the server's check so a link can never send us off-site. */
 export function safePath(p: string | null | undefined): string | null {
@@ -142,17 +152,8 @@ export interface SettingsView {
   timezone: string;
 }
 
-/** One row of a holiday CSV import as previewed. */
-export interface HolidayImportRowView {
-  line: number;
-  date: string;
-  name: string;
-  status: "new" | "changed" | "unchanged" | "error";
-  previousName?: string;
-  error?: CodedMessage;
-  /** Appointments or requests on this date the holiday would take away. */
-  conflicts: number;
-}
+/** One row of a holiday CSV import as previewed, with the bookings on its date the holiday would take away. */
+export type HolidayImportRowView = HolidayImportRow & { conflicts: number };
 
 export interface HolidayImportPreview extends Previewed {
   rows: HolidayImportRowView[];

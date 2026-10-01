@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import type { ConflictDTO, ImpactDTO, ReservationDTO, ScheduleChange } from "../../../../shared/types";
-import { apiFetch, isApiError, queryKeys, type Previewed, type StaffReservationView } from "../../../api";
+import { apiFetch, handleSignedOut, isApiError, queryKeys, type Previewed, type StaffReservationView } from "../../../api";
 import { Button } from "../../../components/Button";
 import { Notice } from "../../../components/Card";
 import { Dialog } from "../../../components/Dialog";
@@ -107,9 +107,8 @@ export function useImpactFlow({ tz, onDone, refresh }: { tz: string; onDone: (te
    */
   const signedOut = useCallback(
     (e: unknown) => {
-      if (!isApiError(e, 401)) return false;
+      if (!handleSignedOut(qc, e)) return false;
       setReview(null);
-      void qc.invalidateQueries({ queryKey: queryKeys.me });
       return true;
     },
     [qc],
@@ -301,7 +300,7 @@ function ImpactDialog({
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6">
         <TimezoneNote tz={tz} />
         {/* Always rendered so outcomes are announced; it takes no space while empty. */}
-        <div aria-live="polite" className="empty:hidden">
+        <div aria-live="polite" className="empty:mb-0">
           {review.notice && (
             <Notice ref={noticeRef} tabIndex={-1} tone={review.notice.tone} className="outline-none focus-visible:outline-2">
               {review.notice.text}

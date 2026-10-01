@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { StaffDTO } from "../../../../shared/types";
-import { apiFetch, isApiError, queryKeys, useMe, type Previewed, type TeamList } from "../../../api";
+import { apiFetch, handleSignedOut, isApiError, queryKeys, useMe, type Previewed, type TeamList } from "../../../api";
 import { Button } from "../../../components/Button";
 import { Notice } from "../../../components/Card";
 import { focusWhenReady } from "../../../components/Dialog";
@@ -182,7 +182,7 @@ function MemberRow({
       await qc.invalidateQueries({ queryKey: queryKeys.team });
       onDone(tm(notify ? "done.notifyOn" : "done.notifyOff", { name: m.name }));
     } catch (e) {
-      if (isApiError(e, 401)) return;
+      if (handleSignedOut(qc, e)) return;
       if (isApiError(e, 404)) void qc.invalidateQueries({ queryKey: queryKeys.team });
       setProblem(teamErrorText(e));
     } finally {
@@ -293,16 +293,17 @@ function MemberRow({
             id={switchId("active")}
             checked={m.active}
             busy={busy === "active"}
-            disabled={(busy !== null && busy !== "active") || asking}
+            // Your own access can only be ended by another administrator: locked, with the reason shown.
+            disabled={isSelf || (busy !== null && busy !== "active") || asking}
             onChange={(v) => (v ? void setCapacity("active", true) : setAsking(true))}
             label={tm("active")}
-            hint={m.active ? undefined : tm("inactiveHint")}
+            hint={isSelf ? tm("selfActive") : m.active ? undefined : tm("inactiveHint")}
             className="-mx-2 w-auto"
           />
         </div>
       )}
 
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0">
         {problem && (
           <Notice tone="error" className="mt-3">
             {problem}

@@ -22,6 +22,8 @@ import {
   fieldId,
   fmtDuration,
   IntField,
+  intText,
+  plain,
   MinutesSelect,
   ReadValue,
   readInt,
@@ -30,6 +32,7 @@ import {
   SectionCard,
   SectionForm,
   TextField,
+  trimmed,
   useSection,
   type FieldErrors,
   type SectionSpec,
@@ -169,7 +172,7 @@ interface CardProps {
 }
 
 /** Wires a section spec to its card: form, fields (or read-only values) and the save bar. */
-function EditableCard<D>({
+function EditableCard<D extends Record<string, unknown>>({
   id,
   title,
   lead,
@@ -184,7 +187,8 @@ function EditableCard<D>({
 }: CardProps & {
   id: string;
   title: string;
-  lead?: ReactNode;
+  /** May depend on whether the card has unsaved changes. */
+  lead?: ReactNode | ((dirty: boolean) => ReactNode);
   spec: SectionSpec<D>;
   fields: (draft: D, update: (fn: (d: D) => D, ...fields: string[]) => void, errors: FieldErrors) => ReactNode;
   values: ReactNode;
@@ -194,7 +198,7 @@ function EditableCard<D>({
   const f = useSection(spec, settings, submit);
   if (readOnly) {
     return (
-      <SectionCard id={id} title={title} lead={lead} badge={badge}>
+      <SectionCard id={id} title={title} lead={typeof lead === "function" ? lead(false) : lead} badge={badge}>
         <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">{values}</dl>
         {note}
       </SectionCard>
@@ -205,7 +209,7 @@ function EditableCard<D>({
       <SectionCard
         id={id}
         title={title}
-        lead={lead}
+        lead={typeof lead === "function" ? lead(f.dirty) : lead}
         badge={badge}
         headingRef={f.headingRef}
         footer={<SaveBar busy={f.busy} dirty={f.dirty} problem={f.problem} onSave={() => void f.save()} onDiscard={f.discard} />}
@@ -217,19 +221,15 @@ function EditableCard<D>({
   );
 }
 
-const pick = <K extends keyof Settings>(st: Settings, keys: readonly K[]) => Object.fromEntries(keys.map((k) => [k, st[k]])) as Pick<Settings, K>;
 const maxLen = (k: keyof Settings) => (settingsShape[k] as unknown as { maxLength: number }).maxLength;
 
 // ---- Organisation ------------------------------------------------------------------------------------------------
 
-const ORG_KEYS = ["orgName", "supportPhone", "remoteToolName", "customerInstructions"] as const;
-type OrgDraft = Pick<Settings, (typeof ORG_KEYS)[number]>;
+type OrgDraft = Pick<Settings, "orgName" | "supportPhone" | "remoteToolName" | "customerInstructions">;
 
 function OrgCard(p: CardProps) {
   const spec: SectionSpec<OrgDraft> = {
-    keys: ORG_KEYS,
-    toDraft: (st) => pick(st, ORG_KEYS),
-    read: (d) => ({ values: d, errors: {} }),
+    codecs: { orgName: trimmed, supportPhone: plain(), remoteToolName: trimmed, customerInstructions: plain() },
     summary: s("org.summary"),
     done: s("org.done"),
   };
@@ -290,14 +290,11 @@ function OrgCard(p: CardProps) {
 
 // ---- Appointments ------------------------------------------------------------------------------------------------
 
-const APPT_KEYS = ["durationMin", "bufferBeforeMin", "bufferAfterMin", "slotStepMin"] as const;
-type ApptDraft = Pick<Settings, (typeof APPT_KEYS)[number]>;
+type ApptDraft = Pick<Settings, "durationMin" | "bufferBeforeMin" | "bufferAfterMin" | "slotStepMin">;
 
 function AppointmentsCard(p: CardProps) {
   const spec: SectionSpec<ApptDraft> = {
-    keys: APPT_KEYS,
-    toDraft: (st) => pick(st, APPT_KEYS),
-    read: (d) => ({ values: d, errors: {} }),
+    codecs: { durationMin: plain(), bufferBeforeMin: plain(), bufferAfterMin: plain(), slotStepMin: plain() },
     summary: s("appointments.summary"),
     done: s("appointments.done"),
   };
@@ -357,34 +354,11 @@ function AppointmentsCard(p: CardProps) {
 
 // ---- Booking window ----------------------------------------------------------------------------------------------
 
-const WINDOW_KEYS = ["minNoticeBh", "bookingHorizonDays", "cancelCutoffMin", "maxActivePerAccount"] as const;
 type WindowDraft = { minNoticeBh: string; bookingHorizonDays: string; cancelCutoffMin: string; maxActivePerAccount: number };
-
-/** Number fields kept as typed text in the draft; read back as numbers, or an error when they aren't whole numbers. */
-function readInts<K extends string>(d: Record<K, string>, keys: readonly K[]) {
-  const values: Record<string, number> = {};
-  const errors: FieldErrors = {};
-  for (const k of keys) {
-    const n = readInt(d[k]);
-    if (n === null) errors[k] = s("errors.wholeNumber");
-    else values[k] = n;
-  }
-  return { values, errors };
-}
 
 function WindowCard(p: CardProps) {
   const spec: SectionSpec<WindowDraft> = {
-    keys: WINDOW_KEYS,
-    toDraft: (st) => ({
-      minNoticeBh: String(st.minNoticeBh),
-      bookingHorizonDays: String(st.bookingHorizonDays),
-      cancelCutoffMin: String(st.cancelCutoffMin),
-      maxActivePerAccount: st.maxActivePerAccount,
-    }),
-    read: (d) => {
-      const r = readInts(d, ["minNoticeBh", "bookingHorizonDays", "cancelCutoffMin"] as const);
-      return { values: { ...r.values, maxActivePerAccount: d.maxActivePerAccount }, errors: r.errors };
-    },
+    codecs: { minNoticeBh: intText, bookingHorizonDays: intText, cancelCutoffMin: intText, maxActivePerAccount: plain() },
     summary: s("window.summary"),
     done: s("window.done"),
   };
@@ -438,7 +412,8 @@ function WindowCard(p: CardProps) {
               id={fieldId("maxActivePerAccount")}
               value={d.maxActivePerAccount}
               onChange={(e) => update((x) => ({ ...x, maxActivePerAccount: Number(e.target.value) }), "maxActivePerAccount")}
-              aria-describedby={`${fieldId("maxActivePerAccount")}-hint`}
+              aria-invalid={Boolean(errors.maxActivePerAccount)}
+              aria-describedby={`${errors.maxActivePerAccount ? `${fieldId("maxActivePerAccount")}-error ` : ""}${fieldId("maxActivePerAccount")}-hint`}
               className={`${selectClass} max-w-40`}
             >
               {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
@@ -447,6 +422,11 @@ function WindowCard(p: CardProps) {
                 </option>
               ))}
             </select>
+            {errors.maxActivePerAccount && (
+              <p id={`${fieldId("maxActivePerAccount")}-error`} className="mt-1.5 text-sm font-medium text-red-700 dark:text-red-400">
+                {errors.maxActivePerAccount}
+              </p>
+            )}
             <p id={`${fieldId("maxActivePerAccount")}-hint`} className="mt-1.5 text-sm text-slate-600 dark:text-slate-400">
               {s("window.maxActiveHint")}
             </p>
@@ -462,20 +442,28 @@ function WindowCard(p: CardProps) {
 type Day = { open: boolean; start: number; end: number };
 
 function HoursCard(p: CardProps) {
-  const spec: SectionSpec<Day[]> = {
-    keys: ["businessHours"],
-    // A closed day keeps the last times shown, so switching it back on restores them.
-    toDraft: (st) => st.businessHours.map((h) => (h ? { open: true, start: h.start, end: h.end } : { open: false, start: 540, end: 1080 })),
-    read: (d) => ({ values: { businessHours: d.map((x) => (x.open ? { start: x.start, end: x.end } : null)) }, errors: {} }),
+  const spec: SectionSpec<{ businessHours: Day[] }> = {
+    codecs: {
+      businessHours: {
+        // A closed day keeps the last times shown, so switching it back on restores them.
+        toRaw: (v) => (v as Settings["businessHours"]).map((h) => (h ? { open: true, start: h.start, end: h.end } : { open: false, start: 540, end: 1080 })),
+        fromRaw: (days) => ({ value: days.map((x) => (x.open ? { start: x.start, end: x.end } : null)) }),
+      },
+    },
     summary: s("hours.summary"),
     done: s("hours.done"),
   };
-  const lead = (
+  // Following the link would drop unsaved hours: it waits until they are saved or discarded.
+  const lead = (dirty: boolean) => (
     <>
       {s("hours.lead")}{" "}
-      <Link to="/staff/schedule" className="font-medium text-blue-700 underline underline-offset-2 dark:text-blue-300">
-        {s("hours.scheduleLink")}
-      </Link>
+      {dirty ? (
+        <span className="text-sm">{s("hours.scheduleLinkLater")}</span>
+      ) : (
+        <Link to="/staff/schedule" className="font-medium text-blue-700 underline underline-offset-2 dark:text-blue-300">
+          {s("hours.scheduleLink")}
+        </Link>
+      )}
     </>
   );
   const st = p.settings;
@@ -494,7 +482,12 @@ function HoursCard(p: CardProps) {
         <ul className="divide-y divide-slate-200 dark:divide-slate-800">
           {WEEK.map((day) => (
             <li key={day}>
-              <DayRow day={day} value={d[day]!} error={errors[`businessHours.${day}`]} onChange={(next) => update((x) => x.map((v, i) => (i === day ? next : v)), `businessHours.${day}`)} />
+              <DayRow
+                day={day}
+                value={d.businessHours[day]!}
+                error={errors[`businessHours.${day}`]}
+                onChange={(next) => update((x) => ({ businessHours: x.businessHours.map((v, i) => (i === day ? next : v)) }), `businessHours.${day}`)}
+              />
             </li>
           ))}
         </ul>
@@ -517,7 +510,7 @@ function DayRow({ day, value, error, onChange }: { day: number; value: Day; erro
         className="-mx-2 w-auto"
       />
       {value.open ? (
-        <div>
+        <div role="group" aria-label={fmtWeekday(day)}>
           <div className="grid max-w-sm grid-cols-2 gap-3">
             <TimeSelect id={id} label={s("hours.opens")} value={value.start} onChange={(start) => onChange({ ...value, start })} invalid={Boolean(error)} describedBy={error ? errorId : undefined} />
             <TimeSelect id={`${id}-end`} label={s("hours.closes")} value={value.end} end onChange={(end) => onChange({ ...value, end })} invalid={Boolean(error)} describedBy={error ? errorId : undefined} />
@@ -537,14 +530,11 @@ function DayRow({ day, value, error, onChange }: { day: number; value: Day; erro
 
 // ---- Approval deadlines ------------------------------------------------------------------------------------------
 
-const APPROVAL_KEYS = ["approvalReminderBh", "approvalEscalationBh", "approvalExpiryBh", "expiryBeforeStartMin"] as const;
-type ApprovalDraft = Record<(typeof APPROVAL_KEYS)[number], string>;
+type ApprovalDraft = Record<"approvalReminderBh" | "approvalEscalationBh" | "approvalExpiryBh" | "expiryBeforeStartMin", string>;
 
 function ApprovalCard(p: CardProps) {
   const spec: SectionSpec<ApprovalDraft> = {
-    keys: APPROVAL_KEYS,
-    toDraft: (st) => Object.fromEntries(APPROVAL_KEYS.map((k) => [k, String(st[k])])) as ApprovalDraft,
-    read: (d) => readInts(d, APPROVAL_KEYS),
+    codecs: { approvalReminderBh: intText, approvalEscalationBh: intText, approvalExpiryBh: intText, expiryBeforeStartMin: intText },
     summary: s("approval.summary"),
     done: s("approval.done"),
   };
@@ -609,10 +599,8 @@ const REMINDER_PRESETS = [15, 30, 60, 120, 180, 360, 720, 1440, 2880, 4320, 1008
 const MAX_REMINDERS = 3;
 
 function RemindersCard(p: CardProps) {
-  const spec: SectionSpec<number[]> = {
-    keys: ["customerReminderOffsetsMin"],
-    toDraft: (st) => [...st.customerReminderOffsetsMin].sort((a, b) => b - a),
-    read: (d) => ({ values: { customerReminderOffsetsMin: d }, errors: {} }),
+  const spec: SectionSpec<{ customerReminderOffsetsMin: number[] }> = {
+    codecs: { customerReminderOffsetsMin: { toRaw: (v) => [...(v as number[])].sort((a, b) => b - a), fromRaw: (r) => ({ value: r }) } },
     summary: s("reminders.summary"),
     done: s("reminders.done"),
   };
@@ -632,7 +620,7 @@ function RemindersCard(p: CardProps) {
           value={p.settings.customerReminderOffsetsMin.length === 0 ? s("reminders.none") : [...p.settings.customerReminderOffsetsMin].sort((a, b) => b - a).map((m) => s("reminders.before", { duration: fmtDuration(m) })).join(" · ")}
         />
       }
-      fields={(d, update, errors) => <ReminderChips value={d} error={errors.customerReminderOffsetsMin} onChange={(v) => update(() => v, "customerReminderOffsetsMin")} />}
+      fields={(d, update, errors) => <ReminderChips value={d.customerReminderOffsetsMin} error={errors.customerReminderOffsetsMin} onChange={(v) => update(() => ({ customerReminderOffsetsMin: v }), "customerReminderOffsetsMin")} />}
     />
   );
 }
@@ -659,12 +647,12 @@ function ReminderChips({ value, error, onChange }: { value: number[]; error?: st
       ) : (
         <ul aria-labelledby={listId} className="flex flex-wrap gap-2">
           {value.map((m) => (
-            <li key={m} className="inline-flex min-h-11 items-center gap-1 rounded-full border border-blue-300 bg-blue-50 pr-1 pl-4 font-medium text-blue-900 dark:border-blue-400/40 dark:bg-blue-400/10 dark:text-blue-100">
+            <li key={m} className="inline-flex min-h-11 items-center gap-0.5 rounded-full border border-blue-300 bg-blue-50 pl-4 font-medium text-blue-900 dark:border-blue-400/40 dark:bg-blue-400/10 dark:text-blue-100">
               {s("reminders.before", { duration: fmtDuration(m) })}
               <button
                 type="button"
                 onClick={() => remove(m)}
-                className="grid size-9 place-items-center rounded-full hover:bg-blue-100 dark:hover:bg-blue-400/20"
+                className="grid size-11 place-items-center rounded-full hover:bg-blue-100 dark:hover:bg-blue-400/20"
                 aria-label={s("reminders.remove", { duration: fmtDuration(m) })}
               >
                 <svg className="size-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -681,7 +669,14 @@ function ReminderChips({ value, error, onChange }: { value: number[]; error?: st
             <label htmlFor={id} className="mb-1.5 block text-sm font-medium">
               {s("reminders.addLabel")}
             </label>
-            <select id={id} value={chosen} onChange={(e) => setChoice(Number(e.target.value))} aria-invalid={Boolean(error)} className={`${selectClass} min-w-44`}>
+            <select
+              id={id}
+              value={chosen}
+              onChange={(e) => setChoice(Number(e.target.value))}
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? `${id}-error` : undefined}
+              className={`${selectClass} min-w-44`}
+            >
               {available.map((m) => (
                 <option key={m} value={m}>
                   {s("reminders.before", { duration: fmtDuration(m) })}
@@ -698,7 +693,11 @@ function ReminderChips({ value, error, onChange }: { value: number[]; error?: st
           {s("reminders.max")}
         </p>
       )}
-      {error && <p className="text-sm font-medium text-red-700 dark:text-red-400">{error}</p>}
+      {error && (
+        <p id={`${id}-error`} className="text-sm font-medium text-red-700 dark:text-red-400">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
@@ -711,9 +710,7 @@ function Soon() {
 
 function ReassignCard(p: CardProps) {
   const spec: SectionSpec<{ notifyCustomerOnReassign: boolean }> = {
-    keys: ["notifyCustomerOnReassign"],
-    toDraft: (st) => pick(st, ["notifyCustomerOnReassign"]),
-    read: (d) => ({ values: d, errors: {} }),
+    codecs: { notifyCustomerOnReassign: plain() },
     summary: s("reassign.summary"),
     done: s("reassign.done"),
   };
@@ -740,14 +737,11 @@ function ReassignCard(p: CardProps) {
 
 // ---- Rescheduling ------------------------------------------------------------------------------------------------
 
-const RESCHEDULE_KEYS = ["proposalExpiryBh", "proposalExpiryBeforeStartMin"] as const;
-type RescheduleDraft = Record<(typeof RESCHEDULE_KEYS)[number], string>;
+type RescheduleDraft = Record<"proposalExpiryBh" | "proposalExpiryBeforeStartMin", string>;
 
 function ReschedulingCard(p: CardProps) {
   const spec: SectionSpec<RescheduleDraft> = {
-    keys: RESCHEDULE_KEYS,
-    toDraft: (st) => ({ proposalExpiryBh: String(st.proposalExpiryBh), proposalExpiryBeforeStartMin: String(st.proposalExpiryBeforeStartMin) }),
-    read: (d) => readInts(d, RESCHEDULE_KEYS),
+    codecs: { proposalExpiryBh: intText, proposalExpiryBeforeStartMin: intText },
     summary: s("rescheduling.summary"),
     done: s("rescheduling.done"),
   };

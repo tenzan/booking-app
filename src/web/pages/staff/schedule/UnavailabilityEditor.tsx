@@ -244,7 +244,7 @@ function TimeOffRow({ u, tz, canManage, submit, onEdit }: { u: UnavailabilityDTO
           </div>
         )}
       </div>
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0 empty:last:-mt-3">
         {problem && <Notice tone="error">{problem}</Notice>}
       </div>
       {asking && (
@@ -467,7 +467,7 @@ function TimeOffForm({
         </p>
       </div>
 
-      <div aria-live="polite" className="empty:hidden">
+      <div aria-live="polite" className="empty:mb-0">
         {errors.form && <Notice tone="error">{errors.form}</Notice>}
       </div>
       <div className="flex flex-wrap gap-2">
