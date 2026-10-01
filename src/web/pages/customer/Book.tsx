@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { apiFetch, isApiError, queryKeys, useMe, type Account, type Availability, type Slot, type SubmittedReservation } from "../../api";
+import { BookingPaused } from "../../components/BookingPaused";
 import { Button } from "../../components/Button";
 import { Notice } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
@@ -29,7 +30,8 @@ export default function Book() {
   });
 
   let body: ReactNode;
-  if (accounts.isPending || !me.data?.customer) body = <BookSkeleton />;
+  if (me.data?.bookingEnabled === false) body = <BookingPaused supportPhone={me.data.supportPhone} autoFocus />;
+  else if (accounts.isPending || !me.data?.customer) body = <BookSkeleton />;
   else if (accounts.isError)
     body = (
       <Notice tone="error" className="flex flex-wrap items-center justify-between gap-3">
@@ -41,7 +43,7 @@ export default function Book() {
     );
   else if (accounts.data.length === 0)
     body = <EmptyState title={t("web.book.noAccounts.heading")} body={t("web.book.noAccounts.body")} />;
-  else body = <BookFlow accounts={accounts.data} tz={me.data.timezone} email={me.data.customer.email} />;
+  else body = <BookFlow accounts={accounts.data} tz={me.data.timezone} email={me.data.customer.email} supportPhone={me.data.supportPhone} />;
 
   return (
     <div className="space-y-6">
@@ -63,7 +65,7 @@ const prefill = (a: Account): Details => ({
   issue: "",
 });
 
-function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; email: string }) {
+function BookFlow({ accounts, tz, email, supportPhone }: { accounts: Account[]; tz: string; email: string; supportPhone: string }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -76,6 +78,7 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
   const edited = useRef(new Set<keyof Details>());
   const [errors, setErrors] = useState<DetailsErrors>({});
   const [banner, setBanner] = useState<Banner | null>(null);
+  const [pausedDuringSubmit, setPausedDuringSubmit] = useState(false);
   const idempotency = useRef<{ key: string; fingerprint: string } | null>(null);
   const fieldRefs = {
     contactName: useRef<HTMLInputElement>(null),
@@ -177,7 +180,10 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
       navigate(`/book/success/${reservation.id}`, { replace: true });
     },
     onError: (e) => {
-      if (isApiError(e, 409, "slot_unavailable") || isApiError(e, 400, "too_soon")) {
+      if (isApiError(e, 409, "booking_disabled")) {
+        setPausedDuringSubmit(true);
+        void qc.invalidateQueries({ queryKey: queryKeys.me });
+      } else if (isApiError(e, 409, "slot_unavailable") || isApiError(e, 400, "too_soon")) {
         setSlot(null);
         setBanner({ step: 1, tone: "warning", text: t(e.code === "too_soon" ? "web.book.errors.tooSoon" : "web.book.errors.slotTaken") });
         void qc.invalidateQueries({ queryKey: queryKeys.availability });
@@ -205,6 +211,12 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
       }
     },
   });
+
+  // An administrator paused booking while this page was open: the availability request (or the submit) says so.
+  const paused = pausedDuringSubmit || isApiError(avail.error, 409, "booking_disabled");
+  useEffect(() => {
+    if (paused) void qc.invalidateQueries({ queryKey: queryKeys.me });
+  }, [paused]);
 
   function chooseAccount(id: number) {
     setAccountId(id);
@@ -251,6 +263,8 @@ function BookFlow({ accounts, tz, email }: { accounts: Account[]; tz: string; em
   );
 
   const headingClass = "text-lg font-semibold outline-none";
+
+  if (paused) return <BookingPaused supportPhone={supportPhone} autoFocus />;
 
   return (
     <div className="space-y-6 pb-28 sm:pb-0">

@@ -44,6 +44,8 @@ async function sendLoginLink(
   turnstile: { token?: string } | "skip",
 ): Promise<void> {
   const db = c.env.DB;
+  // Booking paused: customer links are neither sent nor counted (before Turnstile and the buckets). Staff sign-in is unaffected.
+  if (kind === "customer" && !(await getSettings(db, c.env)).bookingEnabled) return;
   const ip = clientIp(c);
   // A failed CAPTCHA must not charge the buckets, or anyone could lock out an address without solving one.
   if (turnstile !== "skip" && !(await verifyTurnstile(c.env, turnstile.token, ip))) return;
@@ -141,6 +143,8 @@ authRoutes.get("/auth/me", async (c) => {
     turnstileSiteKey: c.env.TURNSTILE_SITE_KEY || null,
     orgName: settings.orgName,
     timezone: c.env.APP_TIMEZONE,
+    bookingEnabled: settings.bookingEnabled,
+    supportPhone: settings.supportPhone,
   });
 });
 

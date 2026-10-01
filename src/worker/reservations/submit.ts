@@ -80,6 +80,8 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
   if (!(await db.prepare(ELIGIBLE_SQL).bind(input.customerId, email).first())) throw new HttpError(403, "not_eligible");
 
   const ctx = await loadScheduleCtx(env, input.startAt, input.startAt);
+  // Re-read on every attempt: a pause flipped while we were working is respected (the batch guard below catches the final window).
+  if (!ctx.settings.bookingEnabled) throw new HttpError(409, "booking_disabled");
   const now = clock.now();
 
   const active = await db
@@ -113,6 +115,8 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
 
   await capacityBatch(db, ctx.version, [
     assertSql(db, ELIGIBLE_SQL, input.customerId, email),
+    // Aborts (and retries into the check above) when booking was paused after our settings snapshot.
+    assertSql(db, "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'bookingEnabled' AND value = 'false')"),
     ...moved.map((m) =>
       assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND provisional_staff_id IS ?", m.holdId, m.fromStaffId),
     ),

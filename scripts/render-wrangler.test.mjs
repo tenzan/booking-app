@@ -45,6 +45,14 @@ test("strict renders a production config that sends real mail", () => {
   assert.equal(r.config.vars.APP_BASE_URL, "https://booking.example.com");
   assert.equal(r.config.account_id, PROD.CLOUDFLARE_ACCOUNT_ID);
   assert.equal(r.config.d1_databases[0].database_id, PROD.D1_DATABASE_ID);
+  assert.equal(r.config.workers_dev, false);
+  assert.equal(r.config.preview_urls, false);
+});
+
+test("strict refuses a placeholder in an optional value", () => {
+  const r = render({ ...PROD, TURNSTILE_SITE_KEY: "SET_BY_deploy" });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /TURNSTILE_SITE_KEY is a placeholder/);
 });
 
 test("strict accepts an explicit MAIL_MODE=cloudflare", () => {

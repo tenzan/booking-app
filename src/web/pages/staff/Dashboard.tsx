@@ -12,6 +12,7 @@ import { Skeleton } from "../../components/Spinner";
 import { TimezoneNote } from "../../components/TimezoneNote";
 import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtTime, fmtTimeRange, todayIn } from "../../format";
 import { t } from "../../i18n";
+import { BookingCard } from "./BookingCard";
 import { Countdown, useNow } from "./Countdown";
 
 /** Staff reservation list; refetched on window focus and every minute so a dashboard left open stays current. */
@@ -47,6 +48,8 @@ export default function Dashboard() {
         <p className="text-slate-600 dark:text-slate-400">{fmtLongDate(today)}</p>
         <TimezoneNote tz={tz} atMs={now} />
       </div>
+
+      {me.data?.staff && <BookingCard enabled={me.data.bookingEnabled} isAdmin={me.data.staff.role === "admin"} />}
 
       <div className="grid items-start gap-8 lg:grid-cols-5">
         <Section title={t("web.staff.dashboard.pendingHeading")} count={pending.data?.length} className="lg:col-span-3">
