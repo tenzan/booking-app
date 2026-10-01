@@ -24,6 +24,22 @@ export interface ReservationDTO {
   confirmedBy: { id: number; name: string } | null;
 }
 
+/** What a customer may see of their own reservation: no staff, no provisional technician, no contact email. */
+export interface CustomerReservationDTO {
+  id: string;
+  ref: string;
+  status: ReservationStatus;
+  startAt: number;
+  endAt: number;
+  accountName: string;
+  customerNumber: string;
+  contactName: string;
+  phone: string;
+  issue: string;
+  createdAt: number;
+  closeReason: string | null;
+}
+
 export type TechUnavailableReason = "not_scheduled" | "unavailable" | "busy" | "needed_for_other_request";
 
 export interface TechOption {

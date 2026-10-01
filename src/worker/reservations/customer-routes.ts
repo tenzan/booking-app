@@ -6,8 +6,9 @@ import { HttpError, readJson } from "../lib/http";
 import { kickOutbox } from "../mail/outbox";
 import { rateLimit } from "../lib/rate-limit";
 import { requireCustomer } from "../middleware/session";
-import { eligibleAccountsForEmail, lastPhonesForEmail } from "../repos/customers";
+import { accountIdsForContact, eligibleAccountsForEmail, lastPhonesForEmail } from "../repos/customers";
 import { customerAvailability } from "../scheduling/availability";
+import { getCustomerReservation, listCustomerReservations } from "./queries";
 import { submitReservation } from "./submit";
 
 const MAX_SPAN_DAYS = 31;
@@ -51,4 +52,17 @@ customerRoutes.post("/reservations", async (c) => {
   const { created, ...reservation } = await submitReservation(c.env, c.var.customerEmail!, input);
   if (created) kickOutbox(c);
   return c.json({ reservation }, created ? 201 : 200);
+});
+
+customerRoutes.get("/reservations", async (c) => {
+  const accountIds = await accountIdsForContact(c.env.DB, c.var.customerEmail!);
+  return c.json({ reservations: await listCustomerReservations(c.env.DB, accountIds) });
+});
+
+/** Not-owned and non-existent are indistinguishable. */
+customerRoutes.get("/reservations/:id", async (c) => {
+  const accountIds = await accountIdsForContact(c.env.DB, c.var.customerEmail!);
+  const reservation = await getCustomerReservation(c.env.DB, c.req.param("id"), accountIds);
+  if (!reservation) throw new HttpError(404, "not_found");
+  return c.json({ reservation });
 });

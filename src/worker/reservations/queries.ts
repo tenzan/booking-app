@@ -1,10 +1,10 @@
 import { assignableFor } from "../../domain/matching";
 import { findSlot, generateSlots, occupiedRange } from "../../domain/slots";
-import type { AuditRow, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
+import type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
 import type { Env } from "../env";
 import { loadScheduleCtx } from "../scheduling/context";
 
-export type { AuditRow, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
+export type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
 
 const SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at,
     r.customer_id, c.customer_number, c.name AS customer_name, c.active AS customer_active,
@@ -100,6 +100,71 @@ export async function listReservations(
   const sql = `${SELECT}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY r.start_at, r.created_at, r.id`;
   const { results } = await db.prepare(sql).bind(...binds).all<Row>();
   return results.map(toDTO);
+}
+
+const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
+    r.contact_name, r.phone, r.issue, r.created_at, r.close_reason
+  FROM reservations r JOIN customers c ON c.id = r.customer_id`;
+
+interface CustomerRow {
+  id: string;
+  ref: string;
+  status: ReservationStatus;
+  start_at: number;
+  end_at: number;
+  account_name: string;
+  customer_number: string;
+  contact_name: string;
+  phone: string;
+  issue: string;
+  created_at: number;
+  close_reason: string | null;
+}
+
+const toCustomerDTO = (r: CustomerRow): CustomerReservationDTO => ({
+  id: r.id,
+  ref: r.ref,
+  status: r.status,
+  startAt: r.start_at,
+  endAt: r.end_at,
+  accountName: r.account_name,
+  customerNumber: r.customer_number,
+  contactName: r.contact_name,
+  phone: r.phone,
+  issue: r.issue,
+  createdAt: r.created_at,
+  closeReason: r.close_reason,
+});
+
+const placeholders = (n: number) => Array.from({ length: n }, () => "?").join(",");
+
+/** Reservations of the given accounts, newest first. Callers pass only accounts they have proven ownership of. */
+export async function listCustomerReservations(db: D1Database, accountIds: number[]): Promise<CustomerReservationDTO[]> {
+  if (accountIds.length === 0) return [];
+  const { results } = await db
+    .prepare(`${CUSTOMER_SELECT} WHERE r.customer_id IN (${placeholders(accountIds.length)}) ORDER BY r.start_at DESC, r.created_at DESC, r.id`)
+    .bind(...accountIds)
+    .all<CustomerRow>();
+  return results.map(toCustomerDTO);
+}
+
+/** One reservation, only when it belongs to one of `accountIds`. */
+export async function getCustomerReservation(db: D1Database, id: string, accountIds: number[]): Promise<CustomerReservationDTO | null> {
+  if (accountIds.length === 0) return null;
+  const row = await db
+    .prepare(`${CUSTOMER_SELECT} WHERE r.id = ? AND r.customer_id IN (${placeholders(accountIds.length)})`)
+    .bind(id, ...accountIds)
+    .first<CustomerRow>();
+  return row ? toCustomerDTO(row) : null;
+}
+
+/** The reservation an unexpired access token points at (token given as its sha256 hex). */
+export async function getCustomerReservationByAccessToken(db: D1Database, tokenHash: string, now: number): Promise<CustomerReservationDTO | null> {
+  const row = await db
+    .prepare(`${CUSTOMER_SELECT} JOIN access_tokens t ON t.reservation_id = r.id WHERE t.token_hash = ? AND t.expires_at > ?`)
+    .bind(tokenHash, now)
+    .first<CustomerRow>();
+  return row ? toCustomerDTO(row) : null;
 }
 
 /** Audit trail of one reservation, oldest first; staff actors are shown by name. */
