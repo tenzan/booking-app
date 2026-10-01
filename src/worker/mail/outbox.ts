@@ -115,7 +115,7 @@ export async function processOutbox(
 }
 
 /** Fire-and-forget delivery after a request has committed. */
-export function kickOutbox(c: { env: Env; executionCtx: ExecutionContext }): void {
+export function kickOutbox(c: { env: Env; executionCtx: { waitUntil(p: Promise<unknown>): void } }): void {
   c.executionCtx.waitUntil(
     processOutbox(c.env, 20).then(
       () => undefined,
