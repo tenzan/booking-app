@@ -5,6 +5,7 @@ import { security } from "./middleware/security";
 import { devRoutes } from "./dev/routes";
 import { loadSession } from "./middleware/session";
 import { authRoutes } from "./auth/routes";
+import { customerRoutes } from "./reservations/customer-routes";
 
 export const app = new Hono<AppEnv>().basePath("/api");
 app.use("*", security);
@@ -14,3 +15,4 @@ app.notFound((c) => c.json({ error: "not_found" }, 404));
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/dev", devRoutes);
 app.route("/", authRoutes);
+app.route("/customer", customerRoutes);

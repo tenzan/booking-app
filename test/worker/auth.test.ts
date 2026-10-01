@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, cookieFrom } from "../helpers";
+import { lastMailTo, seedCustomer, seedStaff } from "../fixtures";
 import { setNow } from "../../src/worker/lib/clock";
 import { sha256Hex } from "../../src/worker/lib/crypto";
 import { processOutbox } from "../../src/worker/mail/outbox";
@@ -20,33 +21,8 @@ const T0 = Date.UTC(2026, 9, 1, 0, 0);
 const MIN = 60_000;
 const DAY = 24 * 60 * MIN;
 
-async function seedCustomer(email: string, active = true, contactActive = true) {
-  const n = (await env.DB.prepare("SELECT COUNT(*) AS n FROM customers").first<{ n: number }>())!.n + 1;
-  const row = await env.DB.prepare("INSERT INTO customers(customer_number, name, active, created_at, updated_at) VALUES (?, 'Acme Test Co', ?, 0, 0) RETURNING id")
-    .bind(`C-${n}`, active ? 1 : 0)
-    .first<{ id: number }>();
-  await env.DB.prepare("INSERT INTO customer_contacts(customer_id, email, active) VALUES (?, ?, ?)")
-    .bind(row!.id, email, contactActive ? 1 : 0)
-    .run();
-  return row!.id;
-}
-
-async function seedStaff(email: string, role: "admin" | "technician" = "technician", active = true) {
-  const row = await env.DB.prepare("INSERT INTO staff(email, name, role, active, created_at, updated_at) VALUES (?, 'Test Person', ?, ?, 0, 0) RETURNING id")
-    .bind(email, role, active ? 1 : 0)
-    .first<{ id: number }>();
-  return row!.id;
-}
-
 const mailCount = async (email: string) =>
   (await env.DB.prepare("SELECT COUNT(*) AS n FROM dev_mailbox WHERE to_email = ?").bind(email).first<{ n: number }>())!.n;
-
-/** Deliver queued mail, then return the token from the newest message to `email` (null when none). */
-async function lastMailTo(email: string): Promise<string | null> {
-  await processOutbox(env, 50);
-  const row = await env.DB.prepare("SELECT text FROM dev_mailbox WHERE to_email = ? ORDER BY id DESC LIMIT 1").bind(email).first<{ text: string }>();
-  return row ? (/#t=([A-Za-z0-9_-]+)/.exec(row.text)?.[1] ?? null) : null;
-}
 
 const requestCustomer = (email: string, extra: Record<string, unknown> = {}, headers?: Record<string, string>) =>
   api("POST", "/api/auth/customer/request", { body: { email, ...extra }, headers });
@@ -54,7 +30,7 @@ const requestStaff = (email: string, extra: Record<string, unknown> = {}) => api
 const redeem = (token: string, headers?: Record<string, string>) => api("POST", "/api/auth/redeem", { body: { token }, headers });
 
 async function customerSession(email = "pat@example.test") {
-  await seedCustomer(email);
+  await seedCustomer({ email });
   await requestCustomer(email);
   const token = (await lastMailTo(email))!;
   const res = await redeem(token);
@@ -79,7 +55,7 @@ describe("customer magic link", () => {
   });
 
   it("emails an eligible contact a link; redeeming it signs in and sets a hardened cookie", async () => {
-    await seedCustomer("pat@example.test");
+    await seedCustomer({ email: "pat@example.test" });
     const res = await requestCustomer("PAT@example.test");
     expect(res.status).toBe(200);
     expect(res.json).toEqual({ ok: true });
@@ -112,7 +88,7 @@ describe("customer magic link", () => {
   });
 
   it("rejects reuse of the same token with 410 expired_link", async () => {
-    await seedCustomer("pat@example.test");
+    await seedCustomer({ email: "pat@example.test" });
     await requestCustomer("pat@example.test");
     const token = (await lastMailTo("pat@example.test"))!;
     expect((await redeem(token)).status).toBe(200);
@@ -123,7 +99,7 @@ describe("customer magic link", () => {
   });
 
   it("only one of two concurrent redemptions wins", async () => {
-    await seedCustomer("pat@example.test");
+    await seedCustomer({ email: "pat@example.test" });
     await requestCustomer("pat@example.test");
     const token = (await lastMailTo("pat@example.test"))!;
     const [a, b] = await Promise.all([redeem(token), redeem(token)]);
@@ -138,7 +114,7 @@ describe("customer magic link", () => {
 
   it("expires after 15 minutes; resend emails a fresh working link", async () => {
     setNow(T0);
-    await seedCustomer("pat@example.test");
+    await seedCustomer({ email: "pat@example.test" });
     await requestCustomer("pat@example.test", { redirectPath: "/book" });
     const token = (await lastMailTo("pat@example.test"))!;
     setNow(T0 + 16 * MIN);
@@ -166,7 +142,7 @@ describe("customer magic link", () => {
   });
 
   it("keeps only same-origin redirect paths", async () => {
-    await seedCustomer("pat@example.test");
+    await seedCustomer({ email: "pat@example.test" });
     for (const bad of ["//evil.example.test", "https://evil.example.test", "/\\evil", "book", "/a\nb"]) {
       await env.DB.prepare("DELETE FROM rate_limits").run();
       await requestCustomer("pat@example.test", { redirectPath: bad });
@@ -186,8 +162,8 @@ describe("customer magic link", () => {
   });
 
   it("does not send for an inactive customer or inactive contact", async () => {
-    await seedCustomer("off@example.test", false);
-    await seedCustomer("gone@example.test", true, false);
+    await seedCustomer({ email: "off@example.test", active: false });
+    await seedCustomer({ email: "gone@example.test", contactActive: false });
     for (const e of ["off@example.test", "gone@example.test"]) {
       expect((await requestCustomer(e)).status).toBe(200);
       expect(await lastMailTo(e)).toBeNull();
@@ -195,7 +171,7 @@ describe("customer magic link", () => {
   });
 
   it("refuses redemption (403) when the customer was deactivated after the link was sent", async () => {
-    const id = await seedCustomer("pat@example.test");
+    const id = await seedCustomer({ email: "pat@example.test" });
     await requestCustomer("pat@example.test");
     const token = (await lastMailTo("pat@example.test"))!;
     await env.DB.prepare("UPDATE customers SET active = 0 WHERE id = ?").bind(id).run();
@@ -208,7 +184,7 @@ describe("customer magic link", () => {
 
   it("rate-limits per email: the 4th request in 15 minutes sends nothing but still returns 200", async () => {
     setNow(T0);
-    await seedCustomer("pat@example.test");
+    await seedCustomer({ email: "pat@example.test" });
     for (let i = 0; i < 4; i++) {
       const res = await requestCustomer("pat@example.test");
       expect(res.status).toBe(200);
@@ -222,7 +198,7 @@ describe("customer magic link", () => {
 
   it("rate-limits per IP across emails when cf-connecting-ip is present", async () => {
     setNow(T0);
-    await seedCustomer("pat@example.test");
+    await seedCustomer({ email: "pat@example.test" });
     const h = { "cf-connecting-ip": "203.0.113.9" };
     for (let i = 0; i < 20; i++) await requestCustomer(`user${i}@example.test`, {}, h);
     await env.DB.prepare("DELETE FROM rate_limits WHERE key LIKE 'login:email:%'").run();
@@ -244,7 +220,7 @@ describe("customer magic link", () => {
 
   it("is neutral (200, no mail) when Turnstile verification fails", async () => {
     env.TURNSTILE_SECRET_KEY = "test-secret";
-    await seedCustomer("pat@example.test");
+    await seedCustomer({ email: "pat@example.test" });
     const res = await requestCustomer("pat@example.test");
     expect(res.status).toBe(200);
     expect(res.json).toEqual({ ok: true });
@@ -257,7 +233,7 @@ describe("customer magic link", () => {
       const form = (init as RequestInit).body as FormData;
       return Response.json({ success: form.get("response") === "good" });
     });
-    await seedCustomer("pat@example.test");
+    await seedCustomer({ email: "pat@example.test" });
     const h = { "cf-connecting-ip": "203.0.113.9" };
     for (let i = 0; i < 25; i++) {
       const res = await requestCustomer("pat@example.test", { turnstileToken: "bad" }, h);
@@ -328,7 +304,7 @@ describe("sessions", () => {
   });
 
   it("logging out of one kind leaves the other session intact", async () => {
-    await seedCustomer("tom@example.test");
+    await seedCustomer({ email: "tom@example.test" });
     const { cookie: sCookie } = await staffSession("tom@example.test");
     await requestCustomer("tom@example.test");
     const cRes = await redeem((await lastMailTo("tom@example.test"))!);
@@ -474,9 +450,9 @@ describe("bootstrap admin", () => {
 
 describe("repos", () => {
   it("eligibleAccountsForEmail needs an active contact on an active customer; accountIdsForContact ignores activity", async () => {
-    const a = await seedCustomer("Pat@example.test");
-    const b = await seedCustomer("pat@example.test", false);
-    const c = await seedCustomer("pat@example.test", true, false);
+    const a = await seedCustomer({ email: "Pat@example.test" });
+    const b = await seedCustomer({ email: "pat@example.test", active: false });
+    const c = await seedCustomer({ email: "pat@example.test", contactActive: false });
     const eligible = await eligibleAccountsForEmail(env.DB, "pat@EXAMPLE.test");
     expect(eligible.map((x) => x.id)).toEqual([a]);
     expect(eligible[0]).toMatchObject({ name: "Acme Test Co", contactName: null, contactPhone: null, customerPhone: null });

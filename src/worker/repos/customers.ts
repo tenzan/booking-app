@@ -30,3 +30,14 @@ export async function accountIdsForContact(db: D1Database, email: string): Promi
     .all<{ customer_id: number }>();
   return results.map((r) => r.customer_id);
 }
+
+/** Most recent reservation phone per account for bookings made by `email`. */
+export async function lastPhonesForEmail(db: D1Database, email: string): Promise<Map<number, string>> {
+  const { results } = await db
+    .prepare("SELECT customer_id AS customerId, phone FROM reservations WHERE contact_email = ? ORDER BY created_at DESC, rowid DESC")
+    .bind(email)
+    .all<{ customerId: number; phone: string }>();
+  const out = new Map<number, string>();
+  for (const r of results) if (!out.has(r.customerId)) out.set(r.customerId, r.phone);
+  return out;
+}
