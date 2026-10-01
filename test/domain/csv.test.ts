@@ -54,4 +54,30 @@ describe("parseCsv", () => {
     expect(bad('ok\nab"c"')).toBe(2);
     expect(bad('"a""')).toBe(1);
   });
+
+  it("makes a stray quote actionable: line, column and what to do", () => {
+    const err = (text: string) => {
+      try {
+        parseCsv(text);
+      } catch (e) {
+        return e as CsvError;
+      }
+      throw new Error("expected CsvError");
+    };
+    const stray = err('a,b\nx,say "hi" there,z');
+    expect([stray.line, stray.column]).toEqual([2, 7]);
+    expect(stray.message).toContain("line 2, column 7");
+    expect(stray.message).toContain("wrap the field in double quotes");
+
+    const after = err('ok\n"x"y');
+    expect([after.line, after.column]).toEqual([2, 4]);
+    expect(after.message).toContain("wrap the field in double quotes");
+
+    // Columns restart after a line break inside a quoted field.
+    expect(err('"a\nb",c"d"').column).toBe(5);
+    // An unterminated quote points at where it opened.
+    const open = err('a,b\nx,"never closed\nmore');
+    expect([open.line, open.column]).toEqual([2, 3]);
+    expect(open.message).toContain("add the closing double quote");
+  });
 });

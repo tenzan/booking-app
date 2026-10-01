@@ -540,8 +540,9 @@ describe("request body limits", () => {
     expect([mid.status, mid.json.error]).toEqual([400, "invalid"]);
     const over = await api("POST", "/api/staff/holidays/import/preview", { cookie: adminCookie, body: { csv: big(1_100_000) } });
     expect([over.status, over.json]).toEqual([413, { error: "payload_too_large" }]);
-    // The customers import (Task 8) mounts under the same prefix and gets the same limit.
-    expect((await api("POST", "/api/staff/customers/import/preview", { cookie: adminCookie, body: { csv: big(300_000) } })).status).toBe(404);
+    // The customers import mounts under the same prefix and gets the same limit (300 KB of junk reaches the parser: no header).
+    const custMid = await api("POST", "/api/staff/customers/import/preview", { cookie: adminCookie, body: { csv: big(300_000) } });
+    expect([custMid.status, custMid.json.error]).toEqual([400, "invalid_header"]);
     expect((await api("POST", "/api/staff/customers/import/preview", { cookie: adminCookie, body: { csv: big(1_100_000) } })).status).toBe(413);
   });
 });

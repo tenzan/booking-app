@@ -13,6 +13,7 @@ import { clock } from "../lib/clock";
 import { assertSql, audit } from "../lib/db";
 import { HttpError, readJson } from "../lib/http";
 import { requireStaff } from "../middleware/session";
+import { applyPlan, planFromCsv } from "./customer-import";
 import { getContact, getCustomer, getCustomerDetail, listCustomers } from "../repos/customers";
 
 /** Customer administration: any staff member may look customers up; admins create and change them. */
@@ -29,6 +30,39 @@ const errorText = (e: unknown) => String(e instanceof Error ? e.message : e);
 const emptyToNull = (v: string | null | undefined) => (v === undefined ? undefined : v === null || v === "" ? null : v);
 
 const actor = (c: { var: AppEnv["Variables"] }) => String(c.var.staff!.id);
+
+// ---- CSV import (preview, then apply the same file) ---------------------------------------------------------------
+
+const importBody = z.object({ csv: z.string().max(1_000_000) });
+const importApplyBody = importBody.extend({ planHash: z.string().regex(/^[0-9a-f]{64}$/) });
+
+customerAdminRoutes.post("/customers/import/preview", requireStaff("admin"), async (c) => {
+  const { csv } = await readJson(c, importBody);
+  const { rows, summary, warnings, planHash } = await planFromCsv(c.env.DB, csv);
+  return c.json({ planHash, rows, summary, warnings });
+});
+
+/**
+ * Re-plans the file against the data as it is now and writes only when the plan is the one that was previewed. Not one
+ * transaction: if a later chunk fails the response is 500 import_failed with the number of committed chunks, and
+ * importing the same file again converges (every write is an upsert).
+ */
+customerAdminRoutes.post("/customers/import/apply", requireStaff("admin"), async (c) => {
+  const { csv, planHash } = await readJson(c, importApplyBody);
+  const plan = await planFromCsv(c.env.DB, csv);
+  if (plan.summary.errors > 0) throw new HttpError(400, "invalid_rows", { rows: plan.rows.filter((r) => r.action === "error") });
+  if (plan.customers.length === 0 && plan.contacts.length === 0) throw new HttpError(400, "nothing_to_import");
+  if (plan.planHash !== planHash) throw new HttpError(409, "stale_import");
+  const { chunks } = await applyPlan(c.env.DB, actor(c), plan);
+  return c.json({
+    created: plan.summary.customers.create,
+    updated: plan.summary.customers.update,
+    unchanged: plan.summary.customers.unchanged,
+    contactsAdded: plan.summary.contacts.add,
+    contactsUpdated: plan.summary.contacts.update,
+    chunks,
+  });
+});
 
 customerAdminRoutes.get("/customers", requireStaff(), async (c) => {
   const q = customerListQuerySchema.parse(c.req.query());

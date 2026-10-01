@@ -205,12 +205,14 @@ export const staffApplyBodySchema = z.object({ ...staffCapacityShape, version: z
 // ---- Customers --------------------------------------------------------------------------------------------------
 
 export const CUSTOMERS_PAGE_SIZE = 50;
+/** Data rows (header excluded) one customer CSV import may carry. */
+export const MAX_CUSTOMER_IMPORT_ROWS = 5000;
 
 export const customerNumberSchema = z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9._-]+$/, "letters, digits and . _ - only");
-const customerNameSchema = z.string().trim().min(1).max(200);
-const phoneSchema = z.string().trim().max(40).regex(/^[0-9+()\- .]*$/, "digits, spaces and + ( ) - . only");
+export const customerNameSchema = z.string().trim().min(1).max(200);
+export const phoneSchema = z.string().trim().max(40).regex(/^[0-9+()\- .]*$/, "digits, spaces and + ( ) - . only");
 const customerNotesSchema = z.string().max(1000);
-const contactNameSchema = z.string().trim().max(100);
+export const contactNameSchema = z.string().trim().max(100);
 
 export const contactInputSchema = z.object({ email: emailSchema, name: contactNameSchema.optional(), phone: phoneSchema.optional() });
 
