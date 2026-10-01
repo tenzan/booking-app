@@ -1,4 +1,5 @@
 import { clock } from "./clock";
+import { HttpError } from "./http";
 
 /**
  * Batch guard: inserts a NULL into guard.ok (NOT NULL) when `existsSql` yields no rows,
@@ -23,15 +24,22 @@ export async function readScheduleVersion(db: D1Database): Promise<number> {
 
 export function isRetryableBatchError(e: unknown): boolean {
   const m = e instanceof Error ? e.message : String(e);
-  return m.includes("NOT NULL constraint failed: guard.ok") || m.includes("UNIQUE constraint failed: tech_blocks");
+  return (
+    m.includes("NOT NULL constraint failed: guard.ok") ||
+    m.includes("UNIQUE constraint failed: tech_blocks") ||
+    // A freshly generated reference collided; the retry generates another.
+    m.includes("UNIQUE constraint failed: reservations.ref")
+  );
 }
 
+/** Re-runs `fn` on retryable batch conflicts; when the attempts run out the caller sees 503 busy_try_again. */
 export async function withRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {
   for (let i = 1; ; i++) {
     try {
       return await fn();
     } catch (e) {
-      if (i >= attempts || !isRetryableBatchError(e)) throw e;
+      if (!isRetryableBatchError(e)) throw e;
+      if (i >= attempts) throw new HttpError(503, "busy_try_again");
     }
   }
 }

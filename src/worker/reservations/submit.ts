@@ -11,6 +11,7 @@ import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
+import { blockInserts, ELIGIBLE_SQL, movedPending, NO_BUFFER } from "./holds";
 
 export interface SubmitInput {
   customerId: number;
@@ -38,17 +39,6 @@ interface ExistingRow {
   contact_email: string;
   start_at: number;
   end_at: number;
-}
-
-const ELIGIBLE_SQL = `SELECT 1 FROM customers c JOIN customer_contacts k ON k.customer_id = c.id
-  WHERE c.id = ? AND c.active = 1 AND k.active = 1 AND k.email = ?`;
-
-const NO_BUFFER = { bufferBeforeMin: 0, bufferAfterMin: 0 };
-
-function blockInserts(db: D1Database, staffId: number, minutes: number[], ownerId: string): D1PreparedStatement[] {
-  return minutes.map((m) =>
-    db.prepare("INSERT INTO tech_blocks(staff_id, block_start, owner_kind, owner_id) VALUES (?, ?, 'reservation', ?)").bind(staffId, m, ownerId),
-  );
 }
 
 async function findByIdempotencyKey(env: Env, email: string, input: SubmitInput): Promise<SubmitResult | null> {
@@ -114,12 +104,7 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
 
   // Pending requests whose provisional technician changes: free their blocks first, then re-insert,
   // so swaps never collide on the (staff_id, block_start) key within the batch.
-  const moved: Array<{ holdId: string; staffId: number; hold: Hold }> = [];
-  for (const [holdId, newStaff] of assignment) {
-    const owner = ctx.holdOwners.get(holdId);
-    if (!owner || owner.kind !== "reservation" || owner.status !== "pending" || owner.staffId === newStaff) continue;
-    moved.push({ holdId, staffId: newStaff, hold: ctx.holds.find((h) => h.id === holdId)! });
-  }
+  const moved = movedPending(ctx, assignment);
 
   const deadlines = approvalDeadlines(now, slot.startAt, ctx.settings, ctx.bh);
   const ref = newRef();

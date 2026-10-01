@@ -1,5 +1,5 @@
 import { MIN, utcToWall } from "../../domain/time";
-import { findSlot, generateSlots, occupiedRange, type Slot, type SlotCfg } from "../../domain/slots";
+import { findSlot, generateSlots, occupiedRange, type Slot, type SlotCfg, type SlotInput } from "../../domain/slots";
 import type { Hold } from "../../domain/matching";
 import type { BhCtx } from "../../domain/business-hours";
 import type { Settings } from "../../domain/settings";
@@ -31,6 +31,8 @@ export interface ScheduleCtx {
   bh: BhCtx;
   cfg: SlotCfg;
   slots: Slot[];
+  /** What `slots` was generated from (for callers that need a variant, e.g. ignoring unavailability). */
+  slotInput: SlotInput;
   holds: Hold[];
   version: number;
   holdOwners: Map<string, HoldOwner>;
@@ -67,7 +69,8 @@ export async function loadScheduleCtx(env: Env, fromMs: number, toMs: number): P
     loadOverrideDates(db, fromDate, toDate),
     loadUnavailability(db, lo, hi),
   ]);
-  const slots = generateSlots({ fromDate, toDate, windows, overrideDates, holidays, unavailability, bookableStaff, cfg });
+  const slotInput: SlotInput = { fromDate, toDate, windows, overrideDates, holidays, unavailability, bookableStaff, cfg };
+  const slots = generateSlots(slotInput);
 
   const buffers = { beforeMs: cfg.bufferBeforeMin * MIN, afterMs: cfg.bufferAfterMin * MIN };
   const [reservations, options] = await Promise.all([
@@ -94,6 +97,6 @@ export async function loadScheduleCtx(env: Env, fromMs: number, toMs: number): P
     holdOwners.set(o.id, { kind: "option", id: o.id, status: "open", staffId: o.staffId, ref: o.ref });
   }
 
-  return { settings, bh, cfg, slots, holds, version, holdOwners };
+  return { settings, bh, cfg, slots, slotInput, holds, version, holdOwners };
 }
 

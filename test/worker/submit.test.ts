@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { api } from "../helpers";
-import { loginCustomer, seedCustomer, seedTeam, seedWeekly, TZ } from "../fixtures";
+import { loginCustomer, seedCustomer, seedTeam, seedWeekly, TZ, withBatchHook } from "../fixtures";
 import { setNow } from "../../src/worker/lib/clock";
 import { submitReservation, type SubmitInput } from "../../src/worker/reservations/submit";
 import { wallToUtc, MIN } from "../../src/domain/time";
@@ -268,25 +268,6 @@ describe("POST /api/customer/reservations", () => {
   });
 
   describe("conflict handling, forced deterministically", () => {
-    // Wraps env.DB so `hook` runs once, right before the first db.batch() commits: after the submit has
-    // loaded its schedule snapshot and decided what to write, exactly where a concurrent request would land.
-    function withBatchHook(hook: () => Promise<void>) {
-      const real = env.DB;
-      const calls = { batches: 0 };
-      let fired = false;
-      const db = {
-        prepare: (q: string) => real.prepare(q),
-        batch: async (stmts: D1PreparedStatement[]) => {
-          calls.batches++;
-          if (!fired) {
-            fired = true;
-            await hook();
-          }
-          return real.batch(stmts);
-        },
-      } as unknown as D1Database;
-      return { env: { ...env, DB: db } as typeof env, calls };
-    }
     const input = (customerId: number, startAt: number): SubmitInput => body(customerId, startAt) as SubmitInput;
 
     beforeEach(async () => {

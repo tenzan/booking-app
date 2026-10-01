@@ -64,3 +64,25 @@ async function login(kind: "customer" | "staff", email: string): Promise<string>
 /** Request a magic link, deliver it, redeem it; returns the session cookie. The contact must already exist. */
 export const loginCustomer = (email: string): Promise<string> => login("customer", email);
 export const loginStaff = (email: string): Promise<string> => login("staff", email);
+
+/**
+ * Wraps env.DB so `hook` runs once, right before the first db.batch() commits: after the code under test has
+ * loaded its schedule snapshot and decided what to write, exactly where a concurrent request would land.
+ */
+export function withBatchHook(hook: () => Promise<void>): { env: typeof env; calls: { batches: number } } {
+  const real = env.DB;
+  const calls = { batches: 0 };
+  let fired = false;
+  const db = {
+    prepare: (q: string) => real.prepare(q),
+    batch: async (stmts: D1PreparedStatement[]) => {
+      calls.batches++;
+      if (!fired) {
+        fired = true;
+        await hook();
+      }
+      return real.batch(stmts);
+    },
+  } as unknown as D1Database;
+  return { env: { ...env, DB: db } as typeof env, calls };
+}

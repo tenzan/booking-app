@@ -3,7 +3,7 @@ import { afterEach, it, expect } from "vitest";
 import { api } from "../helpers";
 import { getSettings, getHolidays, bhCtx } from "../../src/worker/repos/settings";
 import { rateLimit } from "../../src/worker/lib/rate-limit";
-import { audit, withRetry } from "../../src/worker/lib/db";
+import { audit, isRetryableBatchError, withRetry } from "../../src/worker/lib/db";
 import { setNow, clock } from "../../src/worker/lib/clock";
 import { DEFAULT_SETTINGS } from "../../src/domain/settings";
 
@@ -69,4 +69,18 @@ it("withRetry retries retryable errors only", async () => {
   expect(await withRetry(async () => { if (++n < 3) throw new Error("NOT NULL constraint failed: guard.ok"); return "ok"; })).toBe("ok");
   expect(n).toBe(3);
   await expect(withRetry(async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+});
+
+it("withRetry gives up on a persistent conflict with 503 busy_try_again", async () => {
+  let n = 0;
+  await expect(withRetry(async () => { n++; throw new Error("UNIQUE constraint failed: tech_blocks.staff_id, tech_blocks.block_start"); }, 3)).rejects.toMatchObject({
+    status: 503,
+    code: "busy_try_again",
+  });
+  expect(n).toBe(3);
+});
+
+it("a reference collision is retryable", () => {
+  expect(isRetryableBatchError(new Error("D1_ERROR: UNIQUE constraint failed: reservations.ref: SQLITE_CONSTRAINT"))).toBe(true);
+  expect(isRetryableBatchError(new Error("UNIQUE constraint failed: reservations.idempotency_key"))).toBe(false);
 });
