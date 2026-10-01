@@ -1,10 +1,11 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
+import { devMailEnabled } from "../lib/local";
 
 export const devRoutes = new Hono<AppEnv>();
 
 devRoutes.get("/mail", async (c) => {
-  if (c.env.MAIL_MODE !== "dev") return c.json({ error: "not_found" }, 404);
+  if (!devMailEnabled(c.env)) return c.json({ error: "not_found" }, 404);
   const { results } = await c.env.DB.prepare(
     "SELECT id, to_email, subject, html, text, created_at FROM dev_mailbox ORDER BY id DESC LIMIT 50",
   ).all<{ id: number; to_email: string; subject: string; html: string; text: string; created_at: number }>();

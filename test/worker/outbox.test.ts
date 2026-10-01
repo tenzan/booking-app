@@ -1,10 +1,10 @@
 import { env } from "cloudflare:test";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../helpers";
 import { setNow } from "../../src/worker/lib/clock";
 import { sha256Hex } from "../../src/worker/lib/crypto";
 import { enqueueEmail, processOutbox, type TemplateName } from "../../src/worker/mail/outbox";
-import type { Mailer } from "../../src/worker/mail/adapters";
+import { mailerFor, type Mailer } from "../../src/worker/mail/adapters";
 import { fmtDateTime, t, tzLabel } from "../../src/shared/i18n/i18n";
 
 afterEach(() => setNow(null));
@@ -241,6 +241,46 @@ describe("dev mailbox route", () => {
     const res = await worker.fetch!(new Request("http://localhost:5173/api/dev/mail") as any, { ...env, MAIL_MODE: "cloudflare" } as any, { waitUntil() {}, passThroughOnException() {} } as any);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
+  });
+
+  it.each(["https://booking.example.com", "http://192.0.2.10:5173", "http://localhost.example.com"])(
+    "404s in dev mode when the app is not served from localhost (%s)",
+    async (base) => {
+      const { default: worker } = await import("../../src/worker/index");
+      const res = await worker.fetch!(new Request(`${base}/api/dev/mail`) as any, { ...env, MAIL_MODE: "dev", APP_BASE_URL: base } as any, { waitUntil() {}, passThroughOnException() {} } as any);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "not_found" });
+    },
+  );
+
+  it("serves the mailbox on 127.0.0.1 too", async () => {
+    const { default: worker } = await import("../../src/worker/index");
+    const base = "http://127.0.0.1:5173";
+    const res = await worker.fetch!(new Request(`${base}/api/dev/mail`) as any, { ...env, APP_BASE_URL: base } as any, { waitUntil() {}, passThroughOnException() {} } as any);
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("mailerFor", () => {
+  it("refuses dev mail outside localhost instead of silently filling the dev mailbox", async () => {
+    expect(() => mailerFor({ ...env, MAIL_MODE: "dev", APP_BASE_URL: "https://booking.example.com" })).toThrow(/MAIL_MODE=dev/);
+    await enqueue("customer_login", "pat@example.test", null);
+    await expect(processOutbox({ ...env, MAIL_MODE: "dev", APP_BASE_URL: "https://booking.example.com" })).rejects.toThrow(/MAIL_MODE=dev/);
+    expect(await mailbox()).toHaveLength(0);
+  });
+
+  it("the cron handler logs that configuration error (sanitized) instead of leaving it unhandled", async () => {
+    const { default: worker } = await import("../../src/worker/index");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const waits: Promise<unknown>[] = [];
+    try {
+      await worker.scheduled!({} as any, { ...env, MAIL_MODE: "dev", APP_BASE_URL: "https://booking.example.com" } as any, { waitUntil: (p: Promise<unknown>) => waits.push(p), passThroughOnException() {} } as any);
+      await Promise.all(waits);
+      expect(errors).toHaveBeenCalledWith("outbox", expect.stringContaining("MAIL_MODE=dev"));
+      expect(String(errors.mock.calls[0]![1])).not.toContain("https://");
+    } finally {
+      errors.mockRestore();
+    }
   });
 });
 

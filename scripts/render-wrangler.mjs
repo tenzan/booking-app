@@ -13,6 +13,22 @@ const env = process.env;
 if (strict) {
   const missing = REQUIRED.filter((k) => !env[k]);
   if (missing.length) { console.error(`Missing env vars: ${missing.join(", ")}`); process.exit(1); }
+  // Refuse anything that would deploy a dev or half-configured app. Values may come from a local .env too.
+  const problems = [];
+  const mailMode = env.MAIL_MODE || "cloudflare";
+  if (mailMode !== "cloudflare") {
+    problems.push(`MAIL_MODE must be "cloudflare" for a deployment (got "${mailMode}"; "dev" is for local development only — check your .env)`);
+  }
+  for (const k of ["CLOUDFLARE_ACCOUNT_ID", "D1_DATABASE_ID"]) {
+    if (/^[0-]+$/.test(env[k])) problems.push(`${k} is a placeholder (all zeros); set your real value`);
+  }
+  for (const k of REQUIRED) {
+    if (/^(REPLACE_ME|SET_BY)/.test(env[k])) problems.push(`${k} is a placeholder ("${env[k]}"); set your real value`);
+  }
+  if (problems.length) {
+    console.error(`Refusing to render a deployment config:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+    process.exit(1);
+  }
 }
 const domain = env.APP_DOMAIN || "localhost";
 const config = {
@@ -39,7 +55,7 @@ const config = {
     ORG_NAME: env.ORG_NAME || "Example Support",
     MAIL_FROM: env.MAIL_FROM || "no-reply@example.com",
     MAIL_FROM_NAME: env.MAIL_FROM_NAME || "Example Support",
-    MAIL_MODE: strict ? (env.MAIL_MODE || "cloudflare") : (env.MAIL_MODE || "dev"),
+    MAIL_MODE: strict ? "cloudflare" : (env.MAIL_MODE || "dev"),
     MAIL_REPLY_FORWARD_TO: env.MAIL_REPLY_FORWARD_TO || "",
     TURNSTILE_SITE_KEY: env.TURNSTILE_SITE_KEY || "",
   },
