@@ -1,0 +1,10 @@
+node_modules
+dist
+.wrangler
+wrangler.jsonc
+.env
+.dev.vars
+test-results
+playwright-report
+*.local
+.superpowers/
