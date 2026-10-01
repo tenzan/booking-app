@@ -147,3 +147,54 @@ export interface StaffDTO {
   notify: boolean;
   active: boolean;
 }
+
+export interface CustomerListItemDTO {
+  id: number;
+  customerNumber: string;
+  name: string;
+  phone: string | null;
+  active: boolean;
+  contactsCount: number;
+  activeContactsCount: number;
+}
+
+export interface CustomerListDTO {
+  customers: CustomerListItemDTO[];
+  /** Opaque; pass back as `cursor` for the next page. Null on the last page. */
+  nextCursor: string | null;
+}
+
+export interface CustomerDTO {
+  id: number;
+  customerNumber: string;
+  name: string;
+  phone: string | null;
+  notes: string | null;
+  active: boolean;
+}
+
+export interface CustomerContactDTO {
+  id: number;
+  email: string;
+  name: string | null;
+  phone: string | null;
+  active: boolean;
+  /** The contact's email has booked for this customer: it can only be deactivated, never deleted. */
+  hasHistory: boolean;
+}
+
+/** A reservation of the customer, as listed on the customer's page (newest start first). */
+export interface CustomerReservationSummaryDTO {
+  id: string;
+  ref: string;
+  status: ReservationStatus;
+  startAt: number;
+  endAt: number;
+  contactName: string;
+}
+
+export interface CustomerDetailDTO {
+  customer: CustomerDTO;
+  contacts: CustomerContactDTO[];
+  recentReservations: CustomerReservationSummaryDTO[];
+}

@@ -201,3 +201,48 @@ const staffCapacityShape = { active: z.boolean().optional(), bookable: z.boolean
 const hasCapacityField = (b: { active?: boolean; bookable?: boolean }) => b.active !== undefined || b.bookable !== undefined;
 export const staffPreviewBodySchema = z.object(staffCapacityShape).refine(hasCapacityField, "nothing to change");
 export const staffApplyBodySchema = z.object({ ...staffCapacityShape, version: z.number().int().nonnegative() }).refine(hasCapacityField, "nothing to change");
+
+// ---- Customers --------------------------------------------------------------------------------------------------
+
+export const CUSTOMERS_PAGE_SIZE = 50;
+
+export const customerNumberSchema = z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9._-]+$/, "letters, digits and . _ - only");
+const customerNameSchema = z.string().trim().min(1).max(200);
+const phoneSchema = z.string().trim().max(40).regex(/^[0-9+()\- .]*$/, "digits, spaces and + ( ) - . only");
+const customerNotesSchema = z.string().max(1000);
+const contactNameSchema = z.string().trim().max(100);
+
+export const contactInputSchema = z.object({ email: emailSchema, name: contactNameSchema.optional(), phone: phoneSchema.optional() });
+
+export const customerCreateSchema = z
+  .object({
+    customerNumber: customerNumberSchema,
+    name: customerNameSchema,
+    phone: phoneSchema.optional(),
+    notes: customerNotesSchema.optional(),
+    contacts: z.array(contactInputSchema).max(50).default([]),
+  })
+  .refine((c) => new Set(c.contacts.map((x) => x.email)).size === c.contacts.length, { message: "duplicate contact email", path: ["contacts"] });
+
+/** null (or an empty string) clears phone and notes. The number is immutable once the customer has reservations. */
+export const customerPatchSchema = z
+  .strictObject({
+    customerNumber: customerNumberSchema.optional(),
+    name: customerNameSchema.optional(),
+    phone: phoneSchema.nullable().optional(),
+    notes: customerNotesSchema.nullable().optional(),
+  })
+  .refine((p) => Object.values(p).some((v) => v !== undefined), "empty patch");
+
+/** The email is the contact's identity: to change it, remove (or deactivate) the contact and add another. */
+export const contactPatchSchema = z
+  .strictObject({ name: contactNameSchema.nullable().optional(), phone: phoneSchema.nullable().optional(), active: z.boolean().optional() })
+  .refine((p) => Object.values(p).some((v) => v !== undefined), "empty patch");
+
+export const customerActiveSchema = z.object({ active: z.boolean() });
+
+export const customerListQuerySchema = z.object({
+  query: z.string().trim().max(100).default(""),
+  status: z.enum(["active", "inactive", "all"]).default("active"),
+  cursor: z.string().max(300).optional(),
+});
