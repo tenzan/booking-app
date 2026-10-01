@@ -65,3 +65,29 @@ doppler run -- npm run deploy
 ```
 
 Any other secret manager works the same way as long as the variables reach the deploy process. For local development, `cp .env.example .env` is enough — no Cloudflare credentials are needed to run the app and its tests locally.
+
+## 4. First deployment
+
+With the values from section 2 available in your environment (for example via `doppler run --`):
+
+```bash
+npx wrangler d1 create <database-name>        # put the printed id into D1_DATABASE_ID
+doppler run -- npm run deploy
+```
+
+`npm run deploy` renders the production `wrangler.jsonc` (refusing dev mail mode and placeholder values), builds the app, applies D1 migrations to the remote database, deploys the Worker to `APP_DOMAIN` as a custom domain (Cloudflare creates the DNS record and certificate; the `*.workers.dev` URL is disabled), and finally pushes the runtime secrets (`TURNSTILE_SECRET_KEY`, `BOOTSTRAP_ADMIN_EMAILS`) with `wrangler secret bulk`.
+
+**Email sending:** in the Cloudflare dashboard, open **Email Service → Sending → Add domain** and add your app hostname (e.g. `booking.example.com`). The records it creates live on that hostname and its own bounce subdomain; nothing on your apex domain changes. Until this is done, emails stay in the outbox and are retried; failed ones can be retried from the staff area.
+
+**First administrator:** open `https://APP_DOMAIN/staff/login` and request a link with an address listed in `BOOTSTRAP_ADMIN_EMAILS`.
+
+## 5. Continuous deployment (GitHub Actions)
+
+`.github/workflows/deploy.yml` deploys every push to `main` after typecheck and tests. It reads all configuration from Doppler at run time and needs one repository secret:
+
+```bash
+doppler configs tokens create github-actions --project <your-project> --config prd --plain \
+  | gh secret set DOPPLER_TOKEN --repo <owner>/<repo>
+```
+
+Without that secret the deploy job is skipped, so forks of this repository stay green.

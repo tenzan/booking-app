@@ -9,6 +9,7 @@ if (existsSync(".env")) {
 }
 const strict = process.argv.includes("--strict");
 const REQUIRED = ["APP_DOMAIN", "MAIL_FROM", "MAIL_FROM_NAME", "ORG_NAME", "APP_TIMEZONE", "CLOUDFLARE_ACCOUNT_ID", "D1_DATABASE_ID"];
+const OPTIONAL = ["MAIL_REPLY_FORWARD_TO", "TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "BOOTSTRAP_ADMIN_EMAILS", "WORKER_NAME", "D1_DATABASE_NAME", "APP_LOCALE"];
 const env = process.env;
 if (strict) {
   const missing = REQUIRED.filter((k) => !env[k]);
@@ -22,8 +23,9 @@ if (strict) {
   for (const k of ["CLOUDFLARE_ACCOUNT_ID", "D1_DATABASE_ID"]) {
     if (/^[0-]+$/.test(env[k])) problems.push(`${k} is a placeholder (all zeros); set your real value`);
   }
-  for (const k of REQUIRED) {
-    if (/^(REPLACE_ME|SET_BY)/.test(env[k])) problems.push(`${k} is a placeholder ("${env[k]}"); set your real value`);
+  // Any deployment value still holding a placeholder (required or optional) is a mistake.
+  for (const k of [...REQUIRED, ...OPTIONAL]) {
+    if (/^(REPLACE_ME|SET_BY)/.test(env[k] ?? "")) problems.push(`${k} is a placeholder ("${env[k]}"); set your real value`);
   }
   if (problems.length) {
     console.error(`Refusing to render a deployment config:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
@@ -59,7 +61,9 @@ const config = {
     MAIL_REPLY_FORWARD_TO: env.MAIL_REPLY_FORWARD_TO || "",
     TURNSTILE_SITE_KEY: env.TURNSTILE_SITE_KEY || "",
   },
-  ...(strict ? { routes: [{ pattern: domain, custom_domain: true }] } : {}),
+  // Deployments are reachable only on the custom domain: no *.workers.dev URL or preview URLs
+  // (they would bypass the Cloudflare-provided client IP that rate limiting relies on).
+  ...(strict ? { routes: [{ pattern: domain, custom_domain: true }], workers_dev: false, preview_urls: false } : {}),
 };
 writeFileSync("wrangler.jsonc", JSON.stringify(config, null, 2) + "\n");
 console.log(`wrangler.jsonc written (${strict ? "strict" : "dev defaults"})`);
