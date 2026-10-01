@@ -42,6 +42,9 @@ export interface ScheduleCtx {
  */
 export async function loadScheduleCtx(env: Env, fromMs: number, toMs: number): Promise<ScheduleCtx> {
   const db = env.DB;
+  // Read the version BEFORE any schedule data: a write committing in between then leaves us with a
+  // stale version (a later guard fails and the caller retries) rather than stale data under a fresh version.
+  const version = await readScheduleVersion(db);
   const settings = await getSettings(db, env);
   const holidays = await getHolidays(db);
   const bh: BhCtx = { tz: env.APP_TIMEZONE, hours: settings.businessHours, holidays };
@@ -91,6 +94,6 @@ export async function loadScheduleCtx(env: Env, fromMs: number, toMs: number): P
     holdOwners.set(o.id, { kind: "option", id: o.id, status: "open", staffId: o.staffId, ref: o.ref });
   }
 
-  return { settings, bh, cfg, slots, holds, version: await readScheduleVersion(db), holdOwners };
+  return { settings, bh, cfg, slots, holds, version, holdOwners };
 }
 

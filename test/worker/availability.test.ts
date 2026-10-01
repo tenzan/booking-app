@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { api } from "../helpers";
 import { loginCustomer, loginStaff, seedCustomer, seedTeam, seedWeekly, TZ } from "../fixtures";
+import { loadScheduleCtx } from "../../src/worker/scheduling/context";
 import { setNow } from "../../src/worker/lib/clock";
 import { wallToUtc, MIN } from "../../src/domain/time";
 
@@ -128,5 +129,75 @@ describe("GET /api/customer/accounts", () => {
 
   it("requires a customer session", async () => {
     expect((await api("GET", "/api/customer/accounts")).status).toBe(401);
+  });
+});
+
+describe("loadScheduleCtx holds", () => {
+  const insertReservation = (id: string, status: "pending" | "confirmed", startAt: number, extra: { assigned?: number; provisional?: number } = {}) =>
+    env.DB.prepare(
+      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+         assigned_staff_id, provisional_staff_id, idempotency_key, created_at, updated_at)
+       VALUES (?, ?, ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, ?, ?, ?, ?, 0, 0)`,
+    )
+      .bind(id, `RS-${id}`, customerId, startAt, startAt + 30 * MIN, status, extra.assigned ?? null, extra.provisional ?? null, `k-${id}`)
+      .run();
+
+  it("includes a reservation whose buffer, not its own time, reaches into the range", async () => {
+    await insertReservation("r1", "confirmed", at(FRI, 10), { assigned: team.a });
+    const end = at(FRI, 10, 30);
+    // Default buffer after is 10 minutes: occupied until 10:40. Look from 10:35, one day-window away from the reservation's own times.
+    const ctx = await loadScheduleCtx(env, end + 5 * MIN + 24 * 60 * MIN, end + 6 * MIN + 24 * 60 * MIN);
+    expect(ctx.holds.map((h) => h.id)).toEqual(["r1"]);
+    expect(ctx.holds[0]).toMatchObject({ start: at(FRI, 10), end: at(FRI, 10, 40), fixed: team.a, eligible: [team.a] });
+    // The lower bound is fromMs - 1 day exactly: a range starting after 10:40 + 1 day excludes it.
+    const later = await loadScheduleCtx(env, at(FRI, 10, 40) + 24 * 60 * MIN, at(FRI, 11) + 24 * 60 * MIN);
+    expect(later.holds).toEqual([]);
+  });
+
+  it("falls back to the provisional technician when a pending request's slot no longer exists", async () => {
+    await insertReservation("r1", "pending", at(FRI, 10), { provisional: team.a });
+    const before = await loadScheduleCtx(env, at(FRI, 0), at(FRI, 23));
+    expect(before.holds[0]).toMatchObject({ fixed: null, eligible: [team.a, team.b], preferred: team.a });
+    await env.DB.prepare("DELETE FROM availability_windows WHERE weekday = 5").run();
+    const ctx = await loadScheduleCtx(env, at(FRI, 0), at(FRI, 23));
+    expect(ctx.slots.some((s) => s.startAt === at(FRI, 10))).toBe(false);
+    expect(ctx.holds).toHaveLength(1);
+    expect(ctx.holds[0]).toMatchObject({ id: "r1", fixed: null, eligible: [team.a], preferred: team.a });
+    expect(ctx.holdOwners.get("r1")).toMatchObject({ kind: "reservation", status: "pending", staffId: team.a, ref: "RS-r1" });
+  });
+
+  async function insertProposal(status: string) {
+    await insertReservation("r1", "pending", at(FRI, 12), { provisional: team.b }); // far from the option
+    await env.DB.prepare("INSERT INTO proposals(id, reservation_id, status, created_at, expires_at) VALUES ('p1', 'r1', ?, 0, 1)").bind(status).run();
+    await env.DB.prepare("INSERT INTO proposal_options(id, proposal_id, start_at, end_at, staff_id) VALUES ('o1', 'p1', ?, ?, ?)")
+      .bind(at(FRI, 10), at(FRI, 10, 30), team.a)
+      .run();
+  }
+
+  it("includes options of open proposals as fixed holds and reduces availability", async () => {
+    await insertProposal("open");
+    const ctx = await loadScheduleCtx(env, at(FRI, 0), at(FRI, 23));
+    const option = ctx.holds.find((h) => h.id === "o1");
+    expect(option).toMatchObject({ start: at(FRI, 10), end: at(FRI, 10, 40), fixed: team.a, eligible: [team.a] });
+    expect(ctx.holdOwners.get("o1")).toEqual({ kind: "option", id: "o1", status: "open", staffId: team.a, ref: "RS-r1" });
+    const res = await availability(FRI, FRI);
+    expect(day(res.json, FRI).slots.map((s: any) => [s.startAt, s.spots])).toEqual([
+      [at(FRI, 10), 1],
+      [at(FRI, 10, 30), 1],
+    ]);
+  });
+
+  it("ignores options of proposals that are not open", async () => {
+    await insertProposal("expired");
+    const ctx = await loadScheduleCtx(env, at(FRI, 0), at(FRI, 23));
+    expect(ctx.holds.map((h) => h.id)).toEqual(["r1"]);
+    expect(ctx.holdOwners.has("o1")).toBe(false);
+    const res = await availability(FRI, FRI);
+    expect(day(res.json, FRI).slots[0].spots).toBe(2);
+  });
+
+  it("reads the schedule version", async () => {
+    await env.DB.prepare("UPDATE schedule_state SET version = 7").run();
+    expect((await loadScheduleCtx(env, at(FRI, 0), at(FRI, 23))).version).toBe(7);
   });
 });
