@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 import { signInPath, useMe } from "./api";
 import { Layout } from "./components/Layout";
@@ -17,6 +17,9 @@ import StaffLogin from "./pages/staff/Login";
 import ReservationDetail from "./pages/staff/ReservationDetail";
 import StaffLayout, { RequireStaff } from "./pages/staff/StaffLayout";
 import StaffVerify from "./pages/staff/Verify";
+
+/** Staff-only and heavier (it carries the shared Zod validators): loaded on first visit, not with the customer pages. */
+const SchedulePage = lazy(() => import("./pages/staff/schedule/SchedulePage"));
 
 /** Customer-only pages: without a session, go to the start page and come back here after signing in. */
 function RequireCustomer({ children }: { children: ReactNode }) {
@@ -46,6 +49,7 @@ export default function App() {
           <Route element={<RequireStaff />}>
             <Route index element={<Dashboard />} />
             <Route path="r/:id" element={<ReservationDetail />} />
+            <Route path="schedule" element={<Suspense fallback={<Skeleton className="h-96" />}><SchedulePage /></Suspense>} />
             <Route path="*" element={<NotFound home="/staff" homeLabel={t("web.staff.nav.dashboard")} />} />
           </Route>
         </Route>

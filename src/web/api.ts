@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { AuditRow, CustomerReservationDTO, ReservationDTO, TechOption } from "../shared/types";
+import type { AuditRow, CustomerReservationDTO, ImpactDTO, ReservationDTO, TechOption, UnavailabilityDTO, WindowDTO } from "../shared/types";
 
 /** A non-2xx API response (`status` 0 = the request never reached the server). */
 export class ApiError extends Error {
@@ -97,6 +97,43 @@ export interface StaffReservationView {
   audit: AuditRow[];
 }
 
+/** A team member as the schedule editor lists them. */
+export interface ScheduleStaff {
+  id: number;
+  name: string;
+  bookable: boolean;
+  active: boolean;
+}
+
+export interface ScheduleOverride {
+  date: string;
+  note: string | null;
+  /** Empty: closed all day. */
+  windows: WindowDTO[];
+}
+
+/** GET /api/staff/schedule/windows: the weekly pattern, date overrides from today on, and every team member. */
+export interface ScheduleWindows {
+  weekly: WindowDTO[];
+  overrides: ScheduleOverride[];
+  staff: ScheduleStaff[];
+}
+
+export interface UnavailabilityList {
+  unavailability: UnavailabilityDTO[];
+}
+
+export interface Holiday {
+  date: string;
+  name: string;
+}
+
+/** What a capacity change would do, under the schedule version it was computed at (pass it back to apply). */
+export interface Previewed {
+  version: number;
+  impact: ImpactDTO;
+}
+
 export interface DevMessage {
   id: number;
   to: string;
@@ -115,6 +152,11 @@ export const queryKeys = {
   staffReservations: ["staff", "reservations"] as const,
   staffReservationList: (query: string) => ["staff", "reservations", "list", query] as const,
   staffReservation: (id: string) => ["staff", "reservations", "detail", id] as const,
+  /** Everything schedule-shaped; invalidate after any capacity change. */
+  schedule: ["staff", "schedule"] as const,
+  scheduleWindows: ["staff", "schedule", "windows"] as const,
+  scheduleUnavailability: (query: string) => ["staff", "schedule", "unavailability", query] as const,
+  holidays: (year: number) => ["staff", "schedule", "holidays", year] as const,
   devMail: ["dev", "mail"] as const,
 };
 

@@ -157,7 +157,7 @@ export default function ReservationDetail() {
               <StatusBanner r={q.data.reservation} tz={tz} />
               <Facts r={q.data.reservation} tz={tz} />
             </div>
-            <div className="min-w-0 space-y-6 lg:sticky lg:top-24 lg:col-span-2">
+            <div className="min-w-0 space-y-6 lg:sticky lg:top-32 lg:col-span-2">
               {q.data.reservation.status === "pending" && (
                 <ActionsCard action={action} onOpen={openPanel}>
                   {action === "approve" && (

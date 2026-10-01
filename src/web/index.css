@@ -12,3 +12,10 @@
     @apply outline-2 outline-offset-2 outline-blue-600 dark:outline-blue-400;
   }
 }
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+}

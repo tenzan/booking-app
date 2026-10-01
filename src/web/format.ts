@@ -42,3 +42,18 @@ export const fmtShortDate = (date: string): string => fmtDate(date, { weekday: "
 
 /** "Thu, Oct 1, 2026, 10:00 Asia/Tokyo (GMT+9)" — an instant with its time-zone label, for standalone mentions. */
 export const fmtStamp = (ms: number, tz: string): string => `${fmtDateTime(ms, tz, LOCALE)} ${fmtTz(tz, ms)}`;
+
+/** "09:05" for a minute of the day; 1440 is "24:00" (the end of the day). */
+export const fmtMinutes = (m: number): string => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+/** "09:00 – 12:00" for minutes of the day. */
+export const fmtMinuteRange = (start: number, end: number): string => `${fmtMinutes(start)} – ${fmtMinutes(end)}`;
+
+/** A Sunday, so `SUNDAY + weekday` days is that weekday (0 = Sunday … 6 = Saturday). */
+const SUNDAY = "2026-10-04";
+
+/** "Monday" (or "Mon") for a weekday number, 0 = Sunday. */
+export const fmtWeekday = (weekday: number, style: "long" | "short" = "long"): string => fmtDate(addDays(SUNDAY, weekday), { weekday: style });
+
+/** The weekday (0 = Sunday) of a calendar date. */
+export const weekdayOf = (date: string): number => new Date(`${date}T00:00:00Z`).getUTCDay();
