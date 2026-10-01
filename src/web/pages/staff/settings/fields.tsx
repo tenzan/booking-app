@@ -7,7 +7,7 @@ import { Button } from "../../../components/Button";
 import { Card, Notice } from "../../../components/Card";
 import { inputClass } from "../../../components/Field";
 import { t } from "../../../i18n";
-import type { Submit } from "../schedule/ImpactDialog";
+import { withResolutions, type Submit } from "../schedule/ImpactDialog";
 import { selectClass } from "../schedule/shared";
 
 export const s = (key: string, params?: Record<string, string | number>) => t(`web.staff.settings.${key}`, params);
@@ -184,8 +184,8 @@ export function useSection<D extends Record<string, unknown>>(spec: SectionSpec<
     const result = await submit({
       summary: spec.summary,
       done: spec.done,
-      preview: () => apiFetch<Previewed>("/api/staff/settings/preview", { method: "POST", body: { patch } }),
-      apply: (version) => apiFetch("/api/staff/settings/apply", { method: "POST", body: { patch, version } }),
+      preview: (resolutions) => apiFetch<Previewed>("/api/staff/settings/preview", { method: "POST", body: withResolutions({ patch }, resolutions) }),
+      apply: (version, resolutions) => apiFetch("/api/staff/settings/apply", { method: "POST", body: withResolutions({ patch, version }, resolutions) }),
       onApplied: () => void (focusOnSaved.current = true),
       errorText: (e) => (isApiError(e, 400, "invalid") ? s("errors.invalid") : isApiError(e, 403) ? s("errors.forbidden") : null),
     });

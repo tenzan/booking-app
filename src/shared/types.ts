@@ -127,6 +127,29 @@ export interface ImpactDTO {
   conflicts: ConflictDTO[];
   /** Conflicts that already existed before the change and remain after it; they never block applying it. */
   warnings: ConflictDTO[];
+  /**
+   * Staged resolutions that cannot be applied with this change (present only when some were sent and failed); their
+   * holds are evaluated as if the resolution had not been sent.
+   */
+  invalidResolutions?: InvalidResolution[];
+}
+
+/**
+ * A conflict answered together with the change: the reservation (confirmed or pending) takes `staffId` under the
+ * proposed schedule, in the same commit.
+ */
+export interface Resolution {
+  reservationId: string;
+  staffId: number;
+}
+/**
+ * not_found: no longer an open request or upcoming appointment; same_tech: already with that technician;
+ * tech_unavailable: the technician is not free then under the proposed schedule; clash: the technician already has
+ * another fixed hold then; changed: the reservation changed while the change was being saved.
+ */
+export type ResolutionProblem = "not_found" | "same_tech" | "tech_unavailable" | "clash" | "changed";
+export interface InvalidResolution extends Resolution {
+  reason: ResolutionProblem;
 }
 
 export interface UnavailabilityDTO {

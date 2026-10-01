@@ -84,12 +84,12 @@ staffRoutes.post("/team/:id/preview", requireStaff("admin"), async (c) => {
   const id = parseId(c.req.param("id"));
   const body = await readJson(c, staffPreviewBodySchema);
   if (body.active === false) assertNotSelf(c.var.staff!.id, id);
-  return c.json(await previewChange(c.env, { type: "staff.update", id, active: body.active, bookable: body.bookable }));
+  return c.json(await previewChange(c.env, { type: "staff.update", id, active: body.active, bookable: body.bookable }, body.resolutions));
 });
 
 staffRoutes.post("/team/:id/apply", requireStaff("admin"), async (c) => {
   const id = parseId(c.req.param("id"));
   const { version, ...body } = await readJson(c, staffApplyBodySchema);
   if (body.active === false) assertNotSelf(c.var.staff!.id, id);
-  return c.json(await applyChange(c.env, c.var.staff!, { type: "staff.update", id, active: body.active, bookable: body.bookable }, version));
+  return c.json(await applyChange(c.env, c.var.staff!, { type: "staff.update", id, active: body.active, bookable: body.bookable }, version, body.resolutions));
 });

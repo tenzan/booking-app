@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-route
 import { signInPath, useMe } from "./api";
 import { Layout } from "./components/Layout";
 import { NotFound } from "./components/NotFound";
+import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 import { Skeleton } from "./components/Spinner";
 import { t } from "./i18n";
 import Book from "./pages/customer/Book";
@@ -29,6 +30,16 @@ const CustomerImport = lazy(() => import("./pages/staff/customers/ImportWizard")
 const CalendarPage = lazy(() => import("./pages/staff/Calendar"));
 const ActivityPage = lazy(() => import("./pages/staff/Activity"));
 const EmailsPage = lazy(() => import("./pages/staff/Emails"));
+
+/** A lazily loaded page: a skeleton while it loads, a calm "couldn't be loaded" message if it can't. */
+function Lazy({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
+  return (
+    <RouteErrorBoundary resetKey={pathname}>
+      <Suspense fallback={<Skeleton className="h-96" />}>{children}</Suspense>
+    </RouteErrorBoundary>
+  );
+}
 
 /** Customer-only pages: without a session, go to the start page and come back here after signing in. */
 function RequireCustomer({ children }: { children: ReactNode }) {
@@ -58,16 +69,16 @@ export default function App() {
           <Route element={<RequireStaff />}>
             <Route index element={<Dashboard />} />
             <Route path="r/:id" element={<ReservationDetail />} />
-            <Route path="calendar" element={<Suspense fallback={<Skeleton className="h-96" />}><CalendarPage /></Suspense>} />
-            <Route path="activity" element={<Suspense fallback={<Skeleton className="h-96" />}><ActivityPage /></Suspense>} />
-            <Route path="emails" element={<Suspense fallback={<Skeleton className="h-96" />}><EmailsPage /></Suspense>} />
-            <Route path="schedule" element={<Suspense fallback={<Skeleton className="h-96" />}><SchedulePage /></Suspense>} />
-            <Route path="customers" element={<Suspense fallback={<Skeleton className="h-96" />}><CustomersPage /></Suspense>} />
-            <Route path="customers/new" element={<Suspense fallback={<Skeleton className="h-96" />}><NewCustomerPage /></Suspense>} />
-            <Route path="customers/import" element={<Suspense fallback={<Skeleton className="h-96" />}><CustomerImport /></Suspense>} />
-            <Route path="customers/:id" element={<Suspense fallback={<Skeleton className="h-96" />}><CustomerDetail /></Suspense>} />
-            <Route path="team" element={<Suspense fallback={<Skeleton className="h-96" />}><TeamPage /></Suspense>} />
-            <Route path="settings" element={<Suspense fallback={<Skeleton className="h-96" />}><SettingsPage /></Suspense>} />
+            <Route path="calendar" element={<Lazy><CalendarPage /></Lazy>} />
+            <Route path="activity" element={<Lazy><ActivityPage /></Lazy>} />
+            <Route path="emails" element={<Lazy><EmailsPage /></Lazy>} />
+            <Route path="schedule" element={<Lazy><SchedulePage /></Lazy>} />
+            <Route path="customers" element={<Lazy><CustomersPage /></Lazy>} />
+            <Route path="customers/new" element={<Lazy><NewCustomerPage /></Lazy>} />
+            <Route path="customers/import" element={<Lazy><CustomerImport /></Lazy>} />
+            <Route path="customers/:id" element={<Lazy><CustomerDetail /></Lazy>} />
+            <Route path="team" element={<Lazy><TeamPage /></Lazy>} />
+            <Route path="settings" element={<Lazy><SettingsPage /></Lazy>} />
             <Route path="*" element={<NotFound home="/staff" homeLabel={t("web.staff.nav.dashboard")} />} />
           </Route>
         </Route>

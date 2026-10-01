@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
-import type { ConflictDTO, ImpactDTO, ReservationDTO, ScheduleChange } from "../../../../shared/types";
+import type { ConflictDTO, ImpactDTO, ReservationDTO, Resolution, ScheduleChange } from "../../../../shared/types";
 import { apiFetch, handleSignedOut, isApiError, queryKeys, type Previewed, type StaffReservationView } from "../../../api";
 import { Button } from "../../../components/Button";
 import { Notice } from "../../../components/Card";
@@ -17,8 +17,9 @@ export interface ChangeRequest {
   summary: string;
   /** Confirmation once it is applied. */
   done: string;
-  preview: () => Promise<Previewed>;
-  apply: (version: number) => Promise<unknown>;
+  /** `resolutions`: conflicts answered together with the change (staged reassignments); sent only when there are some. */
+  preview: (resolutions?: Resolution[]) => Promise<Previewed>;
+  apply: (version: number, resolutions?: Resolution[]) => Promise<unknown>;
   /** Runs once the change is applied (e.g. close the edit form). */
   onApplied?: () => void;
   /** Text for errors this kind of change has its own words for (null: the generic schedule message). */
@@ -35,13 +36,16 @@ const errorTextFor = (req: ChangeRequest, e: unknown) => req.errorText?.(e) ?? s
 
 export type Submit = (req: ChangeRequest) => Promise<SubmitResult>;
 
+/** `body` plus the staged resolutions, when there are any (the field is optional on every preview/apply endpoint). */
+export const withResolutions = <T extends object>(body: T, resolutions?: Resolution[]) => (resolutions && resolutions.length > 0 ? { ...body, resolutions } : body);
+
 /** Preview and apply through the schedule endpoints. */
 export function scheduleRequest(change: ScheduleChange, texts: { summary: string; done: string }, onApplied?: () => void): ChangeRequest {
   return {
     ...texts,
     onApplied,
-    preview: () => apiFetch<Previewed>("/api/staff/schedule/preview", { method: "POST", body: { change } }),
-    apply: (version) => apiFetch("/api/staff/schedule/apply", { method: "POST", body: { change, version } }),
+    preview: (resolutions) => apiFetch<Previewed>("/api/staff/schedule/preview", { method: "POST", body: withResolutions({ change }, resolutions) }),
+    apply: (version, resolutions) => apiFetch("/api/staff/schedule/apply", { method: "POST", body: withResolutions({ change, version }, resolutions) }),
   };
 }
 
@@ -61,32 +65,58 @@ const isRace = (e: unknown) => isApiError(e, 409, "stale_preview") || isApiError
 type ApplyOutcome = { kind: "applied" } | { kind: "review"; previewed: Previewed };
 
 /**
- * Apply at `version`. If the schedule moved on meanwhile (409 stale_preview), preview again without a word: when
- * the impact is still what was shown, apply once more; otherwise hand back the new impact for review.
+ * Apply at `version` with the staged `resolutions`. If the schedule moved on meanwhile (409 stale_preview), preview
+ * again without a word: when the impact is still what was shown (and every staged resolution still holds), apply
+ * once more; otherwise hand back the new impact for review.
  */
-async function applyChecked(req: ChangeRequest, version: number, shown: ImpactDTO): Promise<ApplyOutcome> {
+async function applyChecked(req: ChangeRequest, version: number, shown: ImpactDTO, resolutions: Resolution[] = []): Promise<ApplyOutcome> {
   try {
-    await req.apply(version);
+    await req.apply(version, resolutions);
     return { kind: "applied" };
   } catch (e) {
     if (!isRace(e)) throw e;
-    const fresh = await req.preview();
-    if (isApiError(e, 409, "stale_preview") && fresh.impact.conflicts.length === 0 && signature(fresh.impact) === signature(shown)) {
+    const fresh = await req.preview(resolutions);
+    const unchanged = fresh.impact.conflicts.length === 0 && !fresh.impact.invalidResolutions && signature(fresh.impact) === signature(shown);
+    if (isApiError(e, 409, "stale_preview") && unchanged) {
       try {
-        await req.apply(fresh.version);
+        await req.apply(fresh.version, resolutions);
         return { kind: "applied" };
       } catch (e2) {
         if (!isRace(e2)) throw e2;
-        return { kind: "review", previewed: await req.preview() };
+        return { kind: "review", previewed: await req.preview(resolutions) };
       }
     }
     return { kind: "review", previewed: fresh };
   }
 }
 
+/** A conflict answered by reassigning it to `staffId`; it is saved together with the change. */
+interface Staged {
+  /** The conflict as it was shown when the reassignment was chosen. */
+  conflict: ConflictDTO;
+  staffId: number;
+  name: string;
+}
+const toResolutions = (staged: Staged[]): Resolution[] => staged.map((s) => ({ reservationId: s.conflict.reservationId, staffId: s.staffId }));
+
+/** Splits `staged` by the preview's verdict: the ones that still hold, and why each of the others was dropped. */
+function reconcile(staged: Staged[], impact: ImpactDTO): { keep: Staged[]; dropped: string[] } {
+  const bad = new Map((impact.invalidResolutions ?? []).map((i) => [i.reservationId, i.reason]));
+  return {
+    keep: staged.filter((s) => !bad.has(s.conflict.reservationId)),
+    dropped: staged
+      .filter((s) => bad.has(s.conflict.reservationId))
+      .map((s) =>
+        k("impact.resolve.dropped", { ref: s.conflict.ref, name: s.name, why: k(`impact.resolve.why.${bad.get(s.conflict.reservationId)!}`, { name: s.name }) }),
+      ),
+  };
+}
+
 type Tone = "success" | "warning" | "error";
 interface Review extends Previewed {
   req: ChangeRequest;
+  /** Reassignments chosen in the dialog; `impact` was previewed with them. */
+  staged: Staged[];
   notice: { tone: Tone; text: string } | null;
   /** The control that asked for the change; it is usually disabled (busy) by the time the dialog opens. */
   returnTo: HTMLElement | null;
@@ -141,7 +171,7 @@ export function useImpactFlow({ tz, onDone, refresh }: { tz: string; onDone: (te
       try {
         const first = await req.preview();
         if (!isClear(first.impact)) {
-          setReview({ req, ...first, notice: null, returnTo });
+          setReview({ req, ...first, staged: [], notice: null, returnTo });
           return { status: "review" };
         }
         const out = await applyChecked(req, first.version, first.impact);
@@ -149,7 +179,7 @@ export function useImpactFlow({ tz, onDone, refresh }: { tz: string; onDone: (te
           finish(req);
           return { status: "applied" };
         }
-        setReview({ req, ...out.previewed, notice: { tone: "warning", text: k("impact.changedJustNow") }, returnTo });
+        setReview({ req, ...out.previewed, staged: [], notice: { tone: "warning", text: k("impact.changedJustNow") }, returnTo });
         return { status: "review" };
       } catch (e) {
         signedOut(e);
@@ -196,7 +226,7 @@ function ImpactDialog({
   const hintId = useId();
   const titleRef = useRef<HTMLHeadingElement>(null);
   const noticeRef = useRef<HTMLDivElement>(null);
-  /** What is running: "save", "refresh", or the id of the conflict being resolved. */
+  /** What is running: "save", the id of the conflict being resolved, or "undo:" + the id of a staged one. */
   const [busy, setBusy] = useState<string | null>(null);
   const focusNotice = useRef(false);
 
@@ -223,26 +253,35 @@ function ImpactDialog({
     setReview((r) => (r ? { ...r, notice: { tone, text } } : r));
   };
 
-  /** Preview again (after a resolution or a race) and show `message` with the new impact. */
-  async function rePreview(tone: Tone, message: string) {
+  /**
+   * Preview again with `staged` (after a resolution, an undo or a race) and show `message` with the new impact.
+   * Staged reassignments that no longer hold are dropped, and the notice says why instead of `message` when `message`
+   * was about one of them (`about`).
+   */
+  async function rePreview(staged: Staged[], tone: Tone, message: string, about?: string) {
     try {
-      const fresh = await review!.req.preview();
+      const fresh = await review!.req.preview(toResolutions(staged));
+      const { keep, dropped } = reconcile(staged, fresh.impact);
+      const aboutDropped = about !== undefined && !keep.some((s) => s.conflict.reservationId === about);
+      const notice =
+        dropped.length === 0 ? { tone, text: message } : { tone: "warning" as const, text: [...(aboutDropped ? [] : [message]), ...dropped].join(" ") };
       focusNotice.current = true;
-      setReview((r) => (r ? { ...r, ...fresh, notice: { tone, text: message } } : r));
+      setReview((r) => (r ? { ...r, ...fresh, staged: keep, notice } : r));
     } catch (e) {
       if (!signedOut(e)) say("error", errorTextFor(review!.req, e));
     }
-    void refreshLists();
   }
 
   async function save() {
     setBusy("save");
     try {
-      const out = await applyChecked(req, review!.version, impact);
+      const out = await applyChecked(req, review!.version, impact, toResolutions(review!.staged));
       if (out.kind === "applied") onApplied(req);
       else {
+        const { keep, dropped } = reconcile(review!.staged, out.previewed.impact);
         focusNotice.current = true;
-        setReview((r) => (r ? { ...r, ...out.previewed, notice: { tone: "warning", text: k("impact.changedMeanwhile") } } : r));
+        setReview((r) => (r ? { ...r, ...out.previewed, staged: keep, notice: { tone: "warning", text: [k("impact.changedMeanwhile"), ...dropped].join(" ") } } : r));
+        void refreshLists();
       }
     } catch (e) {
       if (!signedOut(e)) say("error", errorTextFor(req, e));
@@ -251,24 +290,47 @@ function ImpactDialog({
     }
   }
 
-  /** Runs a resolution for conflict `c`; `action` returns the confirmation. Always re-previews afterwards. */
-  async function resolve(c: ConflictDTO, action: () => Promise<string>) {
+  /** Stages "reassign `c` to `staffId`": nothing is written until the change is saved, together with it. */
+  async function stage(c: ConflictDTO, staffId: number, name: string) {
     setBusy(c.id);
     try {
-      await rePreview("success", await action());
-    } catch (e) {
-      if (signedOut(e)) return;
-      if (isApiError(e, 409, "stale") || isApiError(e, 409, "same_tech")) await rePreview("warning", k("impact.resolve.stale", { ref: c.ref }));
-      else if (isApiError(e, 409, "tech_unavailable")) await rePreview("warning", k("impact.resolve.techUnavailable", { ref: c.ref }));
-      else if (isApiError(e, 409, "too_late")) say("error", k("impact.resolve.tooLate", { ref: c.ref }));
-      else say("error", actionErrorText(e));
+      const next = [...review!.staged.filter((s) => s.conflict.reservationId !== c.reservationId), { conflict: c, staffId, name }];
+      await rePreview(next, "success", k("impact.resolve.staged", { ref: c.ref, name }), c.reservationId);
     } finally {
       setBusy(null);
     }
   }
 
+  async function unstage(s: Staged) {
+    setBusy(`undo:${s.conflict.reservationId}`);
+    try {
+      const next = review!.staged.filter((x) => x !== s);
+      await rePreview(next, "success", k("impact.resolve.unstaged", { ref: s.conflict.ref, name: s.name }));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** Runs an immediate resolution (cancel/decline) for conflict `c`; `action` returns the confirmation. Always re-previews afterwards. */
+  async function resolve(c: ConflictDTO, action: () => Promise<string>) {
+    setBusy(c.id);
+    const staged = review!.staged;
+    try {
+      await rePreview(staged, "success", await action());
+    } catch (e) {
+      if (signedOut(e)) return;
+      if (isApiError(e, 409, "stale")) await rePreview(staged, "warning", k("impact.resolve.stale", { ref: c.ref }));
+      else if (isApiError(e, 409, "too_late")) say("error", k("impact.resolve.tooLate", { ref: c.ref }));
+      else say("error", actionErrorText(e));
+    } finally {
+      setBusy(null);
+      void refreshLists();
+    }
+  }
+
   const counts = [
     impact.conflicts.length > 0 && k("impact.countConflicts", { n: impact.conflicts.length }),
+    review.staged.length > 0 && k("impact.countStaged", { n: review.staged.length }),
     impact.moved.length > 0 && k("impact.countMoved", { n: impact.moved.length }),
   ].filter(Boolean);
 
@@ -308,13 +370,25 @@ function ImpactDialog({
           )}
         </div>
 
-        {isClear(impact) && impact.warnings.length === 0 && <p className="text-slate-700 dark:text-slate-300">{k("impact.nothingLeft")}</p>}
+        {isClear(impact) && impact.warnings.length === 0 && (
+          <p className="text-slate-700 dark:text-slate-300">{review.staged.length > 0 ? k("impact.nothingLeftStaged") : k("impact.nothingLeft")}</p>
+        )}
 
         {impact.conflicts.length > 0 && (
           <Section tone="conflict" title={k("impact.conflictsHeading", { n: impact.conflicts.length })} lead={k("impact.conflictsLead")}>
             {impact.conflicts.map((c) => (
               <li key={c.id}>
-                <ConflictCard c={c} tz={tz} busy={busy} onResolve={(action) => void resolve(c, action)} />
+                <ConflictCard c={c} tz={tz} busy={busy} onStage={(staffId, name) => void stage(c, staffId, name)} onResolve={(action) => void resolve(c, action)} />
+              </li>
+            ))}
+          </Section>
+        )}
+
+        {review.staged.length > 0 && (
+          <Section tone="staged" title={k("impact.stagedHeading", { n: review.staged.length })} lead={k("impact.stagedLead")}>
+            {review.staged.map((st) => (
+              <li key={st.conflict.reservationId}>
+                <StagedCard s={st} tz={tz} busy={busy} onUndo={() => void unstage(st)} />
               </li>
             ))}
           </Section>
@@ -380,9 +454,9 @@ function ImpactDialog({
   );
 }
 
-function Section({ tone, title, lead, children }: { tone: "conflict" | "moved" | "muted"; title: string; lead: string; children: ReactNode }) {
+function Section({ tone, title, lead, children }: { tone: "conflict" | "staged" | "moved" | "muted"; title: string; lead: string; children: ReactNode }) {
   const id = useId();
-  const dot = tone === "conflict" ? "bg-red-600" : tone === "moved" ? "bg-blue-600" : "bg-slate-400";
+  const dot = tone === "conflict" ? "bg-red-600" : tone === "staged" ? "bg-green-600" : tone === "moved" ? "bg-blue-600" : "bg-slate-400";
   return (
     <section aria-labelledby={id} className={tone === "muted" ? "text-slate-600 dark:text-slate-400" : ""}>
       <h3 id={id} className="flex items-center gap-2 font-semibold">
@@ -392,7 +466,7 @@ function Section({ tone, title, lead, children }: { tone: "conflict" | "moved" |
       <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-400">{lead}</p>
       <ul
         className={
-          tone === "conflict"
+          tone === "conflict" || tone === "staged"
             ? "mt-3 space-y-3"
             : `mt-2 divide-y rounded-xl border px-4 ${
                 tone === "moved" ? "divide-slate-200 border-slate-200 dark:divide-slate-800 dark:border-slate-800" : "divide-slate-200 border-dashed border-slate-300 dark:divide-slate-800 dark:border-slate-700"
@@ -433,15 +507,80 @@ async function current(c: ConflictDTO): Promise<ReservationDTO> {
   return v.reservation;
 }
 
-async function post(c: ConflictDTO, action: "reassign" | "cancel" | "decline", body: Record<string, unknown>) {
+async function post(c: ConflictDTO, action: "cancel" | "decline", body: Record<string, unknown>) {
   await apiFetch(`/api/staff/reservations/${encodeURIComponent(c.reservationId)}/${action}`, { method: "POST", body });
 }
 
 const REASON_MAX = 500;
 type Asking = { kind: "reassign"; staffId: number } | { kind: "cancel" } | { kind: "decline" } | null;
 
-/** One conflict and what can be done about it; every action re-previews the change afterwards. */
-function ConflictCard({ c, tz, busy, onResolve }: { c: ConflictDTO; tz: string; busy: string | null; onResolve: (action: () => Promise<string>) => void }) {
+/** A staged reassignment: saved with the change, or undone. */
+function StagedCard({ s, tz, busy, onUndo }: { s: Staged; tz: string; busy: string | null; onUndo: () => void }) {
+  const headingId = useId();
+  const c = s.conflict;
+  const mine = busy === `undo:${c.reservationId}`;
+  return (
+    <article aria-labelledby={headingId} aria-busy={mine || undefined} className="space-y-3 rounded-xl border border-green-300 bg-green-50/50 p-4 dark:border-green-400/40 dark:bg-green-400/5">
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+        <h4 id={headingId} className="flex flex-wrap items-center gap-2">
+          <span className="font-mono font-semibold">{c.ref}</span>
+          <StatusPill c={c} />
+        </h4>
+        <OpenRequest c={c} />
+      </div>
+      <div className="-mt-2 space-y-0.5">
+        <p className="font-medium tabular-nums">{fmtDateTime(c.startAt, tz, LOCALE)}</p>
+        <p className="break-words text-slate-700 dark:text-slate-300">
+          {c.customerName}
+          {c.staffName && (
+            <span className="text-slate-500 dark:text-slate-400">
+              {" "}
+              · {t("common.technician")}: {c.staffName}
+            </span>
+          )}
+        </p>
+        <p className="flex items-start gap-1.5 pt-1 text-sm font-medium text-green-800 dark:text-green-300">
+          <svg className="mt-0.5 size-4 shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="m5 12 5 5L20 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          {k("impact.stagedWill", { name: s.name })}
+        </p>
+      </div>
+      <Button variant="secondary" disabled={busy !== null} loading={mine} onClick={onUndo} aria-label={k("impact.undoLabel", { ref: c.ref, name: s.name })}>
+        {k("impact.undo")}
+      </Button>
+    </article>
+  );
+}
+
+function StatusPill({ c }: { c: ConflictDTO }) {
+  const label = c.kind === "option" ? k("impact.option") : t(`web.statusShort.${c.status}`);
+  const cls =
+    c.status === "confirmed"
+      ? "bg-green-100 text-green-900 ring-green-300 dark:bg-green-400/15 dark:text-green-200 dark:ring-green-400/40"
+      : c.status === "pending"
+        ? "bg-amber-100 text-amber-900 ring-amber-300 dark:bg-amber-400/15 dark:text-amber-200 dark:ring-amber-400/40"
+        : "bg-violet-100 text-violet-900 ring-violet-300 dark:bg-violet-400/15 dark:text-violet-200 dark:ring-violet-400/40";
+  return <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${cls}`}>{label}</span>;
+}
+
+/**
+ * One conflict and what can be done about it. "Reassign to …" stages the reassignment (saved with the change);
+ * cancelling or declining happens at once. Either way the change is previewed again afterwards.
+ */
+function ConflictCard({
+  c,
+  tz,
+  busy,
+  onStage,
+  onResolve,
+}: {
+  c: ConflictDTO;
+  tz: string;
+  busy: string | null;
+  onStage: (staffId: number, name: string) => void;
+  onResolve: (action: () => Promise<string>) => void;
+}) {
   const [asking, setAsking] = useState<Asking>(null);
   const [reason, setReason] = useState("");
   const [reasonError, setReasonError] = useState<string | null>(null);
@@ -474,12 +613,7 @@ function ConflictCard({ c, tz, busy, onResolve }: { c: ConflictDTO; tz: string; 
     requestAnimationFrame(() => articleRef.current?.querySelector<HTMLElement>(`[data-action="${trigger.current}"]`)?.focus());
   };
 
-  const reassign = (staffId: number, name: string) =>
-    onResolve(async () => {
-      const r = await current(c);
-      await post(c, "reassign", { staffId, version: r.version });
-      return k("impact.resolve.reassigned", { ref: c.ref, name });
-    });
+  const reassign = (staffId: number, name: string) => onStage(staffId, name);
 
   function submitReason(kind: "cancel" | "decline") {
     const text = reason.trim();
@@ -496,13 +630,6 @@ function ConflictCard({ c, tz, busy, onResolve }: { c: ConflictDTO; tz: string; 
     });
   }
 
-  const statusLabel = c.kind === "option" ? k("impact.option") : t(`web.statusShort.${c.status}`);
-  const statusClass =
-    c.status === "confirmed"
-      ? "bg-green-100 text-green-900 ring-green-300 dark:bg-green-400/15 dark:text-green-200 dark:ring-green-400/40"
-      : c.status === "pending"
-        ? "bg-amber-100 text-amber-900 ring-amber-300 dark:bg-amber-400/15 dark:text-amber-200 dark:ring-amber-400/40"
-        : "bg-violet-100 text-violet-900 ring-violet-300 dark:bg-violet-400/15 dark:text-violet-200 dark:ring-violet-400/40";
   const askAlt = asking?.kind === "reassign" ? c.alternatives.find((a) => a.id === asking.staffId) : undefined;
   const escape = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -518,7 +645,7 @@ function ConflictCard({ c, tz, busy, onResolve }: { c: ConflictDTO; tz: string; 
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
         <h4 id={headingId} className="flex flex-wrap items-center gap-2">
           <span className="font-mono font-semibold">{c.ref}</span>
-          <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${statusClass}`}>{statusLabel}</span>
+          <StatusPill c={c} />
         </h4>
         <OpenRequest c={c} />
       </div>

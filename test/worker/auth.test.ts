@@ -411,9 +411,13 @@ describe("staff magic link", () => {
   });
 });
 
+const scheduleVersion = async () => (await env.DB.prepare("SELECT version FROM schedule_state").first<{ version: number }>())!.version;
+
 describe("bootstrap admin", () => {
   it("creates the admin on first staff request from a bootstrap address, and mails a link", async () => {
+    const v0 = await scheduleVersion();
     const res = await requestStaff("Boot-Admin@example.test");
+    expect(await scheduleVersion()).toBe(v0 + 1); // a new bookable admin is a capacity change
     expect(res.status).toBe(200);
     const row = await env.DB.prepare("SELECT * FROM staff").all<any>();
     expect(row.results).toHaveLength(1);
@@ -429,17 +433,24 @@ describe("bootstrap admin", () => {
 
   it("does not create a second admin once an active admin exists", async () => {
     await seedStaff("other-admin@example.test", "admin");
+    const v0 = await scheduleVersion();
     const res = await requestStaff("boot-admin@example.test");
     expect(res.status).toBe(200);
+    expect(await scheduleVersion()).toBe(v0);
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM staff").first<{ n: number }>())!.n).toBe(1);
     expect(await lastMailTo("boot-admin@example.test")).toBeNull();
   });
 
   it("recreates a lost admin when every admin is deactivated", async () => {
     await seedStaff("boot-admin@example.test", "admin", false);
+    const v0 = await scheduleVersion();
     await requestStaff("boot-admin@example.test");
     const row = await env.DB.prepare("SELECT role, active FROM staff").first<any>();
     expect(row).toEqual({ role: "admin", active: 1 });
+    expect(await scheduleVersion()).toBe(v0 + 1); // reactivated in the same batch as the bump
+    // Signing in again as the (now active) admin changes nothing.
+    await requestStaff("boot-admin@example.test");
+    expect(await scheduleVersion()).toBe(v0 + 1);
     expect(await lastMailTo("boot-admin@example.test")).toBeTruthy();
   });
 

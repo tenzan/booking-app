@@ -2,17 +2,19 @@
 // proposed schedule, and (on apply) commits the change together with the pending requests it moves.
 
 import { rosterImpact, type RosterHold, type RosterImpact } from "../../domain/roster";
-import type { SlotCfg, SlotInput, Unavail } from "../../domain/slots";
+import { freeStaffAt, rangeBlocks, type SlotCfg, type SlotInput, type Unavail } from "../../domain/slots";
 import type { Settings } from "../../domain/settings";
 import { addDays, MIN, utcToWall } from "../../domain/time";
-import type { ConflictDTO, ImpactDTO, ScheduleChange } from "../../shared/types";
+import type { ConflictDTO, ImpactDTO, InvalidResolution, Resolution, ResolutionProblem, ScheduleChange } from "../../shared/types";
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
-import { audit, capacityBatch, readScheduleVersion, withRetry } from "../lib/db";
+import { assertSql, audit, capacityBatch, readScheduleVersion, withRetry } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { getHolidays, getSettings } from "../repos/settings";
 import { loadOverrideDates, loadWindows } from "../repos/schedule";
-import { movePendingStatements, type PendingMove } from "../reservations/holds";
+import { notifyStaff } from "../repos/staff";
+import { blockInsert, movePendingStatements, type PendingMove } from "../reservations/holds";
+import { reassignedEmails } from "../reservations/reassign";
 import { resolveChange } from "./changes";
 
 export type { ConflictDTO, ImpactDTO, ScheduleChange, WindowInput } from "../../shared/types";
@@ -33,6 +35,15 @@ interface HoldInfo {
   reservationId: string;
   customerName: string;
 }
+/** What a resolution needs to assert and announce about a pending/confirmed reservation. */
+export interface ReservationMeta {
+  status: "pending" | "confirmed";
+  version: number;
+  /** Assigned (confirmed) or provisional (pending) technician. */
+  staffId: number | null;
+  customerId: number;
+  contactEmail: string;
+}
 
 /** The current schedule and every hold that has not ended yet, read under one schedule version. */
 export interface RosterState {
@@ -44,6 +55,7 @@ export interface RosterState {
   staff: Map<number, StaffInfo>;
   holds: RosterHold[];
   info: Map<string, HoldInfo>;
+  reservations: Map<string, ReservationMeta>;
 }
 
 interface ReservationRow {
@@ -57,6 +69,9 @@ interface ReservationRow {
   provisionalStaffId: number | null;
   createdAt: number;
   customerName: string;
+  version: number;
+  customerId: number;
+  contactEmail: string;
 }
 interface OptionRow {
   id: string;
@@ -86,7 +101,7 @@ export async function loadRosterState(env: Env): Promise<RosterState> {
       .prepare(
         `SELECT r.id, r.ref, r.status, r.start_at AS startAt, r.occ_start AS occStart, r.occ_end AS occEnd,
                 r.assigned_staff_id AS assignedStaffId, r.provisional_staff_id AS provisionalStaffId, r.created_at AS createdAt,
-                c.name AS customerName
+                r.version, r.customer_id AS customerId, r.contact_email AS contactEmail, c.name AS customerName
          FROM reservations r JOIN customers c ON c.id = r.customer_id
          WHERE r.status IN ('pending','confirmed') AND r.occ_end > ?`,
       )
@@ -108,8 +123,12 @@ export async function loadRosterState(env: Env): Promise<RosterState> {
 
   const holds: RosterHold[] = [];
   const info = new Map<string, HoldInfo>();
+  const meta = new Map<string, ReservationMeta>();
   for (const r of reservations.results) {
     const pending = r.status === "pending";
+    meta.set(r.id, {
+      status: r.status, version: r.version, staffId: pending ? r.provisionalStaffId : r.assignedStaffId, customerId: r.customerId, contactEmail: r.contactEmail,
+    });
     holds.push({
       id: r.id, kind: "reservation", status: r.status, ref: r.ref, slotStart: r.startAt, occStart: r.occStart, occEnd: r.occEnd,
       staffId: pending ? r.provisionalStaffId : r.assignedStaffId,
@@ -155,10 +174,10 @@ export async function loadRosterState(env: Env): Promise<RosterState> {
     bufferAfterMin: settings.bufferAfterMin,
   };
   const slotInput: SlotInput = { fromDate, toDate, windows, overrideDates, holidays, unavailability, bookableStaff, cfg };
-  return { version, settings, slotInput, unavailability, staff, holds, info };
+  return { version, settings, slotInput, unavailability, staff, holds, info, reservations: meta };
 }
 
-function toImpactDTO(state: RosterState, impact: RosterImpact, preexisting: Set<string>): ImpactDTO {
+function toImpactDTO(state: RosterState, impact: RosterImpact, preexisting: Set<string>, invalid: InvalidResolution[]): ImpactDTO {
   const holds = new Map(state.holds.map((h) => [h.id, h]));
   const name = (id: number | null) => (id === null ? null : (state.staff.get(id)?.name ?? null));
   const conflict = (c: RosterImpact["conflicts"][number]): ConflictDTO => ({
@@ -181,6 +200,7 @@ function toImpactDTO(state: RosterState, impact: RosterImpact, preexisting: Set<
     moved: impact.moved.map((m) => ({ id: m.id, ref: m.ref, startAt: holds.get(m.id)!.slotStart, from: name(m.from), fromId: m.from, to: name(m.to) ?? "", toId: m.to })),
     conflicts: impact.conflicts.filter((c) => !preexisting.has(c.id)).map(conflict),
     warnings: impact.conflicts.filter((c) => preexisting.has(c.id)).map(conflict),
+    ...(invalid.length > 0 ? { invalidResolutions: invalid } : {}),
   };
 }
 
@@ -202,46 +222,173 @@ function baseline(state: RosterState): { holds: RosterHold[]; preexisting: Set<s
   }
 }
 
-async function evaluate(env: Env, state: RosterState, change: ScheduleChange) {
-  const resolved = await resolveChange(env.DB, state, change);
-  const { holds, preexisting } = baseline(state);
-  const impact = rosterImpact({ holds, slotInput: resolved.slotInput });
-  const dto = toImpactDTO(state, impact, preexisting);
-  return { resolved, impact, dto };
+/** A resolution that holds under the proposed schedule: `hold` (as loaded) moves from its technician to `to`. */
+interface AcceptedResolution {
+  hold: RosterHold;
+  to: number;
 }
 
-/** What `change` would do to existing holds, under the returned schedule version. Never writes. */
-export async function previewChange(env: Env, change: ScheduleChange): Promise<{ version: number; impact: ImpactDTO }> {
-  const state = await loadRosterState(env);
-  const { dto } = await evaluate(env, state, change);
-  return { version: state.version, impact: dto };
+const overlaps = (a: RosterHold, b: RosterHold) => a.occStart < b.occEnd && b.occStart < a.occEnd;
+
+/**
+ * Pins each resolution's hold (pending or confirmed) to its chosen technician, in order. A resolution holds when that
+ * technician is free at the hold's slot under the PROPOSED schedule and has no other fixed hold overlapping it (valid
+ * confirmed appointments and options, pinned holds, earlier resolutions): pendings are flexible and may be displaced,
+ * and then show up as conflicts of their own. The rest are reported with a reason and their holds left as they are.
+ * `changed` names reservations that moved on since the apply started (see applyChange).
+ */
+function stageResolutions(slotInput: SlotInput, holds: RosterHold[], resolutions: Resolution[], changed: Set<string>) {
+  const free = new Map<string, number[]>();
+  const freeAt = (h: RosterHold) => {
+    if (!free.has(h.id)) free.set(h.id, freeStaffAt(slotInput, h.slotStart, h.occStart, h.occEnd));
+    return free.get(h.id)!;
+  };
+  /** Technician each fixed hold keeps under the proposal (what the engine places before any pending). */
+  const fixedOn = new Map<string, number>();
+  for (const h of holds) {
+    if ((h.status === "pending" && !h.pinned) || h.staffId === null) continue;
+    if (h.pinned || freeAt(h).includes(h.staffId)) fixedOn.set(h.id, h.staffId);
+  }
+  const byId = new Map(holds.map((h) => [h.id, h]));
+  const accepted: AcceptedResolution[] = [];
+  const invalid: InvalidResolution[] = [];
+  for (const r of resolutions) {
+    const h = byId.get(r.reservationId);
+    const clash = (hold: RosterHold) => holds.some((o) => o.id !== hold.id && fixedOn.get(o.id) === r.staffId && overlaps(o, hold));
+    const reason: ResolutionProblem | null =
+      !h || h.kind !== "reservation"
+        ? "not_found"
+        : changed.has(h.id)
+          ? "changed"
+          : h.staffId === r.staffId
+            ? "same_tech"
+            : !freeAt(h).includes(r.staffId)
+              ? "tech_unavailable"
+              : clash(h)
+                ? "clash"
+                : null;
+    if (reason !== null || !h) {
+      invalid.push({ reservationId: r.reservationId, staffId: r.staffId, reason: reason ?? "not_found" });
+      continue;
+    }
+    fixedOn.set(h.id, r.staffId);
+    accepted.push({ hold: h, to: r.staffId });
+  }
+  const to = new Map(accepted.map((a) => [a.hold.id, a.to]));
+  return {
+    holds: holds.map((h) => (to.has(h.id) ? { ...h, staffId: to.get(h.id)!, pinned: true } : h)),
+    accepted,
+    invalid,
+  };
+}
+
+async function evaluate(env: Env, state: RosterState, change: ScheduleChange, resolutions: Resolution[], changed = new Set<string>()) {
+  const resolved = await resolveChange(env.DB, state, change);
+  const base = baseline(state);
+  const staged = stageResolutions(resolved.slotInput, base.holds, resolutions, changed);
+  const impact = rosterImpact({ holds: staged.holds, slotInput: resolved.slotInput });
+  const dto = toImpactDTO(state, impact, base.preexisting, staged.invalid);
+  return { resolved, impact, dto, accepted: staged.accepted };
 }
 
 /**
- * Applies `change` if the schedule is still at the previewed `version` (else 409 stale_preview) and it introduces no
- * conflict (else 409 conflicts with the recomputed impact; pre-existing ones are only warnings). The impact is always recomputed here. One batch writes
- * the change, re-blocks every moved pending request (asserting it is still pending with its old technician) and
- * audits `schedule.<type>`.
+ * What `change` would do to existing holds, under the returned schedule version, with the staged `resolutions`
+ * applied (invalid ones are reported and otherwise ignored). Never writes.
  */
-export async function applyChange(env: Env, actor: StaffPrincipal, change: ScheduleChange, version: number): Promise<{ version: number; impact: ImpactDTO }> {
+export async function previewChange(env: Env, change: ScheduleChange, resolutions: Resolution[] = []): Promise<{ version: number; impact: ImpactDTO }> {
+  const state = await loadRosterState(env);
+  const { dto } = await evaluate(env, state, change, resolutions);
+  return { version: state.version, impact: dto };
+}
+
+const CURRENT_STAFF_SQL = {
+  confirmed: "SELECT 1 FROM reservations WHERE id = ? AND status = 'confirmed' AND version = ? AND assigned_staff_id IS ?",
+  pending: "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND version = ? AND provisional_staff_id IS ?",
+};
+
+/**
+ * Applies `change` together with its staged `resolutions` if the schedule is still at the previewed `version` (else
+ * 409 stale_preview), every resolution still holds and no conflict is left (else 409 conflicts with the recomputed
+ * impact; pre-existing conflicts are only warnings). The impact is always recomputed here. One batch writes the
+ * change, moves each resolved reservation (asserting it still has the status, version and technician it was judged
+ * on), re-blocks every moved pending request (asserting it is still pending with its old technician), queues the
+ * reassignment notices and audits `schedule.<type>` plus a `reservation.reassigned` per resolution.
+ */
+export async function applyChange(
+  env: Env,
+  actor: StaffPrincipal,
+  change: ScheduleChange,
+  version: number,
+  resolutions: Resolution[] = [],
+): Promise<{ version: number; impact: ImpactDTO }> {
+  // Each resolved reservation as the first attempt saw it. A retry (after an in-batch assertion failed) that finds one
+  // changed refuses it: the person decided on what the preview showed, not on what someone else made of it since.
+  const seen = new Map<string, string>();
   return withRetry(async () => {
     const db = env.DB;
     const state = await loadRosterState(env);
     if (state.version !== version) throw new HttpError(409, "stale_preview");
-    const { resolved, impact, dto } = await evaluate(env, state, change);
-    if (dto.conflicts.length > 0) throw new HttpError(409, "conflicts", { impact: dto });
+    const changed = new Set<string>();
+    for (const r of resolutions) {
+      const m = state.reservations.get(r.reservationId);
+      const key = m ? `${m.status}:${m.version}:${m.staffId}` : "gone";
+      const first = seen.get(r.reservationId);
+      if (first === undefined) seen.set(r.reservationId, key);
+      else if (first !== key) changed.add(r.reservationId);
+    }
+    const { resolved, impact, dto, accepted } = await evaluate(env, state, change, resolutions, changed);
+    if (dto.conflicts.length > 0 || dto.invalidResolutions) throw new HttpError(409, "conflicts", { impact: dto });
 
     const now = clock.now();
     const holds = new Map(state.holds.map((h) => [h.id, h]));
     const moves: PendingMove[] = impact.moved.map((m) => ({ id: m.id, from: m.from, to: m.to, occStart: holds.get(m.id)!.occStart, occEnd: holds.get(m.id)!.occEnd }));
+    const team = accepted.some((a) => a.hold.status === "confirmed") ? await notifyStaff(db) : [];
+    const res = accepted.map((a) => ({ ...a, meta: state.reservations.get(a.hold.id)!, from: a.hold.staffId }));
     await capacityBatch(db, state.version, [
       ...resolved.statements(db, now),
+      // Every resolved and moved hold frees its blocks before any is re-inserted, so swaps never collide.
+      ...res.map((r) => assertSql(db, CURRENT_STAFF_SQL[r.meta.status], r.hold.id, r.meta.version, r.from)),
+      ...res.map((r) => db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(r.hold.id)),
       ...movePendingStatements(db, moves, now),
+      ...res.flatMap((r) =>
+        r.meta.status === "confirmed"
+          ? [
+              db
+                .prepare("UPDATE reservations SET assigned_staff_id = ?, version = version + 1, updated_at = ? WHERE id = ? AND status = 'confirmed' AND version = ?")
+                .bind(r.to, now, r.hold.id, r.meta.version),
+              ...reassignedEmails(db, {
+                id: r.hold.id,
+                newVersion: r.meta.version + 1,
+                from: r.from!,
+                to: r.to,
+                actorId: actor.id,
+                staff: team,
+                contactEmail: r.meta.contactEmail,
+                notifyCustomer: state.settings.notifyCustomerOnReassign,
+              }),
+            ]
+          : [db.prepare("UPDATE reservations SET provisional_staff_id = ?, updated_at = ? WHERE id = ? AND status = 'pending'").bind(r.to, now, r.hold.id)],
+      ),
+      ...res.map((r) => blockInsert(db, r.to, rangeBlocks(r.hold.occStart, r.hold.occEnd), r.hold.id)),
+      ...res.map((r) =>
+        audit(db, {
+          actorKind: "staff",
+          actor: String(actor.id),
+          action: "reservation.reassigned",
+          reservationId: r.hold.id,
+          customerId: r.meta.customerId,
+          details: { from: r.from, to: r.to, via: "schedule" },
+        }),
+      ),
       audit(db, {
         actorKind: "staff",
         actor: String(actor.id),
         action: `schedule.${change.type}`,
-        details: { ...resolved.details, moved: impact.moved.map((m) => ({ id: m.id, ref: m.ref, from: m.from, to: m.to })) },
+        details: {
+          ...resolved.details,
+          moved: impact.moved.map((m) => ({ id: m.id, ref: m.ref, from: m.from, to: m.to })),
+          ...(res.length > 0 ? { resolved: res.map((r) => ({ id: r.hold.id, ref: r.hold.ref, from: r.from, to: r.to })) } : {}),
+        },
       }),
     ]);
     return { version: state.version + 1, impact: dto };

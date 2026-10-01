@@ -3,7 +3,7 @@ import { z } from "zod";
 import { HolidayImportError, planHolidayImport, type HolidayImportRow } from "../../domain/holiday-import";
 import { utcToWall } from "../../domain/time";
 import type { Settings } from "../../domain/settings";
-import { settingsApplyBodySchema, settingsPatchIssues, settingsPreviewBodySchema } from "../../shared/schemas";
+import { resolutionsSchema, settingsApplyBodySchema, settingsPatchIssues, settingsPreviewBodySchema } from "../../shared/schemas";
 import type { ImpactDTO } from "../../shared/types";
 import type { AppEnv } from "../env";
 import { clock } from "../lib/clock";
@@ -31,13 +31,13 @@ settingsRoutes.get("/settings", requireStaff(), async (c) => {
 });
 
 settingsRoutes.post("/settings/preview", requireStaff("admin"), async (c) => {
-  const { patch } = await readJson(c, settingsPreviewBodySchema);
-  return c.json(await previewChange(c.env, await settingsChange(c, patch)));
+  const { patch, resolutions } = await readJson(c, settingsPreviewBodySchema);
+  return c.json(await previewChange(c.env, await settingsChange(c, patch), resolutions));
 });
 
 settingsRoutes.post("/settings/apply", requireStaff("admin"), async (c) => {
-  const { patch, version } = await readJson(c, settingsApplyBodySchema);
-  return c.json(await applyChange(c.env, c.var.staff!, await settingsChange(c, patch), version));
+  const { patch, version, resolutions } = await readJson(c, settingsApplyBodySchema);
+  return c.json(await applyChange(c.env, c.var.staff!, await settingsChange(c, patch), version, resolutions));
 });
 
 // ---- Holidays ---------------------------------------------------------------------------------------------------
@@ -54,7 +54,7 @@ settingsRoutes.get("/holidays", requireStaff(), async (c) => {
   return c.json(results);
 });
 
-const importBody = z.object({ csv: z.string().max(100_000) });
+const importBody = z.object({ csv: z.string().max(100_000), resolutions: resolutionsSchema.optional() });
 const importApplyBody = importBody.extend({ version: z.number().int().nonnegative() });
 
 type ImportRowDTO = HolidayImportRow & { /** Appointments or requests that the holiday would take away (preview only). */ conflicts: number };
@@ -76,9 +76,9 @@ async function planImport(c: { env: AppEnv["Bindings"] }, csv: string) {
 }
 
 settingsRoutes.post("/holidays/import/preview", requireStaff("admin"), async (c) => {
-  const { csv } = await readJson(c, importBody);
+  const { csv, resolutions } = await readJson(c, importBody);
   const { rows, change } = await planImport(c, csv);
-  const { version, impact } = change ? await previewChange(c.env, change) : { version: await readScheduleVersion(c.env.DB), impact: EMPTY_IMPACT };
+  const { version, impact } = change ? await previewChange(c.env, change, resolutions) : { version: await readScheduleVersion(c.env.DB), impact: EMPTY_IMPACT };
   const perDate = new Map<string, number>();
   for (const k of impact.conflicts) {
     const date = utcToWall(k.startAt, c.env.APP_TIMEZONE).date;
@@ -89,11 +89,11 @@ settingsRoutes.post("/holidays/import/preview", requireStaff("admin"), async (c)
 });
 
 settingsRoutes.post("/holidays/import/apply", requireStaff("admin"), async (c) => {
-  const { csv, version } = await readJson(c, importApplyBody);
+  const { csv, version, resolutions } = await readJson(c, importApplyBody);
   const { rows, change } = await planImport(c, csv);
   if (rows.some((r) => r.status === "error")) throw new HttpError(400, "invalid_rows", { rows: rows.filter((r) => r.status === "error") });
   if (!change) throw new HttpError(400, "nothing_to_import");
-  const result = await applyChange(c.env, c.var.staff!, change, version);
+  const result = await applyChange(c.env, c.var.staff!, change, version, resolutions);
   return c.json({ ...result, applied: rows.filter((r) => r.status !== "unchanged").length });
 });
 

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CodedMessage } from "../../../../domain/csv";
 import { holidayNameSchema, isoDateSchema, MAX_HOLIDAY_IMPORT_ROWS } from "../../../../shared/schemas";
+import type { Resolution } from "../../../../shared/types";
 import { apiFetch, handleSignedOut, isApiError, queryKeys, type Holiday, type HolidayImportPreview, type HolidayImportRowView } from "../../../api";
 import { Button } from "../../../components/Button";
 import { Notice } from "../../../components/Card";
@@ -13,7 +14,7 @@ import { dayParts, fmtDateWithYear, fmtLongDate, todayIn } from "../../../format
 import { t } from "../../../i18n";
 import { codedText } from "../coded";
 import { actionErrorText } from "../detail/shared";
-import { scheduleRequest, type Submit } from "../schedule/ImpactDialog";
+import { scheduleRequest, withResolutions, type Submit } from "../schedule/ImpactDialog";
 
 const h = (key: string, params?: Record<string, string | number>) => t(`web.staff.holidays.${key}`, params);
 const NAME_MAX = (holidayNameSchema as unknown as { maxLength: number }).maxLength;
@@ -357,7 +358,10 @@ function importErrorText(e: unknown): string | null {
   return null;
 }
 
-const request = (csv: string, version?: number) => ({ method: "POST", body: version === undefined ? { csv } : { csv, version } });
+const request = (csv: string, version?: number, resolutions?: Resolution[]) => ({
+  method: "POST",
+  body: withResolutions(version === undefined ? { csv } : { csv, version }, resolutions),
+});
 
 /** Two steps: add the file (upload or paste) → check the planned rows and import. */
 function ImportWizard({ submit, onClose }: { submit: Submit; onClose: (importedYear?: number) => void }) {
@@ -415,8 +419,8 @@ function ImportWizard({ submit, onClose }: { submit: Submit; onClose: (importedY
     const result = await submit({
       summary: h("import.summary", { n }),
       done: n === 1 ? h("import.doneOne") : h("import.done", { n }),
-      preview: () => apiFetch<HolidayImportPreview>("/api/staff/holidays/import/preview", request(csv)),
-      apply: (version) => apiFetch("/api/staff/holidays/import/apply", request(csv, version)),
+      preview: (resolutions) => apiFetch<HolidayImportPreview>("/api/staff/holidays/import/preview", request(csv, undefined, resolutions)),
+      apply: (version, resolutions) => apiFetch("/api/staff/holidays/import/apply", request(csv, version, resolutions)),
       onApplied: () => onClose(Number([...toWrite].sort((a, b) => a.date.localeCompare(b.date))[0]!.date.slice(0, 4))),
       errorText: importErrorText,
     });

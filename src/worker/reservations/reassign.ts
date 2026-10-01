@@ -54,28 +54,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
       )
       .bind(staffId, now, id, version),
     blockInsert(db, staffId, rangeBlocks(target.start, target.end), id),
-    ...staff
-      .filter((s) => s.id !== actor.id)
-      .map((s) =>
-        enqueueEmail(db, {
-          template: "reassigned",
-          to: s.email,
-          dedupeKey: `reassigned:${id}:v${newVersion}:${s.id}`,
-          reservationId: id,
-          payload: { audience: "team", from, to: staffId, by: actor.id },
-        }),
-      ),
-    ...(ctx.settings.notifyCustomerOnReassign
-      ? [
-          enqueueEmail(db, {
-            template: "reassigned",
-            to: current.contactEmail,
-            dedupeKey: `reassigned-customer:${id}:v${newVersion}`,
-            reservationId: id,
-            payload: { audience: "customer", to: staffId },
-          }),
-        ]
-      : []),
+    ...reassignedEmails(db, { id, newVersion, from, to: staffId, actorId: actor.id, staff, contactEmail: current.contactEmail, notifyCustomer: ctx.settings.notifyCustomerOnReassign }),
     audit(db, {
       actorKind: "staff",
       actor: String(actor.id),
@@ -86,4 +65,47 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
     }),
   ]);
   return (await getReservation(db, id))!;
+}
+
+/**
+ * The `reassigned` notices for a confirmed appointment now at `newVersion`: every notified team member except the
+ * actor, plus the customer when the setting asks for it. Shared by the direct reassign and schedule resolutions.
+ */
+export function reassignedEmails(
+  db: D1Database,
+  o: {
+    id: string;
+    newVersion: number;
+    from: number;
+    to: number;
+    actorId: number;
+    staff: Array<{ id: number; email: string }>;
+    contactEmail: string;
+    notifyCustomer: boolean;
+  },
+): D1PreparedStatement[] {
+  return [
+    ...o.staff
+      .filter((s) => s.id !== o.actorId)
+      .map((s) =>
+        enqueueEmail(db, {
+          template: "reassigned",
+          to: s.email,
+          dedupeKey: `reassigned:${o.id}:v${o.newVersion}:${s.id}`,
+          reservationId: o.id,
+          payload: { audience: "team", from: o.from, to: o.to, by: o.actorId },
+        }),
+      ),
+    ...(o.notifyCustomer
+      ? [
+          enqueueEmail(db, {
+            template: "reassigned",
+            to: o.contactEmail,
+            dedupeKey: `reassigned-customer:${o.id}:v${o.newVersion}`,
+            reservationId: o.id,
+            payload: { audience: "customer", to: o.to },
+          }),
+        ]
+      : []),
+  ];
 }

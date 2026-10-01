@@ -54,7 +54,7 @@ const unavailabilityQuery = z.object({
 const DEFAULT_SPAN_MS = 90 * 24 * 60 * 60_000;
 const MAX_ROWS = 500;
 
-/** Time off overlapping [from (default now), to (default from + 90 days)), soonest first, at most 500 rows. */
+/** Time off overlapping [from (default now), to (default from + 90 days)), soonest first, at most 500 rows; reasons only for admins and the owner. */
 scheduleRoutes.get("/unavailability", async (c) => {
   const q = unavailabilityQuery.parse({ staffId: c.req.query("staffId"), from: c.req.query("from"), to: c.req.query("to") });
   const from = q.from ?? clock.now();
@@ -71,17 +71,19 @@ scheduleRoutes.get("/unavailability", async (c) => {
   )
     .bind(...binds)
     .all<UnavailabilityDTO>();
-  return c.json({ unavailability: results });
+  // The reason is personal: admins and the technician it belongs to see it, other technicians only the period.
+  const me = c.var.staff!;
+  return c.json({ unavailability: results.map((u) => (me.role === "admin" || u.staffId === me.id ? u : { ...u, reason: null })) });
 });
 
 scheduleRoutes.post("/preview", async (c) => {
-  const { change } = await readJson(c, previewBodySchema);
+  const { change, resolutions } = await readJson(c, previewBodySchema);
   await authorize(c.env, c.var.staff!, change);
-  return c.json(await previewChange(c.env, change));
+  return c.json(await previewChange(c.env, change, resolutions));
 });
 
 scheduleRoutes.post("/apply", async (c) => {
-  const { change, version } = await readJson(c, applyBodySchema);
+  const { change, version, resolutions } = await readJson(c, applyBodySchema);
   await authorize(c.env, c.var.staff!, change);
-  return c.json(await applyChange(c.env, c.var.staff!, change, version));
+  return c.json(await applyChange(c.env, c.var.staff!, change, version, resolutions));
 });

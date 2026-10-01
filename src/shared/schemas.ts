@@ -99,8 +99,16 @@ export const scheduleEditSchema = z.discriminatedUnion("type", [
 ]);
 export type ScheduleEdit = z.output<typeof scheduleEditSchema>;
 
-export const previewBodySchema = z.object({ change: scheduleEditSchema });
-export const applyBodySchema = z.object({ change: scheduleEditSchema, version: z.number().int().nonnegative() });
+/** Most conflicts one change may answer in the same commit. */
+export const MAX_RESOLUTIONS = 50;
+/** Staged conflict answers sent with a schedule-affecting change; one per reservation. */
+export const resolutionsSchema = z
+  .array(z.object({ reservationId: z.string().min(1).max(64), staffId: z.number().int().positive() }))
+  .max(MAX_RESOLUTIONS)
+  .refine((rs) => new Set(rs.map((r) => r.reservationId)).size === rs.length, "one resolution per reservation");
+
+export const previewBodySchema = z.object({ change: scheduleEditSchema, resolutions: resolutionsSchema.optional() });
+export const applyBodySchema = z.object({ change: scheduleEditSchema, version: z.number().int().nonnegative(), resolutions: resolutionsSchema.optional() });
 
 // ---- Settings ---------------------------------------------------------------------------------------------------
 
@@ -160,8 +168,8 @@ export const settingsPatchSchema = settingsObject
   .strict()
   .refine((p) => Object.values(p).some((v) => v !== undefined), "empty patch");
 
-export const settingsPreviewBodySchema = z.object({ patch: settingsPatchSchema });
-export const settingsApplyBodySchema = z.object({ patch: settingsPatchSchema, version: z.number().int().nonnegative() });
+export const settingsPreviewBodySchema = z.object({ patch: settingsPatchSchema, resolutions: resolutionsSchema.optional() });
+export const settingsApplyBodySchema = z.object({ patch: settingsPatchSchema, version: z.number().int().nonnegative(), resolutions: resolutionsSchema.optional() });
 
 /**
  * Issues for `current` with `patch` applied: the patch's own fields, plus the cross-field approval ordering when the
@@ -199,7 +207,7 @@ export const staffPatchSchema = z
   .strictObject({ name: staffNameSchema.optional(), role: staffRoleSchema.optional(), notify: z.boolean().optional() })
   .refine((p) => Object.values(p).some((v) => v !== undefined), "empty patch");
 
-const staffCapacityShape = { active: z.boolean().optional(), bookable: z.boolean().optional() };
+const staffCapacityShape = { active: z.boolean().optional(), bookable: z.boolean().optional(), resolutions: resolutionsSchema.optional() };
 const hasCapacityField = (b: { active?: boolean; bookable?: boolean }) => b.active !== undefined || b.bookable !== undefined;
 export const staffPreviewBodySchema = z.object(staffCapacityShape).refine(hasCapacityField, "nothing to change");
 export const staffApplyBodySchema = z.object({ ...staffCapacityShape, version: z.number().int().nonnegative() }).refine(hasCapacityField, "nothing to change");

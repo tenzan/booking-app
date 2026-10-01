@@ -98,13 +98,16 @@ test("admin takes a technician off weekly hours and reassigns their confirmed ap
   const reassign = conflict.getByRole("button", { name: /^Reassign to / }).first();
   const newTech = (await reassign.textContent())!.replace("Reassign to", "").trim();
   await reassign.click();
-  // If that technician only becomes free by moving a pending request, the card asks first.
-  const done = dialog.getByText(`${reservation.ref} is now with ${newTech}. The impact is updated.`);
+  // If that technician only becomes free by moving a pending request, the card asks first. Either way the
+  // reassignment is only staged: it is saved together with the change.
+  const done = dialog.getByText(`${reservation.ref} will be reassigned to ${newTech} when you save. The impact is updated.`);
   const ask = conflict.getByRole("group");
   await expect(done.or(ask)).toBeVisible();
   if (await ask.isVisible()) await ask.getByRole("button", { name: `Reassign to ${newTech}` }).click();
   await expect(done).toBeVisible();
   await expect(dialog.getByRole("heading", { name: /^Needs a decision/ })).toHaveCount(0);
+  await expect(dialog.getByRole("heading", { name: "Reassigned when you save (1)" })).toBeVisible();
+  await expect(conflict.getByText(`Will be reassigned to ${newTech} when you save`)).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Save change" })).toBeEnabled();
 
   await dialog.getByRole("button", { name: "Save change" }).click();
@@ -118,6 +121,91 @@ test("admin takes a technician off weekly hours and reassigns their confirmed ap
   await page.goto(`/staff/r/${reservation.id}`);
   await expect(page.getByRole("heading", { name: `Request ${reservation.ref}` })).toBeVisible();
   await expect(page.getByText(`Technician: ${newTech}.`, { exact: false })).toBeVisible();
+});
+
+test("admin swaps the only technician of an appointment's hours for another; the appointment moves with the save", async ({ page }, testInfo) => {
+  const tag = projectTag(testInfo.project.name);
+  const api = page.request;
+  const fromName = `Sasha ${tag}`;
+  const toName = `Jordan ${tag}`;
+  const customerEmail = `swap-${testInfo.project.name}@example.test`;
+  // Weekend hours nobody else has (the sample schedule is Mon–Fri), one weekday per project.
+  const weekday = testInfo.project.name === "desktop" ? 6 : 0;
+  const startMin = 7 * 60;
+  const endMin = 9 * 60;
+
+  // ---- arrange: two technicians of this test's own; hours staffed only by the first, holding a confirmed appointment
+  const staff = async (name: string, email: string) =>
+    (await apiPost<{ staff: { id: number } }>(api, "/api/staff/team", { email, name, role: "technician", bookable: true, notify: false })).staff.id;
+  const from = await staff(fromName, `sasha-${testInfo.project.name}@example.test`);
+  const to = await staff(toName, `jordan-${testInfo.project.name}@example.test`);
+  const hours = (staffIds: number[]) => ({ kind: "weekly", weekday, date: null, startMin, endMin, staffIds });
+  const create = { type: "window.create", window: hours([from]) };
+  await apiPost(api, "/api/staff/schedule/apply", { change: create, version: (await apiPost<{ version: number }>(api, "/api/staff/schedule/preview", { change: create })).version });
+  const { weekly } = await apiGet<{ weekly: Window[] }>(api, "/api/staff/schedule/windows");
+  const win = weekly.find((w) => w.weekday === weekday && w.startMin === startMin && w.endMin === endMin)!;
+  expect(win, "the new weekend hours").toBeTruthy();
+
+  await createCustomer(api, `E2E-SWAP-${tag.toUpperCase()}`, `Swap Clinic ${tag}`, customerEmail, "Sam Swap");
+  await signIn(api, "customer", customerEmail);
+  const { timezone, slots } = await availableSlots(api);
+  const slot = slots.find((s) => {
+    const w = wallTime(s.startAt, timezone);
+    return w.weekday === weekday && startMin <= w.minute && w.minute < endMin;
+  });
+  expect(slot, "a bookable time in the new hours").toBeTruthy();
+  const reservation = await requestSlot(api, slot!.startAt, "Sam Swap");
+  await approve(api, reservation.id, from);
+
+  try {
+    // ---- act: in the schedule editor, take the first technician off those hours and put the second on
+    const day = weekdayName(weekday);
+    const range = `${hhmm(startMin)} – ${hhmm(endMin)}`;
+    await page.goto("/staff/schedule");
+    await expect(page.getByRole("heading", { name: "Schedule", level: 1 })).toBeVisible();
+    await page.getByRole("button", { name: `Edit ${day} ${range}` }).click();
+    const form = page.getByRole("form", { name: `Hours on ${day}` });
+    await form.locator("label").filter({ hasText: fromName }).click();
+    await form.locator("label").filter({ hasText: toName }).click();
+    await expect(form.getByRole("checkbox", { name: fromName })).not.toBeChecked();
+    await expect(form.getByRole("checkbox", { name: toName })).toBeChecked();
+    await form.getByRole("button", { name: "Save", exact: true }).click();
+
+    // ---- the only way out is the technician who is on those hours AFTER the change: stage it
+    const dialog = page.getByRole("dialog", { name: "Check the impact before saving" });
+    await expect(dialog.getByRole("heading", { name: "Needs a decision (1)" })).toBeVisible();
+    const card = dialog.getByRole("article").filter({ hasText: reservation.ref });
+    await expect(card.getByText(`${fromName} would no longer be available at this time.`)).toBeVisible();
+    await card.getByRole("button", { name: `Reassign to ${toName}` }).click();
+    await expect(dialog.getByText(`${reservation.ref} will be reassigned to ${toName} when you save. The impact is updated.`)).toBeVisible();
+    await expect(card.getByText(`Will be reassigned to ${toName} when you save`)).toBeVisible();
+
+    // Undo puts it back to "Needs a decision"; staging again makes the change saveable.
+    await card.getByRole("button", { name: `Undo reassigning ${reservation.ref} to ${toName}` }).click();
+    await expect(dialog.getByRole("heading", { name: "Needs a decision (1)" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Save change" })).toBeDisabled();
+    await card.getByRole("button", { name: `Reassign to ${toName}` }).click();
+    await expect(dialog.getByRole("heading", { name: "Reassigned when you save (1)" })).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: /^Needs a decision/ })).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: "Save change" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole("status").filter({ hasText: `Saved ${day} ${range}.` })).toBeVisible();
+
+    // ---- one commit did both: the hours list only the second technician, and the appointment is theirs
+    const hoursCard = page.getByRole("button", { name: `Edit ${day} ${range}` }).locator("..");
+    await expect(hoursCard.getByRole("list", { name: "Technicians" })).toContainText(toName);
+    await expect(hoursCard.getByRole("list", { name: "Technicians" })).not.toContainText(fromName);
+    await page.goto(`/staff/r/${reservation.id}`);
+    await expect(page.getByRole("heading", { name: `Request ${reservation.ref}` })).toBeVisible();
+    await expect(page.getByText(`Technician: ${toName}.`, { exact: false })).toBeVisible();
+  } finally {
+    // Leave no weekend hours behind for the other tests' "first bookable time".
+    const { reservation: r } = await apiGet<{ reservation: { version: number; status: string } }>(api, `/api/staff/reservations/${reservation.id}`);
+    if (r.status === "confirmed") await apiPost(api, `/api/staff/reservations/${reservation.id}/cancel`, { reason: "End-to-end test clean-up.", version: r.version });
+    const del = { type: "window.delete", id: win.id };
+    await apiPost(api, "/api/staff/schedule/apply", { change: del, version: (await apiPost<{ version: number }>(api, "/api/staff/schedule/preview", { change: del })).version });
+  }
 });
 
 test("admin imports a new customer from pasted CSV, and its contact can get a booking link", async ({ page }, testInfo) => {

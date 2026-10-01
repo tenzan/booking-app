@@ -414,8 +414,13 @@ describe("unavailability", () => {
     const list = await api("GET", `/api/staff/schedule/unavailability?from=${at(FRI, 0)}&to=${at(FRI, 23)}`, { cookie: techCookie });
     expect(list.json.unavailability).toEqual([
       { id: mine.id, staffId: team.a, staffName: "Tim Tech", startAt: at(FRI, 13), endAt: at(FRI, 15), reason: "Training" },
-      { id: theirs, staffId: team.b, staffName: "Una Tech", startAt: at(FRI, 13), endAt: at(FRI, 15), reason: "Training" },
+      // Someone else's reason is theirs: another technician sees only the period.
+      { id: theirs, staffId: team.b, staffName: "Una Tech", startAt: at(FRI, 13), endAt: at(FRI, 15), reason: null },
     ]);
+    const asAdmin = await api("GET", `/api/staff/schedule/unavailability?from=${at(FRI, 0)}&to=${at(FRI, 23)}`, { cookie: adminCookie });
+    expect(asAdmin.json.unavailability.map((u: any) => u.reason)).toEqual(["Training", "Training"]);
+    const asB = await api("GET", `/api/staff/schedule/unavailability?from=${at(FRI, 0)}&to=${at(FRI, 23)}`, { cookie: await loginStaff("tech-b@example.test") });
+    expect(asB.json.unavailability.map((u: any) => [u.staffId, u.reason])).toEqual([[team.a, null], [team.b, "Training"]]);
     const onlyB = await api("GET", `/api/staff/schedule/unavailability?staffId=${team.b}`, { cookie: techCookie });
     expect(onlyB.json.unavailability.map((u: any) => u.id)).toEqual([theirs]);
     const later = await api("GET", `/api/staff/schedule/unavailability?from=${at(FRI, 15)}`, { cookie: techCookie });

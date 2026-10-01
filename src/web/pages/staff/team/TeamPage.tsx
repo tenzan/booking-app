@@ -10,7 +10,7 @@ import { Skeleton } from "../../../components/Spinner";
 import { Switch } from "../../../components/Switch";
 import { Toast, useToast } from "../../../components/Toast";
 import { t } from "../../../i18n";
-import { useImpactFlow, type ChangeRequest, type Submit } from "../schedule/ImpactDialog";
+import { useImpactFlow, withResolutions, type ChangeRequest, type Submit } from "../schedule/ImpactDialog";
 import { AddStaffForm, EditStaffForm, teamErrorText, tm } from "./StaffEditor";
 
 const byName = (a: StaffDTO, b: StaffDTO) => a.name.localeCompare(b.name) || a.id - b.id;
@@ -201,8 +201,8 @@ function MemberRow({
         : { summary: tm(value ? "summary.activate" : "summary.deactivate", { name: m.name }), done: tm(value ? "done.activated" : "done.deactivated", { name: m.name }) };
     const req: ChangeRequest = {
       ...texts,
-      preview: () => apiFetch<Previewed>(`/api/staff/team/${m.id}/preview`, { method: "POST", body }),
-      apply: (version) => apiFetch(`/api/staff/team/${m.id}/apply`, { method: "POST", body: { ...body, version } }),
+      preview: (resolutions) => apiFetch<Previewed>(`/api/staff/team/${m.id}/preview`, { method: "POST", body: withResolutions(body, resolutions) }),
+      apply: (version, resolutions) => apiFetch(`/api/staff/team/${m.id}/apply`, { method: "POST", body: withResolutions({ ...body, version }, resolutions) }),
       onApplied: () => {
         setAsking(false);
         focusSwitch(field);
