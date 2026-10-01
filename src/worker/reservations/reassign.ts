@@ -8,12 +8,15 @@ import { enqueueEmail } from "../mail/outbox";
 import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
 import { blockInsert, movedPending, movePendingStatements } from "./holds";
+import { closeProposalStatements } from "./propose";
+import { releasedHolds } from "./replacement";
 import { getReservation, techOptions, type ReservationDTO } from "./queries";
 
 /**
  * Give a confirmed appointment another technician at the same time. The target must be free on the appointment's
  * window and stored range, and everything else must stay assignable with it fixed there (pending requests may move).
  * Same batch discipline as approve: of two racing reassignments exactly one commits, the other is stale on retry.
+ * An open proposal on the appointment is withdrawn in the same batch (staff decided), its options released first.
  */
 export async function reassignReservation(env: Env, actor: StaffPrincipal, id: string, staffId: number, version: number): Promise<ReservationDTO> {
   return withRetry(() => attempt(env, actor, id, staffId, version));
@@ -32,8 +35,9 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   const target = ctx.holds.find((h) => h.id === id);
   if (!target) throw new HttpError(409, "stale", { current: (await getReservation(db, id)) ?? current });
 
+  const released = releasedHolds(ctx, current, null);
   const free = freeStaffAt(ctx.slotInput, current.startAt, target.start, target.end);
-  const fixedHolds = ctx.holds.map((h) => (h.id === id ? { ...h, fixed: staffId, eligible: [staffId] } : h));
+  const fixedHolds = ctx.holds.filter((h) => !released.has(h.id)).map((h) => (h.id === id ? { ...h, fixed: staffId, eligible: [staffId] } : h));
   const assignment = free.includes(staffId) ? solve(component(fixedHolds, target.start, target.end)) : null;
   if (!assignment) throw new HttpError(409, "tech_unavailable", { options: await techOptions(env, current) });
 
@@ -42,9 +46,11 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   const moved = movedPending(ctx, assignment, id);
   const staff = await notifyStaff(db);
   const involved = await activeStaffByIds(db, [from, staffId]);
+  const openProposal = current.proposal?.status === "open" ? current.proposal : null;
 
   await capacityBatch(db, ctx.version, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'confirmed' AND version = ? AND assigned_staff_id = ?", id, version, from),
+    ...(openProposal ? closeProposalStatements(db, id, openProposal.id, "withdrawn", now) : []),
     // The appointment's blocks go first so a moved request may take its old technician.
     db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
     ...movePendingStatements(db, moved, now),

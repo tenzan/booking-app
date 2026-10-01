@@ -21,7 +21,8 @@ export type TemplateName =
   | "approval_escalation"
   | "appointment_reminder"
   | "proposal"
-  | "proposal_outcome";
+  | "proposal_outcome"
+  | "rescheduled";
 
 export interface EmailJobRow {
   id: string;

@@ -45,6 +45,7 @@ export const en = {
       subject: "Request received — not yet confirmed ({ref})",
       intro:
         "Your reservation request has been received. Your appointment is not yet confirmed. We will email you once our technical-service team has reviewed it.",
+      replacement: "This asks to change your reservation {ref}, which stays as it is until the new time is confirmed.",
     },
     newRequest: {
       subject: "New remote support request {ref} — {when}",
@@ -53,6 +54,7 @@ export const en = {
       approve: "Approve / assign…",
       propose: "Propose another time",
       details: "Open details",
+      replaces: "Replaces",
     },
     confirmed: {
       subject: "Confirmed: remote support on {when} ({ref})",
@@ -69,6 +71,8 @@ export const en = {
     assigned: {
       subject: "{ref} confirmed — assigned to {tech}",
       intro: "{approver} approved this request and assigned {tech}.",
+      replaces: "Replaces {ref}, which has been cancelled.",
+      replacesInactive: "It was requested to replace {ref}, which is no longer active.",
     },
     declined: {
       subject: "We couldn't confirm your request ({ref})",
@@ -91,13 +95,17 @@ export const en = {
     expired: {
       subject: "We couldn't confirm your request in time ({ref})",
       intro: "We couldn't confirm your requested time before its deadline, so the request has expired and no appointment was booked.",
-      replacement: "Your original appointment stays as it is.",
       rebook: "Choose another time",
+    },
+    /** A declined or expired request to change an existing reservation that is still active. */
+    replacement: {
+      appointmentStays: "Your original appointment stays as it is.",
+      requestStays: "Your original request stays as it is.",
     },
     expiredTeam: {
       subject: "{ref} expired — {when}",
       intro: "This request expired without approval. The customer has been told we couldn't confirm it in time.",
-      replacement: "It asked to change an existing appointment, which stays as it is.",
+      replacement: "It asked to change {ref}, which stays as it is.",
     },
     approvalReminder: {
       subject: "Reminder: {ref} still needs approval ({when})",
@@ -132,8 +140,18 @@ export const en = {
       expiryConfirmed: "If you haven't chosen by {expires}, these times are released and your current appointment stays as it is.",
       expiryPending: "If you haven't chosen by {expires}, these times are released and your request may expire without being confirmed.",
     },
+    rescheduled: {
+      subject: "Rescheduled: remote support on {when} ({ref})",
+      introMoved: "Your remote support appointment has been moved to the new time you chose.",
+      introConfirmed: "Your remote support appointment is confirmed for the new time you chose.",
+      introReplacement: "Your new time is confirmed. Your earlier reservation {previous} has been cancelled.",
+      newTime: "New time",
+      previousTime: "Previous time",
+    },
     proposalTeam: {
       subject: "{ref}: new times proposed — {when}",
+      current: "Current appointment",
+      requested: "Requested time",
       banner: "Waiting for the customer",
       intro: "{by} proposed new times to the customer. The original time stays held until the customer answers or the proposal expires.",
       option: "Option {n}",
@@ -145,6 +163,39 @@ export const en = {
         subject: "The times we proposed were withdrawn ({ref})",
         confirmed: "We've withdrawn the new times we proposed. Your original appointment stands.",
         pending: "We've withdrawn the new times we proposed. Your request is still pending review — we'll email you once it's confirmed.",
+      },
+      accepted: {
+        subject: "Your new time is confirmed ({ref})",
+        confirmed: "Thank you for choosing a new time. Your appointment is confirmed for the time below.",
+        pending: "Thank you for choosing a new time. Your appointment is confirmed for the time below.",
+      },
+      rejected: {
+        subject: "You kept your original time ({ref})",
+        confirmed: "You chose to keep your original time. Your appointment stays as it is, and the other times we offered have been released.",
+        pending: "You chose to keep your requested time. Your request is still pending review — we'll email you once it's confirmed.",
+      },
+      expired: {
+        subject: "The times we proposed have expired ({ref})",
+        confirmed: "You didn't choose one of the times we proposed before the deadline, so they've been released. Your original appointment stays as it is.",
+        pending: "You didn't choose one of the times we proposed before the deadline, so they've been released. Your request is still pending review — we'll email you once it's confirmed.",
+      },
+    },
+    proposalOutcomeTeam: {
+      accepted: {
+        subject: "{ref}: the customer chose a new time — {when}",
+        intro: "The customer chose one of the proposed times. The appointment is confirmed for the new time below.",
+      },
+      rejected: {
+        subject: "{ref}: the customer kept the original time — {when}",
+        intro: "The customer kept the original time. The proposed times have been released.",
+      },
+      expired: {
+        subject: "{ref}: proposal expired — {when}",
+        intro: "The customer didn't answer the proposal before it expired. The proposed times have been released; the original time stays as it is.",
+      },
+      withdrawn: {
+        subject: "{ref}: proposal withdrawn — {when}",
+        intro: "The proposed times were withdrawn and released; the original time stays as it is.",
       },
     },
   },
@@ -497,6 +548,9 @@ export const en = {
           reservation_completed: "Completed",
           reservation_proposed: "New times proposed",
           reservation_proposal_withdrawn: "Proposed times withdrawn",
+          reservation_proposal_rejected: "Customer kept the original time",
+          reservation_proposal_expired: "Proposed times expired",
+          reservation_rescheduled: "Rescheduled",
           email_retry: "Email sent again",
         },
       },
@@ -594,6 +648,9 @@ export const en = {
           reservation_completed: "{ref} was completed",
           reservation_proposed: "{actor} proposed new times for {ref}",
           reservation_proposal_withdrawn: "{actor} withdrew the times proposed for {ref}",
+          reservation_proposal_rejected: "{actor} kept the original time of {ref}",
+          reservation_proposal_expired: "The times proposed for {ref} expired",
+          reservation_rescheduled: "{actor} moved {ref} to {when}",
           email_retry: "{actor} sent the “{template}” email again",
           email_retryFor: "{actor} sent the “{template}” email for {ref} again",
           auth_staff_signin: "{actor} signed in",
@@ -682,8 +739,10 @@ export const en = {
           expired: "Request expired",
           approval_reminder: "Approval reminder",
           approval_escalation: "Approval escalation",
+          appointment_reminder: "Appointment reminder",
           proposal: "Proposed new times",
           proposal_outcome: "Proposal update",
+          rescheduled: "Appointment rescheduled",
         },
       },
       schedule: {

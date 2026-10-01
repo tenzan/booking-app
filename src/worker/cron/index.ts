@@ -4,10 +4,11 @@ import { sendApprovalReminders, sendEscalations } from "./approval-reminders";
 import { cleanup } from "./cleanup";
 import { completeEnded } from "./completion";
 import { expirePending } from "./expiry";
+import { expireProposals } from "./proposal-expiry";
 
 export interface SweepResult {
   /** Rows each sweep handled; `cleanup` is null when it was not its hour. */
-  counts: { expiry: number; reminders: number; escalations: number; completion: number; cleanup: number | null };
+  counts: { expiry: number; reminders: number; escalations: number; proposals: number; completion: number; cleanup: number | null };
   /** Sweeps that threw (logged, and the others still ran). */
   failed: string[];
 }
@@ -18,7 +19,7 @@ export interface SweepResult {
  * Expiry runs first so a request past its deadline is expired rather than reminded.
  */
 export async function runSweeps(env: Env, now: number): Promise<SweepResult> {
-  const result: SweepResult = { counts: { expiry: 0, reminders: 0, escalations: 0, completion: 0, cleanup: null }, failed: [] };
+  const result: SweepResult = { counts: { expiry: 0, reminders: 0, escalations: 0, proposals: 0, completion: 0, cleanup: null }, failed: [] };
   const step = async (name: keyof SweepResult["counts"], run: () => Promise<number>) => {
     try {
       result.counts[name] = await run();
@@ -30,7 +31,8 @@ export async function runSweeps(env: Env, now: number): Promise<SweepResult> {
   await step("expiry", () => expirePending(env, now));
   await step("reminders", () => sendApprovalReminders(env, now));
   await step("escalations", () => sendEscalations(env, now));
-  // A proposal-expiry sweep belongs here, before completion.
+  // After pending expiry (a request expiring with its proposal is expired as a whole), before completion.
+  await step("proposals", () => expireProposals(env, now));
   await step("completion", () => completeEnded(env, now));
   if (new Date(now).getUTCMinutes() === 0) await step("cleanup", () => cleanup(env, now));
   return result;

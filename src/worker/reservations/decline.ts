@@ -3,9 +3,14 @@ import { clock } from "../lib/clock";
 import { assertSql, audit, capacityBatch, readScheduleVersion, withRetry } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
+import { cancelObsoleteMail, releaseHoldStatements } from "./holds";
 import { getReservation, type ReservationDTO } from "./queries";
 
-/** Decline a pending request: frees its blocks and tells the customer. Other holds keep their technicians (freeing capacity moves nobody). */
+/**
+ * Decline a pending request: frees its blocks, withdraws an open proposal (releasing its options; the declined email is
+ * all the customer needs), cancels its obsolete queued mail and tells the customer. Other holds keep their technicians
+ * (freeing capacity moves nobody). A declined replacement request leaves the reservation it asked to change as it is.
+ */
 export async function declineReservation(env: Env, actor: StaffPrincipal, id: string, reason: string, version: number): Promise<ReservationDTO> {
   return withRetry(() => attempt(env, actor, id, reason, version));
 }
@@ -21,7 +26,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, reason: stri
   const now = clock.now();
   await capacityBatch(db, scheduleVersion, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND version = ?", id, version),
-    db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
+    ...releaseHoldStatements(db, id, now),
     db
       .prepare(
         `UPDATE reservations SET status = 'declined', closed_at = ?, closed_by_kind = 'staff', closed_by = ?,
@@ -29,6 +34,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, reason: stri
          WHERE id = ? AND status = 'pending' AND version = ?`,
       )
       .bind(now, String(actor.id), reason, now, id, version),
+    cancelObsoleteMail(db, id),
     enqueueEmail(db, { template: "declined", to: current.contactEmail, dedupeKey: `declined:${id}`, reservationId: id }),
     audit(db, {
       actorKind: "staff",

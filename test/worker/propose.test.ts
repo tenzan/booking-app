@@ -200,9 +200,11 @@ describe("POST /api/staff/reservations/:id/propose", () => {
       await expectError([{ startAt: at(FRI, 11), staffId: team.b }], 400, "invalid", undefined, { message: "x".repeat(501) });
     });
 
-    it("rejects duplicate options and the current time with the current technician", async () => {
-      await expectError([{ startAt: at(FRI, 11), staffId: team.b }, { startAt: at(FRI, 11), staffId: team.b }], 400, "duplicate_option", { index: 1 });
-      await expectError([{ startAt: at(FRI, 10), staffId: team.a }], 400, "option_is_current", { index: 0 });
+    it("rejects options at the same time as each other or as the current appointment, whatever the technician (customers see times only)", async () => {
+      await expectError([{ startAt: at(FRI, 11), staffId: team.b }, { startAt: at(FRI, 11), staffId: team.b }], 400, "option_duplicate_time", { index: 1 });
+      await expectError([{ startAt: at(FRI, 11), staffId: team.b }, { startAt: at(FRI, 11), staffId: team.a }], 400, "option_duplicate_time", { index: 1 });
+      await expectError([{ startAt: at(FRI, 10), staffId: team.a }], 400, "option_same_as_current", { index: 0 });
+      await expectError([{ startAt: at(FRI, 12), staffId: team.a }, { startAt: at(FRI, 10), staffId: team.b }], 400, "option_same_as_current", { index: 1 });
     });
 
     it("rejects a time that is not a slot under the current settings, too soon, or beyond the horizon", async () => {
@@ -237,10 +239,11 @@ describe("POST /api/staff/reservations/:id/propose", () => {
     });
 
     it("checks the set together with the original, which stays held while the proposal is open", async () => {
-      // Sam's request at 10:00 can only go to b while pat's appointment holds a: an option on b at 10:00 leaves no room.
-      // (Without the original, sam could move to a, but the database would then refuse the option's blocks on b.)
-      await submit(sam, at(FRI, 10));
-      await expectError([{ startAt: at(FRI, 10), staffId: team.b }], 409, "option_overlaps_current", { index: 0 });
+      // Sam's request at 10:30 can only go to b while pat's appointment holds a until 10:40: an option on b at 11:00
+      // (occupied 11:00–11:40) leaves sam no room. Without the original, sam could move to a, but the database would
+      // then refuse the option's blocks on b. No option overlaps the original itself, so no index is named.
+      await submit(sam, at(FRI, 10, 30));
+      await expectError([{ startAt: at(FRI, 11), staffId: team.b }], 409, "option_overlaps_current", { index: null });
     });
 
     it("is stale for an old version or a closed reservation, 404 for an unknown one", async () => {
@@ -440,8 +443,7 @@ describe("GET /api/staff/reservations/:id/proposal-candidates", () => {
     expect(res.status).toBe(200);
     const names = (staff: number[]) => staff.map((s) => ({ id: s, name: s === team.a ? "Tim Tech" : "Una Tech" }));
     const expected = [
-      // The appointment itself holds a until 10:40: a is no candidate before then.
-      { startAt: at(FRI, 10), endAt: at(FRI, 10, 30), staff: names([team.b]) },
+      // The appointment's own time is no option (customers see times only); the appointment holds a until 10:40.
       { startAt: at(FRI, 10, 30), endAt: at(FRI, 11), staff: names([team.b]) },
       { startAt: at(FRI, 11), endAt: at(FRI, 11, 30), staff: names([team.a, team.b]) },
       // Sam's appointment holds b from 12:00 to 12:40.
@@ -461,7 +463,7 @@ describe("GET /api/staff/reservations/:id/proposal-candidates", () => {
     expect((await row(lees)).provisional_staff_id).toBe(team.a);
     expect((await propose(lees, [{ startAt: at(FRI, 10, 30), staffId: team.b }], 1)).status).toBe(200);
     const slots = (await candidates(id, FRI, FRI)).json.days[0].slots;
-    expect(slots).toEqual([{ ...expected[2], staff: names([team.a]) }, expected[3]]);
+    expect(slots).toEqual([{ ...expected[1], staff: names([team.a]) }, expected[2]]);
   });
 
   it("starts at the minimum notice and stops at the horizon", async () => {
@@ -475,6 +477,19 @@ describe("GET /api/staff/reservations/:id/proposal-candidates", () => {
     await seedWeekly(6, 600, 780, [team.a, team.b]);
     expect((await candidates(id, FRI, SAT)).json.days.map((d: any) => d.date)).toEqual([FRI]);
     expect((await candidates(id, SAT, SAT)).json.days).toEqual([]);
+  });
+
+  it("is too late within proposalExpiryBeforeStartMin of the start, and leaves out slots an expiry could not precede", async () => {
+    await seedWeekly(4, 600, 780, [team.a, team.b]);
+    await setSetting("minNoticeBh", 0);
+    const id = await submit(pat, at(FRI, 12));
+    // 10:30 now: Thursday's 11:00 and 11:30 would need the proposal to expire before 10:30 (option − 60 min).
+    setNow(at(THU, 10, 30));
+    const thu = (await candidates(id, THU, THU)).json.days[0].slots.map((s: any) => s.startAt);
+    expect(thu[0]).toBe(at(THU, 12));
+    setNow(at(FRI, 10));
+    const res = await candidates(id, FRI, FRI);
+    expect([res.status, res.json.error]).toEqual([409, "too_late"]);
   });
 
   it("validates the range and the reservation", async () => {
@@ -588,6 +603,9 @@ describe("proposal emails", () => {
     expect(m.text).toContain(`Fri, Oct 2, 2026, 11:00 ${TZ_LABEL} — Tim Tech`);
     expect(m.text).toContain(`Fri, Oct 2, 2026, 12:00 ${TZ_LABEL} — Una Tech`);
     expect(m.text).toContain(`/staff/r/${id}`);
+    // Team wording, not the customer's.
+    expect(m.text).toContain(`Requested time: Fri, Oct 2, 2026, 10:00 ${TZ_LABEL}`);
+    expect(m.text).not.toContain("Your requested time");
     expect(await count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'proposal' AND to_email = 'admin@example.test'")).toBe(0);
   });
 

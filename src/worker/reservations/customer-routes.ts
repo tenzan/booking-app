@@ -11,6 +11,7 @@ import { assertBookingEnabled } from "../repos/settings";
 import { customerAvailability } from "../scheduling/availability";
 import { cancelAsCustomer, customerCancelBody } from "./cancel";
 import { getCustomerReservation, listCustomerReservations } from "./queries";
+import { acceptBody, acceptProposal, rejectBody, rejectProposal } from "./respond";
 import { submitReservation } from "./submit";
 
 const MAX_SPAN_DAYS = 31;
@@ -47,6 +48,8 @@ const submitBody = z.object({
   phone: z.string().min(5).max(30).regex(/^[0-9+()\- ]+$/),
   issue: z.string().trim().min(1).max(1000),
   idempotencyKey: z.uuid(),
+  /** A request to change this reservation of the caller's ("choose another time"). */
+  replacesId: z.string().min(1).max(100).optional(),
 });
 
 customerRoutes.post("/reservations", async (c) => {
@@ -79,9 +82,36 @@ customerRoutes.post("/reservations/:id/cancel", async (c) => {
   const body = await readJson(c, customerCancelBody);
   const email = c.var.customerEmail!;
   const id = c.req.param("id");
-  const accountIds = await accountIdsForContact(c.env.DB, email);
-  if (!(await getCustomerReservation(c.env.DB, id, accountIds))) throw new HttpError(404, "not_found");
+  await assertOwned(c.env.DB, email, id);
   const reservation = await cancelAsCustomer(c.env, email, id, body);
+  kickOutbox(c);
+  return c.json({ reservation });
+});
+
+/** Ownership as for cancel: an active contact on the reservation's account. Not-owned and non-existent are indistinguishable. */
+async function assertOwned(db: D1Database, email: string, id: string): Promise<void> {
+  const accountIds = await accountIdsForContact(db, email);
+  if (!(await getCustomerReservation(db, id, accountIds))) throw new HttpError(404, "not_found");
+}
+
+/** Take one of the proposed times (see acceptProposal). */
+customerRoutes.post("/reservations/:id/proposal/accept", async (c) => {
+  const body = await readJson(c, acceptBody);
+  const email = c.var.customerEmail!;
+  const id = c.req.param("id");
+  await assertOwned(c.env.DB, email, id);
+  const reservation = await acceptProposal(c.env, email, id, body);
+  kickOutbox(c);
+  return c.json({ reservation });
+});
+
+/** Keep the original time: the proposal is rejected (see rejectProposal). */
+customerRoutes.post("/reservations/:id/proposal/reject", async (c) => {
+  const body = await readJson(c, rejectBody);
+  const email = c.var.customerEmail!;
+  const id = c.req.param("id");
+  await assertOwned(c.env.DB, email, id);
+  const reservation = await rejectProposal(c.env, email, id, body);
   kickOutbox(c);
   return c.json({ reservation });
 });

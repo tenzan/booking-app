@@ -18,6 +18,7 @@ import type { Env } from "../env";
 import { clock } from "../lib/clock";
 import { decodeCursor, encodeCursor } from "../lib/cursor";
 import { loadScheduleCtx } from "../scheduling/context";
+import { releasedHolds, replacedBy } from "./replacement";
 
 export type { AuditRow, CustomerProposalDTO, CustomerReservationDTO, ProposalDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
 
@@ -409,7 +410,8 @@ export async function listAudit(
  * Every active bookable technician, assignable ones first, then by name, each with the reason it cannot take
  * this request (first match wins: not on the slot, unavailable, busy with a fixed hold, needed elsewhere).
  * Pending requests get approval candidates; confirmed appointments get same-time reassignment candidates, with the
- * current technician flagged `current`. Other statuses get no options.
+ * current technician flagged `current`. Other statuses get no options. Holds the decision would release in its own batch
+ * (the reservation's open proposal options; a replacement's original) don't count, as in approve and reassign.
  */
 export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOption[]> {
   if (r.status !== "pending" && r.status !== "confirmed") return [];
@@ -426,7 +428,8 @@ export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOpti
   const free = new Set(freeList);
   // Exactly the free technicians: the context's provisional fallback (which only keeps capacity held) is no option.
   // A confirmed appointment is unfixed here so that each candidate is tried in place of its technician.
-  const holds = ctx.holds.map((h) => (h.id === r.id ? { ...h, fixed: null, eligible: freeList } : h));
+  const released = releasedHolds(ctx, r, r.status === "pending" ? (await replacedBy(env.DB, r.id)).original : null);
+  const holds = ctx.holds.filter((h) => !released.has(h.id)).map((h) => (h.id === r.id ? { ...h, fixed: null, eligible: freeList } : h));
   const assignable = new Set(assignableFor(holds, r.id));
   const currentId = r.status === "confirmed" ? (r.assignedStaff?.id ?? null) : null;
 

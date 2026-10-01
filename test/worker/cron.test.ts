@@ -303,8 +303,9 @@ describe("completion edge cases", () => {
     expect((await approve(id, team.a)).status).toBe(200);
     const endAt = (await row(id)).end_at as number;
     const optStart = at(FRI, 11);
+    // Not yet expired when the appointment ends (the proposal-expiry sweep would otherwise close it first).
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO proposals(id, reservation_id, status, created_by, created_at, expires_at) VALUES ('p1', ?, 'open', ?, 0, ?)").bind(id, team.admin, at(FRI, 9)),
+      env.DB.prepare("INSERT INTO proposals(id, reservation_id, status, created_by, created_at, expires_at) VALUES ('p1', ?, 'open', ?, 0, ?)").bind(id, team.admin, at(FRI, 23)),
       env.DB.prepare("INSERT INTO proposal_options(id, proposal_id, start_at, end_at, staff_id, occ_start, occ_end) VALUES ('o1', 'p1', ?, ?, ?, ?, ?)").bind(optStart, optStart + 30 * MIN, team.d, optStart, optStart + 30 * MIN),
       env.DB.prepare("INSERT INTO tech_blocks(staff_id, block_start, owner_kind, owner_id) SELECT ?, value, 'option', 'o1' FROM json_each(?)").bind(team.d, JSON.stringify(rangeBlocks(optStart, optStart + 30 * MIN))),
     ]);
@@ -519,7 +520,7 @@ describe("sweeps as a whole", () => {
     const real = env.DB;
     const broken = {
       prepare: (q: string) => {
-        if (q.includes("expires_at <=")) throw new Error("boom https://secret.example.test/x");
+        if (q.includes("status = 'pending' AND expires_at <=")) throw new Error("boom https://secret.example.test/x");
         return real.prepare(q);
       },
       batch: (s: D1PreparedStatement[]) => real.batch(s),

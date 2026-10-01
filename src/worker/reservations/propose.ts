@@ -85,12 +85,13 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, input: Propo
   if ((current.status !== "pending" && current.status !== "confirmed") || current.version !== version) throw new HttpError(409, "stale", { current });
 
   const currentTech = current.status === "confirmed" ? (current.assignedStaff?.id ?? null) : current.provisionalStaffId;
-  const seen = new Set<string>();
+  // Customers see times only (never who would take them), so two options at one time, or an option at the current
+  // time, would look the same to them. Another technician at the same time is a reassignment, not a proposal.
+  const seen = new Set<number>();
   for (const [index, o] of input.options.entries()) {
-    const key = `${o.startAt}:${o.staffId}`;
-    if (seen.has(key)) throw new HttpError(400, "duplicate_option", { index });
-    seen.add(key);
-    if (o.startAt === current.startAt && o.staffId === currentTech) throw new HttpError(400, "option_is_current", { index });
+    if (seen.has(o.startAt)) throw new HttpError(400, "option_duplicate_time", { index });
+    seen.add(o.startAt);
+    if (o.startAt === current.startAt) throw new HttpError(400, "option_same_as_current", { index });
   }
 
   const starts = input.options.map((o) => o.startAt);
@@ -129,9 +130,11 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, input: Propo
   // must fit alongside it. Leaving it out would accept sets the tech_blocks key then rejects.
   const assignment = solveWith(holds, options);
   if (!assignment) {
-    // Only the original in the way: say so, pointing at the first option overlapping it.
+    // Only the original in the way: say so, pointing at the first option overlapping it (null when none does and the
+    // original is in the way only through other holds it pins).
     if (solveWith(holds.filter((h) => h.id !== id), options)) {
-      throw new HttpError(409, "option_overlaps_current", { index: Math.max(0, options.findIndex((o) => overlaps(o, own))) });
+      const index = options.findIndex((o) => overlaps(o, own));
+      throw new HttpError(409, "option_overlaps_current", { index: index >= 0 ? index : null });
     }
     throw new HttpError(409, "options_conflict");
   }
@@ -257,8 +260,9 @@ export const CANDIDATE_MAX_DAYS = 14;
  * Times the reservation could be proposed for, per local date in [fromDate, toDate] (clamped to today … horizon), from
  * the minimum-notice instant on, each with the technicians an option there would fit for: the same test `propose`
  * applies to a single option. The reservation's own open options don't count (a new proposal supersedes them); its own
- * hold does (it stays held while the proposal is open), and its current time with its current technician is no option.
- * Slots nobody can take are left out.
+ * hold does (it stays held while the proposal is open), and its current time is no option. Slots whose proposal could not
+ * expire before them (start − 60 min ≤ now) are left out, and so are slots nobody can take. 409 too_late when the
+ * reservation is too close to its start for any proposal.
  */
 export async function proposalCandidates(env: Env, id: string, fromDate: string, toDate: string): Promise<ProposalCandidatesDTO> {
   const db = env.DB;
@@ -270,6 +274,7 @@ export async function proposalCandidates(env: Env, id: string, fromDate: string,
   const now = clock.now();
   const today = utcToWall(now, tz).date;
   const settings = await getSettings(db, env);
+  if (current.startAt - settings.proposalExpiryBeforeStartMin * MIN <= now) throw new HttpError(409, "too_late");
   const earliest = minNoticeAt(now, settings, await bhCtx(db, env, settings));
   const first = fromDate < today ? today : fromDate;
   const last = [toDate, addDays(today, settings.bookingHorizonDays)].sort()[0]!;
@@ -278,20 +283,19 @@ export async function proposalCandidates(env: Env, id: string, fromDate: string,
   const ctx = await loadScheduleCtx(env, wallToUtc(first, 0, tz), wallToUtc(addDays(last, 1), 0, tz));
   const superseded = new Set(current.proposal?.status === "open" ? current.proposal.options.map((o) => o.id) : []);
   const holds = ctx.holds.filter((h) => !superseded.has(h.id));
-  const currentTech = current.status === "confirmed" ? (current.assignedStaff?.id ?? null) : current.provisionalStaffId;
   const { results: staffRows } = await db.prepare("SELECT id, name FROM staff WHERE active = 1 AND bookable = 1").all<{ id: number; name: string }>();
   const names = new Map(staffRows.map((r) => [r.id, r.name]));
 
   const days: ProposalCandidatesDTO["days"] = eachDate(first, last).map((date) => ({ date, slots: [] }));
   const byDate = new Map(days.map((d) => [d.date, d]));
   for (const slot of ctx.slots) {
-    if (slot.startAt < earliest) continue;
+    // The proposal must expire at least OPTION_LEAD_MS before each option, and that expiry must still be ahead.
+    if (slot.startAt < earliest || slot.startAt - OPTION_LEAD_MS <= now || slot.startAt === current.startAt) continue;
     const day = byDate.get(utcToWall(slot.startAt, tz).date);
     if (!day) continue;
     const [start, end] = occupiedRange(slot.startAt, slot.endAt, ctx.cfg);
     const around = component(holds, start, end);
     const staff = slot.staffIds
-      .filter((staffId) => !(slot.startAt === current.startAt && staffId === currentTech))
       .filter((staffId) => solve([...around, { id: "__option", start, end, fixed: staffId, eligible: [staffId], preferred: null }]) !== null)
       .map((staffId) => ({ id: staffId, name: names.get(staffId) ?? "" }))
       .sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);

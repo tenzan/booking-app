@@ -35,6 +35,9 @@ interface ReservationData {
   /** Staff closer's name, or the raw closer (customer email). */
   closer_name: string | null;
   replaces_id: string | null;
+  /** The reservation a replacement request asks to change: its reference and current status. */
+  replaces_ref: string | null;
+  replaces_status: string | null;
   expires_at: number | null;
   /** The reservation's open proposal, if any. */
   open_proposal_id: string | null;
@@ -64,6 +67,8 @@ const VALID_STATUS: Record<string, string[]> = {
   // About the original time, which still stands (proposals are open on pending and confirmed reservations only).
   proposal: ["pending", "confirmed"],
   proposal_outcome: ["pending", "confirmed"],
+  // About the confirmed appointment at the start it was moved to.
+  rescheduled: ["confirmed"],
 };
 
 /** Is a job's message still true of the reservation as it is now? `to` is the technician a reassignment notice names. */
@@ -78,8 +83,8 @@ function stillTrue(
   if (template === "proposal") return state.open_proposal_id === payload.proposalId;
   // An outcome is out of date once another proposal is open: that one's own mail is what the customer needs.
   if (template === "proposal_outcome") return state.open_proposal_id === null;
-  // A reminder for a start the appointment no longer has (it was moved) would name the wrong time.
-  if (template === "appointment_reminder") return state.start_at === payload.startAt;
+  // A reminder or reschedule notice for a start the appointment no longer has (it was moved) would name the wrong time.
+  if (template === "appointment_reminder" || template === "rescheduled") return state.start_at === payload.startAt;
   // A reassignment notice is only true while the appointment is still with the technician it names.
   return template !== "reassigned" || state.assigned_staff_id === payload.to;
 }
@@ -103,9 +108,11 @@ function loadReservation(env: Env, id: string): Promise<ReservationData | null> 
     `SELECT r.id, r.ref, r.contact_email, r.contact_name, r.phone, r.issue, r.start_at, r.end_at, r.status, r.close_reason,
             c.name AS account_name, c.customer_number,
             approver.name AS approver_name, tech.name AS tech_name, r.assigned_staff_id, r.closed_by_kind,
-            COALESCE(closer.name, r.closed_by) AS closer_name, r.replaces_id, r.expires_at, ${OPEN_PROPOSAL_SQL}
+            COALESCE(closer.name, r.closed_by) AS closer_name, r.replaces_id, orig.ref AS replaces_ref, orig.status AS replaces_status,
+            r.expires_at, ${OPEN_PROPOSAL_SQL}
      FROM reservations r
      JOIN customers c ON c.id = r.customer_id
+     LEFT JOIN reservations orig ON orig.id = r.replaces_id
      LEFT JOIN staff approver ON approver.id = r.confirmed_by
      LEFT JOIN staff tech ON tech.id = r.assigned_staff_id
      LEFT JOIN staff closer ON r.closed_by_kind = 'staff' AND CAST(closer.id AS TEXT) = r.closed_by
@@ -214,6 +221,11 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
   const staffUrl = `${env.APP_BASE_URL}/staff/r/${encodeURIComponent(r.id)}`;
   const staffFooter = t("email.footer.staff", { org: s.orgName });
   const customerFooter = t("email.footer.customer", { org: s.orgName });
+  // A replacement request whose original is still pending or confirmed: that original stays until this one is approved.
+  const originalActive = r.replaces_ref !== null && (r.replaces_status === "pending" || r.replaces_status === "confirmed");
+  const originalStays = originalActive
+    ? [t(r.replaces_status === "confirmed" ? "email.replacement.appointmentStays" : "email.replacement.requestStays")]
+    : [];
 
   switch (job.template) {
     case "request_received":
@@ -231,7 +243,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           ...renderEmail({
             ...base,
             banner: { text: t("status.pending"), tone: "amber" },
-            paragraphs: [t("email.requestReceived.intro")],
+            paragraphs: [t("email.requestReceived.intro"), ...(originalActive ? [t("email.requestReceived.replacement", { ref: r.replaces_ref! })] : [])],
             facts: common,
             actions,
             footer: customerFooter,
@@ -285,7 +297,11 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
         ...renderEmail({
           ...base,
           banner: { text: t("status.declined"), tone: "red" },
-          paragraphs: [t("email.declined.intro"), ...(r.close_reason ? [t("email.declined.reason", { reason: r.close_reason })] : [])],
+          paragraphs: [
+            t("email.declined.intro"),
+            ...(r.close_reason ? [t("email.declined.reason", { reason: r.close_reason })] : []),
+            ...originalStays,
+          ],
           facts: common,
           actions: [{ label: t("email.declined.rebook"), url: env.APP_BASE_URL, primary: true }],
           footer: customerFooter,
@@ -341,7 +357,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           ...renderEmail({
             ...base,
             banner: { text: t("status.expired"), tone: "red" },
-            paragraphs: [t("email.expiredTeam.intro"), ...(r.replaces_id ? [t("email.expiredTeam.replacement")] : [])],
+            paragraphs: [t("email.expiredTeam.intro"), ...(originalActive ? [t("email.expiredTeam.replacement", { ref: r.replaces_ref! })] : [])],
             facts: [
               [t("common.account"), r.account_name],
               [t("common.customerNumber"), r.customer_number],
@@ -359,8 +375,8 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
         ...renderEmail({
           ...base,
           banner: { text: t("status.expired"), tone: "red" },
-          // A request to change an existing appointment: the appointment itself is untouched.
-          paragraphs: [t("email.expired.intro"), ...(r.replaces_id ? [t("email.expired.replacement")] : [])],
+          // A request to change an existing reservation: that reservation itself is untouched.
+          paragraphs: [t("email.expired.intro"), ...originalStays],
           facts: common,
           actions: [{ label: t("email.expired.rebook"), url: env.APP_BASE_URL, primary: true }],
           footer: customerFooter,
@@ -427,8 +443,8 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
       const p = await loadProposal(env, payload.proposalId);
       if (!p) return "skip";
       const confirmed = r.status === "confirmed";
-      const currentLabel = t(confirmed ? "email.proposal.current" : "email.proposal.requested");
       if (payload.audience === "team") {
+        const currentLabel = t(confirmed ? "email.proposalTeam.current" : "email.proposalTeam.requested");
         return {
           subject: t("email.proposalTeam.subject", { ref: r.ref, when }),
           ...renderEmail({
@@ -453,6 +469,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           }),
         };
       }
+      const currentLabel = t(confirmed ? "email.proposal.current" : "email.proposal.requested");
       const viewUrl = `${env.APP_BASE_URL}/r#t=${await mintAccessToken(env, r)}`;
       const respond = `${viewUrl}&action=proposal`;
       return {
@@ -486,18 +503,78 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
       };
     }
     case "proposal_outcome": {
-      // Task 5 adds the customer's answers and expiry; a withdrawal leaves the original time as it was.
-      if (payload.outcome !== "withdrawn") return "skip";
+      const outcome = payload.outcome;
+      if (outcome !== "accepted" && outcome !== "rejected" && outcome !== "expired" && outcome !== "withdrawn") return "skip";
       const confirmed = r.status === "confirmed";
+      if (payload.audience === "team") {
+        const k = `email.proposalOutcomeTeam.${outcome}`;
+        const previous = typeof payload.fromStartAt === "number" ? fmt(payload.fromStartAt) : null;
+        return {
+          subject: t(`${k}.subject`, { ref: r.ref, when }),
+          ...renderEmail({
+            ...base,
+            banner: confirmed ? { text: t("status.confirmed"), tone: "green" } : { text: t("status.pending"), tone: "amber" },
+            paragraphs: [t(`${k}.intro`)],
+            facts: [
+              [t("common.account"), r.account_name],
+              [t("common.customerNumber"), r.customer_number],
+              [t("common.contact"), `${r.contact_name} <${r.contact_email}>`],
+              [t(outcome === "accepted" ? "email.rescheduled.newTime" : confirmed ? "email.proposalTeam.current" : "email.proposalTeam.requested"), when],
+              ...(outcome === "accepted" && previous ? [[t("email.rescheduled.previousTime"), previous] as [string, string]] : []),
+              [t("common.reference"), r.ref],
+              ...(r.tech_name ? [[t("common.technician"), r.tech_name] as [string, string]] : []),
+            ],
+            actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
+            footer: staffFooter,
+          }),
+        };
+      }
+      // Customer: the time that now stands (original, or the one they chose), never who takes it.
+      const k = `email.proposalOutcome.${outcome}`;
       const viewUrl = `${env.APP_BASE_URL}/r#t=${await mintAccessToken(env, r)}`;
       return {
-        subject: t("email.proposalOutcome.withdrawn.subject", { ref: r.ref }),
+        subject: t(`${k}.subject`, { ref: r.ref }),
         ...renderEmail({
           ...base,
           banner: confirmed ? { text: t("status.confirmed"), tone: "green" } : { text: t("status.pending"), tone: "amber" },
-          paragraphs: [t(confirmed ? "email.proposalOutcome.withdrawn.confirmed" : "email.proposalOutcome.withdrawn.pending")],
+          paragraphs: [t(`${k}.${confirmed ? "confirmed" : "pending"}`)],
           facts: common,
           actions: [{ label: t("common.viewReservation"), url: viewUrl, primary: true }],
+          footer: customerFooter,
+        }),
+      };
+    }
+    case "rescheduled": {
+      // The customer's one message about a move: an accepted proposal, or an approved replacement that cancelled the
+      // reservation it replaces. Never names technicians.
+      const viewUrl = `${env.APP_BASE_URL}/r#t=${await mintAccessToken(env, r)}`;
+      const canCancel = r.start_at - s.cancelCutoffMin * MIN > clock.now();
+      const previous = typeof payload.fromStartAt === "number" ? fmt(payload.fromStartAt) : null;
+      const intro =
+        payload.via === "replacement"
+          ? t("email.rescheduled.introReplacement", { previous: typeof payload.replacesRef === "string" ? payload.replacesRef : "—" })
+          : t(payload.fromStatus === "pending" ? "email.rescheduled.introConfirmed" : "email.rescheduled.introMoved");
+      return {
+        subject: t("email.rescheduled.subject", { when, ref: r.ref }),
+        ...renderEmail({
+          ...base,
+          banner: { text: t("status.confirmed"), tone: "green" },
+          paragraphs: [
+            intro,
+            t("email.confirmed.call", { phone: r.phone, tool: s.remoteToolName }),
+            ...(s.customerInstructions ? [s.customerInstructions] : []),
+          ],
+          facts: [
+            [t("common.account"), r.account_name],
+            [t("email.rescheduled.newTime"), when],
+            ...(previous ? [[t("email.rescheduled.previousTime"), previous] as [string, string]] : []),
+            [t("common.reference"), r.ref],
+          ],
+          actions: [
+            { label: t("common.viewReservation"), url: viewUrl, primary: true },
+            ...(canCancel ? [{ label: t("common.cancelReservation"), url: `${viewUrl}&action=cancel` }] : []),
+            { label: t("email.reminder.addToCalendar"), url: `${viewUrl}&action=ics` },
+          ],
           footer: customerFooter,
         }),
       };
@@ -518,6 +595,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
             [t("common.when"), when],
             [t("common.reference"), r.ref],
             [t("common.status"), t(`status.${r.status}`)],
+            ...(r.replaces_ref ? [[t("email.newRequest.replaces"), r.replaces_ref] as [string, string]] : []),
           ],
           actions: [
             { label: t("email.newRequest.approveMe"), url: q("action=approve&assign=me"), primary: true },
@@ -532,12 +610,16 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
     default: {
       // assigned
       const names = { approver: r.approver_name ?? "—", tech: r.tech_name ?? "—" };
+      // A replacement: whether this approval cancelled the reservation it replaces (decided in the approving batch).
+      const replaces = r.replaces_ref
+        ? [t(payload.originalCancelled === true ? "email.assigned.replaces" : "email.assigned.replacesInactive", { ref: r.replaces_ref })]
+        : [];
       return {
         subject: t("email.assigned.subject", { ref: r.ref, tech: names.tech }),
         ...renderEmail({
           ...base,
           banner: { text: t("status.confirmed"), tone: "green" },
-          paragraphs: [t("email.assigned.intro", names)],
+          paragraphs: [t("email.assigned.intro", names), ...replaces],
           facts: [...common, [t("common.technician"), names.tech]],
           actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
           footer: staffFooter,

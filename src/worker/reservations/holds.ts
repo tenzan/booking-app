@@ -67,6 +67,7 @@ export const OBSOLETE_TEMPLATES = [
   "assigned",
   "reassigned",
   "proposal",
+  "rescheduled",
 ] as const;
 
 /**
