@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router";
+import { Link, useLocation, useSearchParams } from "react-router";
 import type { AuditEntryDTO, AuditListDTO, EmailSummaryDTO } from "../../../shared/types";
 import { apiFetch, queryKeys, useMe, type TeamList } from "../../api";
 import { Button } from "../../components/Button";
@@ -53,6 +53,7 @@ export default function ActivityPage() {
   const me = useMe();
   const tz = me.data?.timezone ?? "UTC";
   const [params, setParams] = useSearchParams();
+  const location = useLocation();
   const category = readCategory(params.get("type"));
   const actor = /^\d+$/.test(params.get("actor") ?? "") ? params.get("actor")! : "";
   const ids = useId();
@@ -125,6 +126,7 @@ export default function ActivityPage() {
         </div>
         <Link
           to="/staff/emails"
+          state={{ back: { to: `/staff/activity${location.search}`, label: t("web.staff.nav.activity") } }}
           className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 font-semibold text-slate-900 hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
         >
           <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -227,7 +229,8 @@ export default function ActivityPage() {
               </Card>
             </section>
           ))}
-          {list.isFetchNextPageError && <Notice tone="error">{k("loadMoreFailed")}</Notice>}
+          {/* Always rendered so a failed "Load more" is announced. */}
+          <div aria-live="polite">{list.isFetchNextPageError && <Notice tone="error">{k("loadMoreFailed")}</Notice>}</div>
           {list.hasNextPage && !switching && (
             <div className="flex justify-center">
               <Button
@@ -270,7 +273,7 @@ function describe(e: AuditEntryDTO, tz: string, names: Map<number, string>): { k
   const d = asObj(e.details);
   const staffName = (id: unknown) => (num(id) !== null ? (names.get(num(id)!) ?? k("someone")) : k("someone"));
   const p: Record<string, ReactNode> = {};
-  const window = (w: unknown) => {
+  const hoursText = (w: unknown) => {
     const o = asObj(w);
     const s = num(o.startMin);
     const en = num(o.endMin);
@@ -323,7 +326,7 @@ function describe(e: AuditEntryDTO, tz: string, names: Map<number, string>): { k
       return { key: d.enabled === false ? "settings_booking_off" : "settings_booking_on", params: p };
     case "schedule.window.create":
     case "schedule.window.update":
-      return { key: e.action.replaceAll(".", "_"), params: { window: window(d.window) } };
+      return { key: e.action.replaceAll(".", "_"), params: { window: hoursText(d.window) } };
     case "schedule.window.delete":
       return { key: "schedule_window_delete", params: p };
     case "schedule.override.set": {

@@ -119,6 +119,7 @@ function EmailFailures() {
       </p>
       <Link
         to="/staff/emails"
+        state={{ back: { to: "/staff", label: t("web.staff.nav.dashboard") } }}
         className="inline-flex min-h-11 items-center gap-1 rounded-lg font-semibold text-red-800 underline underline-offset-2 hover:text-red-950 dark:text-red-200 dark:hover:text-white"
       >
         {t("web.staff.dashboard.emailsReview")}

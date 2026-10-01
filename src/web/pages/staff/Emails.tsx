@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router";
+import { Link, useLocation, useSearchParams } from "react-router";
 import { EMAIL_STATUSES } from "../../../shared/schemas";
 import type { EmailJobDTO, EmailListDTO, EmailSummaryDTO } from "../../../shared/types";
-import { apiFetch, isApiError, queryKeys, useMe } from "../../api";
+import { apiFetch, isApiError, queryKeys, safePath, useMe } from "../../api";
 import { Button } from "../../components/Button";
 import { Card, Notice } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
@@ -20,6 +20,15 @@ const k = (key: string, params?: Record<string, string | number>) => t(`web.staf
 type Status = (typeof EMAIL_STATUSES)[number];
 const readStatus = (s: string | null): Status => (EMAIL_STATUSES.includes(s as Status) ? (s as Status) : "failed");
 
+/** Where the back link goes: the page that linked here when it said so in history state, else the dashboard. */
+function readBack(state: unknown): { to: string; label: string; state?: object } {
+  const back = (state as { back?: { to?: unknown; label?: unknown; state?: unknown } } | null)?.back;
+  const to = typeof back?.to === "string" ? safePath(back.to) : null;
+  if (!to || typeof back?.label !== "string" || back.label === "") return { to: "/staff", label: t("web.staff.nav.dashboard") };
+  const returnState = typeof back.state === "object" && back.state !== null && !Array.isArray(back.state) ? back.state : undefined;
+  return { to, label: back.label, state: returnState };
+}
+
 /** `/staff/emails[?status=failed|queued|sent|skipped|cancelled]` — email delivery. Everyone looks; admins retry failures. */
 export default function EmailsPage() {
   usePageTitle(k("heading"));
@@ -29,6 +38,8 @@ export default function EmailsPage() {
   const [params, setParams] = useSearchParams();
   const status = readStatus(params.get("status"));
   const { toast, show, dismiss } = useToast();
+  // Read once: switching tabs rewrites the URL (and drops the history state).
+  const backTo = useRef(readBack(useLocation().state)).current;
 
   const summary = useQuery({
     queryKey: queryKeys.emailSummary,
@@ -79,13 +90,14 @@ export default function EmailsPage() {
     <div className="space-y-6">
       <div className="space-y-1">
         <Link
-          to="/staff/activity"
+          to={backTo.to}
+          state={backTo.state}
           className="-ml-2 inline-flex min-h-11 items-center gap-1 rounded-lg px-2 font-medium text-blue-700 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-slate-800"
         >
           <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M19 12H5m5 5-5-5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          {t("web.staff.nav.activity")}
+          {backTo.label}
         </Link>
         <PageHeading>{k("heading")}</PageHeading>
         <p className="text-slate-600 dark:text-slate-400">{k("lead")}</p>
@@ -123,12 +135,13 @@ export default function EmailsPage() {
                   <ul className="divide-y divide-slate-200 dark:divide-slate-800" aria-label={k(`tabs.${status}`)}>
                     {emails.map((j) => (
                       <li key={j.id} id={`email-${j.id}`} tabIndex={-1} className="outline-none focus-visible:outline-2 focus-visible:-outline-offset-2">
-                        <EmailRow j={j} tz={tz} canRetry={isAdmin && j.status === "failed"} onRetried={show} />
+                        <EmailRow j={j} tz={tz} canRetry={isAdmin && j.status === "failed"} onOutcome={show} />
                       </li>
                     ))}
                   </ul>
                 </Card>
-                {list.isFetchNextPageError && <Notice tone="error">{k("loadMoreFailed")}</Notice>}
+                {/* Always rendered so a failed "Load more" is announced. */}
+                <div aria-live="polite">{list.isFetchNextPageError && <Notice tone="error">{k("loadMoreFailed")}</Notice>}</div>
                 {list.hasNextPage && !switching && (
                   <div className="flex justify-center">
                     <Button
@@ -227,7 +240,11 @@ function StatusTabs({
   );
 }
 
-function EmailRow({ j, tz, canRetry, onRetried }: { j: EmailJobDTO; tz: string; canRetry: boolean; onRetried: (text: string) => void }) {
+/**
+ * One email. Outcomes that remove the row from this list (retried, or no longer failed) go to the page's toast with
+ * focus on the page, since the row and anything in it disappear on the refresh.
+ */
+function EmailRow({ j, tz, canRetry, onOutcome }: { j: EmailJobDTO; tz: string; canRetry: boolean; onOutcome: (text: string) => void }) {
   const qc = useQueryClient();
   const [asking, setAsking] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -245,23 +262,27 @@ function EmailRow({ j, tz, canRetry, onRetried }: { j: EmailJobDTO; tz: string; 
     }
   }, [asking]);
 
+  const leaveRow = (text: string) => {
+    onOutcome(text);
+    document.getElementById("main")?.focus({ preventScroll: true });
+    void qc.invalidateQueries({ queryKey: queryKeys.emails });
+  };
+
   const retry = useMutation({
     mutationFn: () => apiFetch<{ ok: true }>(`/api/staff/emails/${encodeURIComponent(j.id)}/retry`, { method: "POST" }),
     onMutate: () => setProblem(null),
     onSuccess: () => {
-      onRetried(k("retried", { template: templateLabel(j.template) }));
-      // The row leaves the failed list; focus goes to the page rather than <body>.
-      document.getElementById("main")?.focus({ preventScroll: true });
-      void qc.invalidateQueries({ queryKey: queryKeys.emails });
+      leaveRow(k("retried", { template: templateLabel(j.template) }));
     },
     onError: (e) => {
       if (isApiError(e, 401)) return;
+      if (isApiError(e, 409, "not_failed") || isApiError(e, 404)) {
+        leaveRow(k("notFailed"));
+        return;
+      }
       returnFocus.current = true;
       setAsking(false);
-      if (isApiError(e, 409, "not_failed") || isApiError(e, 404)) {
-        setProblem(k("notFailed"));
-        void qc.invalidateQueries({ queryKey: queryKeys.emails });
-      } else if (isApiError(e, 403)) setProblem(k("adminOnly"));
+      if (isApiError(e, 403)) setProblem(k("adminOnly"));
       else setProblem(actionErrorText(e));
     },
   });

@@ -328,10 +328,18 @@ describe("staff cancellation", () => {
     const id = await submit(pat, at(FRI, 10));
     expect((await cancel(adminCookie, id, "Duplicate", 1)).status).toBe(200);
     const jobsBefore = await count("SELECT COUNT(*) AS n FROM email_jobs");
-    for (const version of [1, 2]) {
-      const again = await cancel(techCookie, id, "Other reason", version);
-      expect(again.status).toBe(200);
-      expect(again.json.reservation).toMatchObject({ status: "cancelled", version: 2, closedBy: "Ada Admin", closeReason: "Duplicate" });
+    // The same request again (a retry): same actor, reason and version.
+    const retry = await cancel(adminCookie, id, "Duplicate", 1);
+    expect(retry.status).toBe(200);
+    expect(retry.json.reservation).toMatchObject({ status: "cancelled", version: 2, closedBy: "Ada Admin", closeReason: "Duplicate" });
+    // Someone who already sees it cancelled (current version) gets it back unchanged.
+    const seen = await cancel(techCookie, id, "Other reason", 2);
+    expect(seen.status).toBe(200);
+    expect(seen.json.reservation).toMatchObject({ status: "cancelled", version: 2, closeReason: "Duplicate" });
+    // A second canceller working from the old version must not be told their reason went out.
+    for (const [cookie, reason] of [[techCookie, "Other reason"], [adminCookie, "Different reason"]] as const) {
+      const late = await cancel(cookie, id, reason, 1);
+      expect([late.status, late.json.error, late.json.details.current.status, late.json.details.current.closeReason]).toEqual([409, "stale", "cancelled", "Duplicate"]);
     }
     expect(await count("SELECT COUNT(*) AS n FROM email_jobs")).toBe(jobsBefore);
     expect(await count("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'reservation.cancelled'")).toBe(1);

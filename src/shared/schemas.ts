@@ -315,7 +315,7 @@ const auditActionsSchema = z
     const terms = (s ?? "").split(",").map((x) => x.trim()).filter((x) => x !== "");
     return terms.length > 0 ? terms : undefined;
   })
-  .pipe(z.array(z.string().max(100)).max(AUDIT_ACTION_TERMS_MAX).optional());
+  .pipe(z.array(z.string().max(100).regex(/^[a-z_.]+$/)).max(AUDIT_ACTION_TERMS_MAX).optional());
 
 export const auditListQuerySchema = z.object({
   reservationId: optionalText(100),

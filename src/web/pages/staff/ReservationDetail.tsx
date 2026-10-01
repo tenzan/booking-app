@@ -214,7 +214,7 @@ export default function ReservationDetail() {
                       onStale={onStale}
                     />
                   )}
-                  {action === "cancel" && <CancelPanel key={q.data.reservation.version} r={q.data.reservation} onDone={onDone} onStale={onStale} />}
+                  {action === "cancel" && <CancelPanel r={q.data.reservation} onDone={onDone} onStale={onStale} />}
                 </ActionsCard>
               )}
               {ended && (

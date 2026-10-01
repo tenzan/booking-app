@@ -278,7 +278,7 @@ describe("audit log", () => {
     expect(await actions("action=reservation.approved")).toEqual(["reservation.approved"]);
     // A bare prefix without the dot is an exact match; `%` and `_` are literal.
     expect(await actions("action=reservation")).toEqual([]);
-    expect(await actions("action=%25")).toEqual([]);
+    expect((await get(techCookie, "/api/staff/audit?action=%25")).status).toBe(400);
     expect(await actions(`reservationId=r1&action=reservation.&actor=${adminId}`)).toEqual(["reservation.approved"]);
     // Empty params are ignored.
     expect(await actions("reservationId=&customerId=&actor=&action=&cursor=")).toHaveLength(5);
@@ -304,9 +304,16 @@ describe("audit log", () => {
     // Blank terms are ignored; a list of only blanks is no filter.
     expect(await actions(`action=${encodeURIComponent("customers.,,")}`)).toEqual(["customers.import"]);
     expect(await actions(`action=${encodeURIComponent(",")}`)).toHaveLength(6);
-    // At most 10 terms.
-    const many = Array.from({ length: 11 }, (_, i) => `a${i}.`).join(",");
-    expect((await get(techCookie, `/api/staff/audit?action=${encodeURIComponent(many)}`)).status).toBe(400);
+    // At most 10 terms of [a-z_.], 400 characters in all.
+    const terms = (n: number) => Array.from({ length: n }, (_, i) => `a${"bcdefghijk"[i]}.`).join(",");
+    expect((await get(techCookie, `/api/staff/audit?action=${encodeURIComponent(terms(10))}`)).status).toBe(200);
+    expect((await get(techCookie, `/api/staff/audit?action=${encodeURIComponent(terms(11))}`)).status).toBe(400);
+    for (const bad of ["Reservation.", "reservation.%", "a b", "reservation.approved;drop"]) {
+      expect((await get(techCookie, `/api/staff/audit?action=${encodeURIComponent(bad)}`)).status).toBe(400);
+    }
+    const long = (n: number) => ["x".repeat(99) + ".", "y".repeat(99) + ".", "z".repeat(99) + ".", "w".repeat(n - 303)].join(",");
+    expect((await get(techCookie, `/api/staff/audit?action=${long(400)}`)).status).toBe(200);
+    expect((await get(techCookie, `/api/staff/audit?action=${long(401)}`)).status).toBe(400);
   });
 
   it("pages 100 at a time without gaps", async () => {

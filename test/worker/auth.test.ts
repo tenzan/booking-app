@@ -334,8 +334,9 @@ describe("staff magic link", () => {
     const me = await api("GET", "/api/staff/me", { cookie });
     expect(me.status).toBe(200);
     expect(me.json).toEqual({ id, email: "tom@example.test", name: "Test Person", role: "technician" });
-    const aud = await env.DB.prepare("SELECT actor_kind, actor, action FROM audit_log").all<any>();
-    expect(aud.results).toEqual([{ actor_kind: "staff", actor: "tom@example.test", action: "auth.staff_signin" }]);
+    const aud2 = await env.DB.prepare("SELECT actor_kind, actor, action, details FROM audit_log").all<any>();
+    // Staff are recorded by id (like every other staff action), with the address in the details.
+    expect(aud2.results).toEqual([{ actor_kind: "staff", actor: String(id), action: "auth.staff_signin", details: JSON.stringify({ email: "tom@example.test" }) }]);
     const mail = await env.DB.prepare("SELECT text FROM dev_mailbox WHERE to_email = 'tom@example.test'").first<{ text: string }>();
     expect(mail!.text).toContain("/staff/auth/verify#t=");
   });

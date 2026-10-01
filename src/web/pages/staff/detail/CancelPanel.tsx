@@ -11,7 +11,14 @@ import { actionErrorText, type PanelProps } from "./shared";
 const REASON_MAX = 500;
 const k = (key: string, params?: Record<string, string | number>) => t(`web.staff.detail.cancel.${key}`, params);
 
-/** Reason (1–500 characters, emailed to the customer), what happens next, and a confirm button. */
+/** 400 invalid with a schema issue on `reason` (e.g. only whitespace after trimming). */
+const isReasonIssue = (e: unknown): boolean =>
+  isApiError(e, 400, "invalid") && Array.isArray(e.details) && e.details.some((i: { path?: unknown }) => Array.isArray(i.path) && i.path[0] === "reason");
+
+/**
+ * Reason (1–500 characters, emailed to the customer), what happens next, and a confirm button. Not keyed by version:
+ * a refresh of the reservation keeps the typed reason, and each send uses the latest `r.version`.
+ */
 export function CancelPanel({ r, onDone, onStale }: PanelProps) {
   const [reason, setReason] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -29,7 +36,7 @@ export function CancelPanel({ r, onDone, onStale }: PanelProps) {
     onError: (e) => {
       if (isApiError(e, 409, "stale")) onStale((e.details as { current?: ReservationDTO } | undefined)?.current);
       else if (isApiError(e, 409, "too_late")) setProblem(k("tooLate"));
-      else if (isApiError(e, 400)) {
+      else if (isReasonIssue(e)) {
         setFieldError(k("required"));
         ref.current?.focus();
       } else if (!isApiError(e, 401)) setProblem(actionErrorText(e));

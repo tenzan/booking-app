@@ -28,8 +28,9 @@ const REASON_MAX = 500;
  * Cancel a pending or confirmed reservation: frees its blocks and any open proposal's option holds, closes the
  * reservation, cancels its obsolete queued mail and tells the customer and the team. Staff need a reason and may
  * cancel until the appointment ends; customers may give one and cancel before the start (confirmed appointments only
- * until `cancelCutoffMin` before it). Ownership is the caller's job. Cancelling an already-cancelled reservation
- * returns it unchanged; a version that moved (e.g. a racing approval) is 409 stale.
+ * until `cancelCutoffMin` before it). Ownership is the caller's job. An already-cancelled reservation is returned
+ * unchanged when asked at its current version or by a retry of the cancelling request itself (same actor, reason and
+ * version); any other version that moved (a racing approval, or a second canceller) is 409 stale.
  */
 export async function cancelReservation(
   env: Env,
@@ -42,13 +43,28 @@ export async function cancelReservation(
   return withRetry(() => attempt(env, actor, id, reason, input.version));
 }
 
+/** Did this actor, with this reason, cancel the reservation from `version` (the version a retry would still send)? */
+async function isSameCancellation(db: D1Database, id: string, actor: CancelActor, reason: string | null, version: number): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT closed_by_kind, closed_by, close_reason, version FROM reservations WHERE id = ?")
+    .bind(id)
+    .first<{ closed_by_kind: string | null; closed_by: string | null; close_reason: string | null; version: number }>();
+  const who = actor.kind === "staff" ? String(actor.staff.id) : actor.email;
+  return row !== null && row.version === version + 1 && row.closed_by_kind === actor.kind && row.closed_by === who && row.close_reason === reason;
+}
+
 async function attempt(env: Env, actor: CancelActor, id: string, reason: string | null, version: number): Promise<ReservationDTO> {
   const db = env.DB;
   // Schedule version first, then the reservation: a change in between fails the guard and we retry.
   const scheduleVersion = await readScheduleVersion(db);
   const current = await getReservation(db, id);
   if (!current) throw new HttpError(404, "not_found");
-  if (current.status === "cancelled") return current;
+  if (current.status === "cancelled") {
+    // Unchanged for a caller who already sees it cancelled, or for a retry of the very request that cancelled it.
+    // Anyone else working from an older version is told it changed: their reason was not sent.
+    if (current.version === version || (await isSameCancellation(db, id, actor, reason, version))) return current;
+    throw new HttpError(409, "stale", { current });
+  }
   if ((current.status !== "pending" && current.status !== "confirmed") || current.version !== version) {
     throw new HttpError(409, "stale", { current });
   }
