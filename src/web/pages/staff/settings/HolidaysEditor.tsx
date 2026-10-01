@@ -11,6 +11,7 @@ import { inputClass } from "../../../components/Field";
 import { Skeleton } from "../../../components/Spinner";
 import { dayParts, fmtDateWithYear, fmtLongDate, todayIn } from "../../../format";
 import { t } from "../../../i18n";
+import { codedText } from "../coded";
 import { actionErrorText } from "../detail/shared";
 import { scheduleRequest, type Submit } from "../schedule/ImpactDialog";
 
@@ -18,12 +19,7 @@ const h = (key: string, params?: Record<string, string | number>) => t(`web.staf
 const NAME_MAX = (holidayNameSchema as unknown as { maxLength: number }).maxLength;
 
 /** Catalog text for an import message (row error or file problem). */
-export function importMessage(m: CodedMessage | undefined): string {
-  if (!m) return h("import.unknownError");
-  const key = `web.staff.import.messages.${m.code}`;
-  const text = t(key, m.params);
-  return text === key ? h("import.unknownError") : text;
-}
+export const importMessage = (m: CodedMessage | undefined): string => codedText(m, h("import.unknownError"));
 
 /**
  * Holidays of one year at a time: list (with delete), add, and CSV import with a preview. Every change is a

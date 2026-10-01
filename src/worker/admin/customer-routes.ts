@@ -7,6 +7,7 @@ import {
   customerCreateSchema,
   customerListQuerySchema,
   customerPatchSchema,
+  MAX_CUSTOMER_IMPORT_CHARS,
 } from "../../shared/schemas";
 import type { AppEnv } from "../env";
 import { clock } from "../lib/clock";
@@ -33,7 +34,7 @@ const actor = (c: { var: AppEnv["Variables"] }) => String(c.var.staff!.id);
 
 // ---- CSV import (preview, then apply the same file) ---------------------------------------------------------------
 
-const importBody = z.object({ csv: z.string().max(1_000_000) });
+const importBody = z.object({ csv: z.string().max(MAX_CUSTOMER_IMPORT_CHARS) });
 const importApplyBody = importBody.extend({ planHash: z.string().regex(/^[0-9a-f]{64}$/) });
 
 customerAdminRoutes.post("/customers/import/preview", requireStaff("admin"), async (c) => {

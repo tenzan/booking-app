@@ -94,6 +94,8 @@ Without that secret the deploy job is skipped, so forks of this repository stay 
 
 ## 6. Importing customers
 
-Administrators can import customers from a CSV file in the staff area (columns `customer_number,name,phone,contact_email,contact_name,active`; see `docs/sample-customers.csv`). Each row is one contact; rows with the same `customer_number` form one customer. The import only creates and updates: it never deletes customers or contacts, and a blank `phone`, `contact_name` or `active` leaves the stored value as it is. A file may have up to 5000 rows.
+Administrators can import customers from a CSV file in the staff area (Customers → Import CSV; columns `customer_number,name,phone,contact_email,contact_name,active`; see `docs/sample-customers.csv`). Each row is one contact; rows with the same `customer_number` form one customer. The import only creates and updates: it never deletes customers or contacts, and a blank `phone`, `contact_name` or `active` leaves the stored value as it is. A file may have up to 5000 rows and 1 MB.
+
+The import page offers `docs/sample-customers.csv` for download at `/samples/customers.csv`. That file is the only copy: a small plugin in `vite.config.ts` serves it from the dev server and adds it to the client build, so edit it in `docs/` (the dev seed reads it too).
 
 The import is written to D1 in batches of at most 100 statements, and every batch is one request from the Worker to D1. A large file therefore needs the **Workers Paid plan's subrequest allowance**; on the free plan (50 subrequests per request) keep files under about 1000 rows, or split them. If an import stops part way, importing the same file again finishes it safely.

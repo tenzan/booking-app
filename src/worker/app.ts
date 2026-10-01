@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { MAX_CSV_BODY_BYTES } from "../shared/schemas";
 import type { AppEnv } from "./env";
 import { errorHandler, HttpError } from "./lib/http";
 import { security } from "./middleware/security";
@@ -23,7 +24,7 @@ const tooLarge = () => {
   throw new HttpError(413, "payload_too_large");
 };
 const smallBody = bodyLimit({ maxSize: 256 * 1024, onError: tooLarge });
-const csvBody = bodyLimit({ maxSize: 1024 * 1024, onError: tooLarge });
+const csvBody = bodyLimit({ maxSize: MAX_CSV_BODY_BYTES, onError: tooLarge });
 /** CSV imports (holidays, customers) may carry more than any other request; everything else is small JSON. */
 const isCsvImport = (path: string) => /^\/api\/staff\/(holidays|customers)\/import(\/|$)/.test(path);
 app.use("*", (c, next) => (isCsvImport(c.req.path) ? csvBody : smallBody)(c, next));

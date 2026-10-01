@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams, useSearchParams } from "react-router";
+import { Link, useLocation, useParams, useSearchParams } from "react-router";
 import type { ReservationDTO, TechOption } from "../../../shared/types";
-import { apiFetch, isApiError, queryKeys, useMe, type StaffReservationView } from "../../api";
+import { apiFetch, isApiError, queryKeys, safePath, useMe, type StaffReservationView } from "../../api";
 import { Button, ButtonLink } from "../../components/Button";
 import { Card, Notice } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
@@ -30,10 +30,19 @@ function handledBy(r: ReservationDTO): { name: string; at: number } | null {
   return null;
 }
 
+/** Where the back link goes: the page that linked here when it said so in history state (e.g. a customer), else the dashboard. */
+function readBack(state: unknown): { to: string; label: string } | null {
+  const back = (state as { back?: { to?: unknown; label?: unknown } } | null)?.back;
+  const to = typeof back?.to === "string" ? safePath(back.to) : null;
+  return to && typeof back?.label === "string" && back.label !== "" ? { to, label: back.label } : null;
+}
+
 /** `/staff/r/:id[?action=approve|decline|propose[&assign=me]]` — the links in staff notification emails land here. */
 export default function ReservationDetail() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
+  // Read once: opening an action panel rewrites the URL (and drops the history state).
+  const backTo = useRef(readBack(useLocation().state)).current;
   const qc = useQueryClient();
   const me = useMe();
   const tz = me.data?.timezone ?? "UTC";
@@ -86,13 +95,13 @@ export default function ReservationDetail() {
 
   const back = (
     <Link
-      to="/staff"
+      to={backTo?.to ?? "/staff"}
       className="-ml-2 inline-flex min-h-11 items-center gap-1 rounded-lg px-2 font-medium text-blue-700 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-slate-800"
     >
       <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <path d="M19 12H5m5 5-5-5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
-      {t("web.staff.detail.back")}
+      <span className="break-words">{backTo?.label ?? t("web.staff.detail.back")}</span>
     </Link>
   );
 

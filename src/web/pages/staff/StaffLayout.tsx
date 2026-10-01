@@ -53,6 +53,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { to: "/staff", label: "dashboard", end: true },
   { to: "/staff/schedule", label: "schedule" },
+  { to: "/staff/customers", label: "customers" },
   { to: "/staff/team", label: "team", adminOnly: true },
   { to: "/staff/settings", label: "settings", adminOnly: true },
 ];

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, type QueryClient } from "@tanstack/react-query";
+import type { CodedMessage } from "../domain/csv";
+import type { ImportRow, ImportSummary } from "../domain/customer-import";
 import type { HolidayImportRow } from "../domain/holiday-import";
 import type { Settings } from "../domain/settings";
 import type { AuditRow, CustomerReservationDTO, ImpactDTO, ReservationDTO, StaffDTO, TechOption, UnavailabilityDTO, WindowDTO } from "../shared/types";
@@ -163,6 +165,24 @@ export interface TeamList {
   staff: StaffDTO[];
 }
 
+/** POST /api/staff/customers/import/preview: what the file would do; apply with the same text and `planHash`. */
+export interface CustomerImportPreview {
+  planHash: string;
+  rows: ImportRow[];
+  summary: ImportSummary;
+  /** File-level notes that don't block the import (unknown columns). */
+  warnings: CodedMessage[];
+}
+
+/** POST /api/staff/customers/import/apply. */
+export interface CustomerImportResult {
+  created: number;
+  updated: number;
+  unchanged: number;
+  contactsAdded: number;
+  contactsUpdated: number;
+}
+
 export interface DevMessage {
   id: number;
   to: string;
@@ -188,6 +208,10 @@ export const queryKeys = {
   holidays: (year: number) => ["staff", "schedule", "holidays", year] as const,
   settings: ["staff", "settings"] as const,
   team: ["staff", "team"] as const,
+  /** Every customer query (list pages and details); invalidate after any customer change. */
+  customers: ["staff", "customers"] as const,
+  customerList: (query: string, status: string) => ["staff", "customers", "list", query, status] as const,
+  customer: (id: number) => ["staff", "customers", "detail", id] as const,
   devMail: ["dev", "mail"] as const,
 };
 

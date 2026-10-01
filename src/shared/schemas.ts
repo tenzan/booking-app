@@ -207,11 +207,15 @@ export const staffApplyBodySchema = z.object({ ...staffCapacityShape, version: z
 export const CUSTOMERS_PAGE_SIZE = 50;
 /** Data rows (header excluded) one customer CSV import may carry. */
 export const MAX_CUSTOMER_IMPORT_ROWS = 5000;
+/** Characters of CSV text one customer import may carry ("1 MB"). */
+export const MAX_CUSTOMER_IMPORT_CHARS = 1_000_000;
+/** Request body limit for CSV imports (the JSON around the text included); every other request is capped lower. */
+export const MAX_CSV_BODY_BYTES = 1024 * 1024;
 
 export const customerNumberSchema = z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9._-]+$/, "letters, digits and . _ - only");
 export const customerNameSchema = z.string().trim().min(1).max(200);
 export const phoneSchema = z.string().trim().max(40).regex(/^[0-9+()\- .]*$/, "digits, spaces and + ( ) - . only");
-const customerNotesSchema = z.string().max(1000);
+export const customerNotesSchema = z.string().max(1000);
 export const contactNameSchema = z.string().trim().max(100);
 
 export const contactInputSchema = z.object({ email: emailSchema, name: contactNameSchema.optional(), phone: phoneSchema.optional() });
