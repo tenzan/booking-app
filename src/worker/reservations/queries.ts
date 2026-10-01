@@ -185,14 +185,15 @@ export async function getAudit(db: D1Database, reservationId: string): Promise<A
 /**
  * Every active bookable technician, assignable ones first, then by name, each with the reason it cannot take
  * this request (first match wins: not on the slot, unavailable, busy with a fixed hold, needed elsewhere).
- * Only pending requests can be approved, so other statuses get no options.
+ * Pending requests get approval candidates; confirmed appointments get same-time reassignment candidates, with the
+ * current technician flagged `current`. Other statuses get no options.
  */
 export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOption[]> {
-  if (r.status !== "pending") return [];
+  if (r.status !== "pending" && r.status !== "confirmed") return [];
   const ctx = await loadScheduleCtx(env, r.startAt, r.endAt);
   const { results: staff } = await env.DB.prepare("SELECT id, name FROM staff WHERE active = 1 AND bookable = 1").all<{ id: number; name: string }>();
 
-  // A pending request always holds capacity, so its stored range is in the context.
+  // A pending or confirmed reservation always holds capacity, so its stored range is in the context.
   const own = ctx.holds.find((h) => h.id === r.id);
   if (!own) return [];
   const { start: occStart, end: occEnd } = own;
@@ -201,21 +202,22 @@ export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOpti
   const freeList = freeStaffAt(ctx.slotInput, r.startAt, occStart, occEnd);
   const free = new Set(freeList);
   // Exactly the free technicians: the context's provisional fallback (which only keeps capacity held) is no option.
-  const holds = ctx.holds.map((h) => (h.id === r.id ? { ...h, eligible: freeList } : h));
+  // A confirmed appointment is unfixed here so that each candidate is tried in place of its technician.
+  const holds = ctx.holds.map((h) => (h.id === r.id ? { ...h, fixed: null, eligible: freeList } : h));
   const assignable = new Set(assignableFor(holds, r.id));
+  const currentId = r.status === "confirmed" ? (r.assignedStaff?.id ?? null) : null;
 
   const options = staff.map((s): TechOption => {
-    if (assignable.has(s.id)) return { id: s.id, name: s.name, assignable: true, reason: null };
-    if (!scheduled.has(s.id)) return { id: s.id, name: s.name, assignable: false, reason: "not_scheduled" };
-    if (!free.has(s.id)) {
-      return { id: s.id, name: s.name, assignable: false, reason: "unavailable" };
-    }
+    const base = { id: s.id, name: s.name, ...(s.id === currentId ? { current: true } : {}) };
+    if (assignable.has(s.id)) return { ...base, assignable: true, reason: null };
+    if (!scheduled.has(s.id)) return { ...base, assignable: false, reason: "not_scheduled" };
+    if (!free.has(s.id)) return { ...base, assignable: false, reason: "unavailable" };
     const fixed = holds.find((h) => h.id !== r.id && h.fixed === s.id && h.start < occEnd && occStart < h.end);
     if (fixed) {
       const conflictRef = ctx.holdOwners.get(fixed.id)?.ref ?? undefined;
-      return { id: s.id, name: s.name, assignable: false, reason: "busy", ...(conflictRef ? { conflictRef } : {}) };
+      return { ...base, assignable: false, reason: "busy", ...(conflictRef ? { conflictRef } : {}) };
     }
-    return { id: s.id, name: s.name, assignable: false, reason: "needed_for_other_request" };
+    return { ...base, assignable: false, reason: "needed_for_other_request" };
   });
   return options.sort((a, b) => Number(b.assignable) - Number(a.assignable) || a.name.localeCompare(b.name) || a.id - b.id);
 }

@@ -29,6 +29,10 @@ interface ReservationData {
   customer_number: string;
   approver_name: string | null;
   tech_name: string | null;
+  assigned_staff_id: number | null;
+  closed_by_kind: string | null;
+  /** Staff closer's name, or the raw closer (customer email). */
+  closer_name: string | null;
 }
 
 const LOGIN_TOKEN_MS = 15 * 60_000;
@@ -41,17 +45,21 @@ const VALID_STATUS: Record<string, string[]> = {
   confirmed: ["confirmed"],
   assigned: ["confirmed"],
   declined: ["declined"],
+  cancelled: ["cancelled"],
+  reassigned: ["confirmed"],
 };
 
 function loadReservation(env: Env, id: string): Promise<ReservationData | null> {
   return env.DB.prepare(
     `SELECT r.id, r.ref, r.contact_email, r.contact_name, r.phone, r.issue, r.start_at, r.end_at, r.status, r.close_reason,
             c.name AS account_name, c.customer_number,
-            approver.name AS approver_name, tech.name AS tech_name
+            approver.name AS approver_name, tech.name AS tech_name, r.assigned_staff_id, r.closed_by_kind,
+            COALESCE(closer.name, r.closed_by) AS closer_name
      FROM reservations r
      JOIN customers c ON c.id = r.customer_id
      LEFT JOIN staff approver ON approver.id = r.confirmed_by
      LEFT JOIN staff tech ON tech.id = r.assigned_staff_id
+     LEFT JOIN staff closer ON r.closed_by_kind = 'staff' AND CAST(closer.id AS TEXT) = r.closed_by
      WHERE r.id = ?`,
   )
     .bind(id)
@@ -76,6 +84,15 @@ async function mintAccessToken(env: Env, r: ReservationData): Promise<string> {
     .bind(await sha256Hex(token), r.id, clock.now(), r.end_at + ACCESS_GRACE_MS)
     .run();
   return token;
+}
+
+async function staffNames(env: Env, ids: unknown[]): Promise<Map<number, string>> {
+  const wanted = ids.filter((id): id is number => typeof id === "number");
+  if (wanted.length === 0) return new Map();
+  const { results } = await env.DB.prepare(`SELECT id, name FROM staff WHERE id IN (${wanted.map(() => "?").join(",")})`)
+    .bind(...wanted)
+    .all<{ id: number; name: string }>();
+  return new Map(results.map((s) => [s.id, s.name]));
 }
 
 function parsePayload(job: EmailJobRow): Record<string, unknown> {
@@ -112,6 +129,9 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
   if (!valid) throw new Error(`unknown email template: ${job.template}`);
   const r = job.reservation_id ? await loadReservation(env, job.reservation_id) : null;
   if (!r || !valid.includes(r.status)) return "skip";
+  const payload = parsePayload(job);
+  // A reassignment notice is only true while the appointment is still with the technician it names.
+  if (job.template === "reassigned" && r.assigned_staff_id !== payload.to) return "skip";
 
   const locale = env.APP_LOCALE || "en-US";
   const when = `${fmtDateTime(r.start_at, env.APP_TIMEZONE, locale)} ${tzLabel(env.APP_TIMEZONE, r.start_at, locale)}`;
@@ -170,6 +190,78 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           facts: common,
           actions: [{ label: t("email.declined.rebook"), url: env.APP_BASE_URL, primary: true }],
           footer: customerFooter,
+        }),
+      };
+    }
+    case "cancelled": {
+      if (payload.audience === "team") {
+        const by =
+          r.closed_by_kind === "staff"
+            ? t("email.cancelledTeam.byStaff", { name: r.closer_name ?? "—" })
+            : t("email.cancelledTeam.byCustomer", { email: r.closer_name ?? "—" });
+        return {
+          subject: t("email.cancelledTeam.subject", { ref: r.ref, when }),
+          ...renderEmail({
+            ...base,
+            banner: { text: t("status.cancelled"), tone: "red" },
+            paragraphs: [by],
+            facts: [
+              [t("common.account"), r.account_name],
+              [t("common.customerNumber"), r.customer_number],
+              [t("common.contact"), `${r.contact_name} <${r.contact_email}>`],
+              [t("common.when"), when],
+              [t("common.reference"), r.ref],
+              ...(r.tech_name ? [[t("common.technician"), r.tech_name] as [string, string]] : []),
+              ...(r.close_reason ? [[t("common.reason"), r.close_reason] as [string, string]] : []),
+            ],
+            actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
+            footer: staffFooter,
+          }),
+        };
+      }
+      const byTeam = r.closed_by_kind === "staff";
+      return {
+        subject: t("email.cancelled.subject", { when, ref: r.ref }),
+        ...renderEmail({
+          ...base,
+          banner: { text: t("status.cancelled"), tone: "red" },
+          paragraphs: [
+            t(byTeam ? "email.cancelled.byTeam" : "email.cancelled.byYou"),
+            ...(byTeam && r.close_reason ? [t("email.cancelled.reason", { reason: r.close_reason })] : []),
+          ],
+          facts: common,
+          actions: [{ label: t("email.cancelled.rebook"), url: env.APP_BASE_URL, primary: true }],
+          footer: customerFooter,
+        }),
+      };
+    }
+    case "reassigned": {
+      if (payload.audience === "customer") {
+        const viewUrl = `${env.APP_BASE_URL}/r#t=${await mintAccessToken(env, r)}`;
+        return {
+          subject: t("email.reassignedCustomer.subject", { ref: r.ref }),
+          ...renderEmail({
+            ...base,
+            banner: { text: t("status.confirmed"), tone: "green" },
+            paragraphs: [t("email.reassignedCustomer.intro"), t("email.confirmed.call", { phone: r.phone, tool: s.remoteToolName })],
+            facts: common,
+            actions: [{ label: t("common.viewReservation"), url: viewUrl, primary: true }],
+            footer: customerFooter,
+          }),
+        };
+      }
+      const names = await staffNames(env, [payload.from, payload.to, payload.by]);
+      const name = (id: unknown) => (typeof id === "number" ? names.get(id) : undefined) ?? "—";
+      const params = { by: name(payload.by), from: name(payload.from), to: name(payload.to) };
+      return {
+        subject: t("email.reassigned.subject", { ref: r.ref, to: params.to }),
+        ...renderEmail({
+          ...base,
+          banner: { text: t("status.confirmed"), tone: "green" },
+          paragraphs: [t("email.reassigned.intro", params), t("email.reassigned.unchanged")],
+          facts: [...common, [t("common.technician"), params.to]],
+          actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
+          footer: staffFooter,
         }),
       };
     }

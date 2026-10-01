@@ -12,6 +12,7 @@ export const en = {
     technician: "Technician",
     viewReservation: "View reservation",
     cancelReservation: "Cancel reservation",
+    reason: "Reason",
   },
   status: {
     pending: "Pending approval — not yet confirmed",
@@ -65,6 +66,27 @@ export const en = {
       intro: "Unfortunately we couldn't confirm your requested time.",
       reason: "Reason: {reason}",
       rebook: "Choose another time",
+    },
+    cancelled: {
+      subject: "Cancelled: remote support on {when} ({ref})",
+      byTeam: "Your remote support reservation was cancelled by our team. We're sorry for the inconvenience.",
+      byYou: "Your remote support reservation was cancelled as you requested.",
+      reason: "Reason: {reason}",
+      rebook: "Book another time",
+    },
+    cancelledTeam: {
+      subject: "{ref} cancelled — {when}",
+      byStaff: "{name} cancelled this reservation.",
+      byCustomer: "The customer ({email}) cancelled this reservation.",
+    },
+    reassigned: {
+      subject: "{ref} reassigned to {to}",
+      intro: "{by} reassigned this appointment from {from} to {to}.",
+      unchanged: "The appointment time is unchanged.",
+    },
+    reassignedCustomer: {
+      subject: "Update to your remote support appointment ({ref})",
+      intro: "We made an internal change to your remote support appointment. Your appointment details are unchanged.",
     },
   },
   web: {

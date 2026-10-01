@@ -52,6 +52,8 @@ export interface TechOption {
   reason: null | TechUnavailableReason;
   /** Reference of the confirmed reservation / proposal option that makes the technician busy. */
   conflictRef?: string;
+  /** The technician a confirmed appointment is assigned to now (reassigning to them is refused with same_tech). */
+  current?: boolean;
 }
 
 export interface AuditRow {

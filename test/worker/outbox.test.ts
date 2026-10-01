@@ -141,6 +141,13 @@ describe("processOutbox", () => {
     expect(await mailbox()).toHaveLength(0);
   });
 
+  it("skips cancelled and reassigned notices whose state no longer holds", async () => {
+    await seedReservation({ status: "confirmed", staff: true });
+    await enqueue("cancelled", "pat@example.test", "res-1", { audience: "customer" });
+    await enqueue("reassigned", "ada@example.test", "res-1", { audience: "team", from: 1, to: 1, by: 1 });
+    expect(await processOutbox(env)).toEqual({ sent: 0, failed: 0, skipped: 2 });
+  });
+
   it("skips a reservation template whose reservation is missing", async () => {
     await enqueue("request_received", "pat@example.test", "gone");
     expect(await processOutbox(env)).toEqual({ sent: 0, failed: 0, skipped: 1 });

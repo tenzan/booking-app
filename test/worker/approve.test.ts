@@ -121,7 +121,8 @@ describe("with two eligible technicians plus the admin", () => {
     expect((await api("GET", "/api/staff/reservations?status=bogus", { cookie: techCookie })).status).toBe(400);
 
     const d = await detail(techCookie, id);
-    expect(d.json.techOptions).toEqual([]); // not pending any more
+    // Confirmed: reassignment candidates, the current technician flagged.
+    expect(d.json.techOptions.filter((o: any) => o.current).map((o: any) => o.id)).toEqual([team.a]);
     expect(d.json.audit.map((r: any) => [r.actorKind, r.actor, r.action])).toEqual([
       ["customer", "pat@example.test", "reservation.requested"],
       ["staff", "Ada Admin", "reservation.approved"],
@@ -257,6 +258,7 @@ describe("with two eligible technicians plus the admin", () => {
       const again = await decline(techCookie, id, "ok");
       expect([again.status, again.json.error, again.json.details.current.status]).toEqual([409, "stale", "declined"]);
       expect(await jobs("declined")).toBe(1);
+      expect((await detail(techCookie, id)).json.techOptions).toEqual([]); // closed: no options
     });
 
     it("cannot approve a declined request", async () => {

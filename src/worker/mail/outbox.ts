@@ -11,7 +11,9 @@ export type TemplateName =
   | "new_request"
   | "confirmed"
   | "assigned"
-  | "declined";
+  | "declined"
+  | "cancelled"
+  | "reassigned";
 
 export interface EmailJobRow {
   id: string;
