@@ -14,6 +14,7 @@ export const en = {
     cancelReservation: "Cancel reservation",
     reason: "Reason",
     approvalDeadline: "Approval deadline",
+    notSet: "Not set",
   },
   status: {
     pending: "Pending approval — not yet confirmed",

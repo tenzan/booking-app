@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { assertSql, audit, capacityBatch, readScheduleVersion, withRetry } from "../lib/db";
 import { safeError } from "../mail/outbox";
+import { releaseHoldStatements } from "../reservations/holds";
 import { getReservation } from "../reservations/queries";
 import { SWEEP_LIMIT } from "./expiry";
 
@@ -11,8 +12,8 @@ async function completeOne(env: Env, id: string, now: number): Promise<boolean> 
   if (!current || current.status !== "confirmed" || current.endAt > now) return false;
   await capacityBatch(db, scheduleVersion, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'confirmed' AND version = ? AND end_at <= ?", id, current.version, now),
-    // An ended appointment holds nothing; dropping its blocks keeps the table small.
-    db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
+    // An ended appointment holds nothing; dropping its blocks (and any open proposal's) keeps the table small.
+    ...releaseHoldStatements(db, id, now),
     db
       .prepare(
         `UPDATE reservations SET status = 'completed', closed_at = ?, closed_by_kind = 'system', closed_by = NULL,

@@ -8,6 +8,7 @@ import { wallToUtc } from "../../src/domain/time";
 import { rangeBlocks } from "../../src/domain/slots";
 import { enqueueEmail, processOutbox } from "../../src/worker/mail/outbox";
 import { runSweeps } from "../../src/worker/cron";
+import { cleanup } from "../../src/worker/cron/cleanup";
 
 afterEach(() => {
   setNow(null);
@@ -223,6 +224,23 @@ describe("approval reminders and escalation", () => {
     expect(await jobs("approval_escalation")).toHaveLength(2);
   });
 
+  it("skips pending requests with an open proposal (staff already acted)", async () => {
+    const withProposal = await submit(at(FRI, 10));
+    const plain = await submit(at(FRI, 11));
+    for (const id of [withProposal, plain]) await setTimes(id, { reminder: at(THU, 9), escalation: at(THU, 9), expires: at(THU, 18) });
+    await env.DB.prepare("INSERT INTO proposals(id, reservation_id, status, created_by, created_at, expires_at) VALUES ('p1', ?, 'open', ?, 0, ?)")
+      .bind(withProposal, team.admin, at(THU, 18))
+      .run();
+    const r = await sweep(at(THU, 9));
+    expect([r.counts.reminders, r.counts.escalations]).toEqual([1, 1]);
+    for (const template of ["approval_reminder", "approval_escalation"]) {
+      expect((await env.DB.prepare("SELECT DISTINCT reservation_id FROM email_jobs WHERE template = ?").bind(template).all()).results).toEqual([{ reservation_id: plain }]);
+    }
+    // Once the proposal is resolved and the request is still pending, the reminder is due again.
+    await env.DB.prepare("UPDATE proposals SET status = 'withdrawn' WHERE id = 'p1'").run();
+    expect((await sweep(at(THU, 9, 1))).counts.reminders).toBe(1);
+  });
+
   it("does nothing for requests that are not pending or are already past their deadline", async () => {
     const confirmed = await submit(at(FRI, 10));
     expect((await approve(confirmed, team.a)).status).toBe(200);
@@ -276,6 +294,43 @@ describe("completion", () => {
     expect(await count("SELECT COUNT(*) AS n FROM email_jobs")).toBe(mailBefore);
     const a = await env.DB.prepare("SELECT * FROM audit_log WHERE action = 'reservation.completed'").first<any>();
     expect(a).toMatchObject({ actor_kind: "system", actor: null, reservation_id: done, customer_id: pat.id });
+  });
+});
+
+describe("completion edge cases", () => {
+  it("withdraws a leftover open proposal and frees its option blocks", async () => {
+    const id = await submit(at(FRI, 10));
+    expect((await approve(id, team.a)).status).toBe(200);
+    const endAt = (await row(id)).end_at as number;
+    const optStart = at(FRI, 11);
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO proposals(id, reservation_id, status, created_by, created_at, expires_at) VALUES ('p1', ?, 'open', ?, 0, ?)").bind(id, team.admin, at(FRI, 9)),
+      env.DB.prepare("INSERT INTO proposal_options(id, proposal_id, start_at, end_at, staff_id, occ_start, occ_end) VALUES ('o1', 'p1', ?, ?, ?, ?, ?)").bind(optStart, optStart + 30 * MIN, team.d, optStart, optStart + 30 * MIN),
+      env.DB.prepare("INSERT INTO tech_blocks(staff_id, block_start, owner_kind, owner_id) SELECT ?, value, 'option', 'o1' FROM json_each(?)").bind(team.d, JSON.stringify(rangeBlocks(optStart, optStart + 30 * MIN))),
+    ]);
+    await sweep(endAt);
+    expect((await row(id)).status).toBe("completed");
+    expect(await blocks()).toBe(0);
+    expect((await env.DB.prepare("SELECT status FROM proposals WHERE id = 'p1'").first<{ status: string }>())!.status).toBe("withdrawn");
+  });
+
+  it("a cancellation racing the completion sweep gives exactly one outcome: the cancellation wins", async () => {
+    const id = await submit(at(FRI, 10));
+    expect((await approve(id, team.a)).status).toBe(200);
+    const endAt = (await row(id)).end_at as number;
+    // The clock is a moment before the end (when staff may still cancel); the sweep's `now` is the end itself.
+    setNow(endAt - 1000);
+    let cancelled = false;
+    const hooked = withBatchHook(async () => {
+      const res = await api("POST", `/api/staff/reservations/${id}/cancel`, { cookie: adminCookie, body: { reason: "Customer asked", version: 2 } });
+      expect(res.status).toBe(200);
+      cancelled = true;
+    });
+    const r = await runSweeps(hooked.env, endAt);
+    expect(cancelled).toBe(true);
+    expect(r.counts.completion).toBe(0);
+    expect(await row(id)).toMatchObject({ status: "cancelled", version: 3 });
+    expect(await count("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'reservation.completed'")).toBe(0);
   });
 });
 
@@ -338,7 +393,45 @@ describe("cleanup", () => {
   });
 });
 
+describe("cleanup cap", () => {
+  it("removes at most `cap` rows per table per run and drains the backlog over runs", async () => {
+    const now = at(THU, 12);
+    setNow(now);
+    const old = now - 8 * DAY;
+    const stmts: D1PreparedStatement[] = [];
+    for (let i = 0; i < 7; i++) {
+      stmts.push(env.DB.prepare("INSERT INTO auth_tokens(token_hash, kind, email, created_at, expires_at) VALUES (?, 'customer', 'a@example.test', 0, ?)").bind(`cap-t-${i}`, old));
+      stmts.push(env.DB.prepare("INSERT INTO dev_mailbox(to_email, subject, html, text, created_at) VALUES ('a@example.test', 'cap', '', '', ?)").bind(old));
+    }
+    await env.DB.batch(stmts);
+    const left = () => count("SELECT COUNT(*) AS n FROM auth_tokens WHERE token_hash LIKE 'cap-t-%'");
+    const mails = () => count("SELECT COUNT(*) AS n FROM dev_mailbox WHERE subject = 'cap'");
+    expect(await cleanup(env, now, 3)).toBeGreaterThanOrEqual(6);
+    expect([await left(), await mails()]).toEqual([4, 4]);
+    await cleanup(env, now, 3);
+    await cleanup(env, now, 3);
+    expect([await left(), await mails()]).toEqual([0, 0]);
+  });
+});
+
 describe("sweeps as a whole", () => {
+  it("one failing row does not stop the rest of the same sweep", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (let i = 0; i < 3; i++) await insertPending(i, { expires: at(THU, 9), reminder: at(THU, 20), escalation: at(THU, 20) });
+    // bulk-0 (swept first) cannot be expired: its update aborts the whole batch.
+    await env.DB.prepare(
+      "CREATE TRIGGER poison BEFORE UPDATE ON reservations WHEN NEW.id = 'bulk-0' AND NEW.status = 'expired' BEGIN SELECT RAISE(ABORT, 'poisoned row'); END",
+    ).run();
+    const r = await sweep(at(THU, 9));
+    expect(r.counts.expiry).toBe(2);
+    expect(r.failed).toEqual([]);
+    expect(await row("bulk-0")).toMatchObject({ status: "pending", version: 1 });
+    expect(await row("bulk-1")).toMatchObject({ status: "expired" });
+    expect(await row("bulk-2")).toMatchObject({ status: "expired" });
+    expect(await count("SELECT COUNT(*) AS n FROM audit_log WHERE reservation_id = 'bulk-0'")).toBe(0);
+    expect(errors).toHaveBeenCalled();
+  });
+
   it("processes at most 50 due rows per kind per run", async () => {
     for (let i = 0; i < 55; i++) await insertPending(i, { expires: at(THU, 9), reminder: at(THU, 20), escalation: at(THU, 20) });
     expect((await sweep(at(THU, 9))).counts.expiry).toBe(50);

@@ -300,7 +300,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
     case "approval_reminder":
     case "approval_escalation": {
       const key = job.template === "approval_reminder" ? "email.approvalReminder" : "email.approvalEscalation";
-      const deadline = r.expires_at === null ? "—" : `${fmtDateTime(r.expires_at, env.APP_TIMEZONE, locale)} ${tzLabel(env.APP_TIMEZONE, r.expires_at, locale)}`;
+      const deadline = r.expires_at === null ? t("common.notSet") : `${fmtDateTime(r.expires_at, env.APP_TIMEZONE, locale)} ${tzLabel(env.APP_TIMEZONE, r.expires_at, locale)}`;
       return {
         subject: t(`${key}.subject`, { ref: r.ref, when }),
         ...renderEmail({

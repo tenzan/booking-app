@@ -30,6 +30,7 @@ export async function runSweeps(env: Env, now: number): Promise<SweepResult> {
   await step("expiry", () => expirePending(env, now));
   await step("reminders", () => sendApprovalReminders(env, now));
   await step("escalations", () => sendEscalations(env, now));
+  // A proposal-expiry sweep belongs here, before completion.
   await step("completion", () => completeEnded(env, now));
   if (new Date(now).getUTCMinutes() === 0) await step("cleanup", () => cleanup(env, now));
   return result;
