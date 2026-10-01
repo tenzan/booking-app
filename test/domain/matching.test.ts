@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { solve, spotsFor, assignableFor, component } from "../../src/domain/matching";
+import { solve, spotsFor, assignableFor, component, type Hold } from "../../src/domain/matching";
 const M = 60_000, T = 1_000_000 * M;
 const slot = (startMin: number, eligible: number[]) => ({ start: T + startMin * M, end: T + (startMin + 40) * M, eligible });
 const hold = (id: string, startMin: number, o: Partial<{ fixed: number | null; eligible: number[]; preferred: number | null }>) =>
@@ -45,8 +45,7 @@ describe("solve details", () => {
   it("back-to-back (touching) holds do not conflict", () => {
     expect(solve([hold("a", 0, { fixed: 1 }), hold("b", 40, { fixed: 1 })])).not.toBeNull();
   });
-  it("unsatisfiable pigeonhole terminates (budget-bounded) and returns null", () => {
-    // Unsatisfiable pigeonhole: 12 mutually overlapping holds over 11 staff, forces exhaustive search.
+  it("unsatisfiable pigeonhole (12 mutually overlapping holds, 11 staff) returns null", () => {
     const staff = Array.from({ length: 11 }, (_, i) => i + 1);
     const holds = Array.from({ length: 12 }, (_, i) => hold(`h${i}`, 0, { eligible: staff }));
     expect(solve(holds)).toBeNull();
@@ -77,4 +76,49 @@ describe("component isolation", () => {
 
 describe("assignableFor edge cases", () => {
   it("unknown target id → []", () => expect(assignableFor([hold("a", 0, {})], "nope")).toEqual([]));
+});
+
+describe("backtracking and symmetry", () => {
+  const range = (id: string, startMin: number, endMin: number, eligible: number[]) =>
+    ({ id, start: T + startMin * M, end: T + endMin * M, fixed: null, eligible, preferred: null });
+  const expectValid = (holds: Hold[], sol: Map<string, number>) => {
+    for (const h of holds) expect(h.eligible).toContain(sol.get(h.id));
+    for (const a of holds)
+      for (const b of holds)
+        if (a.id < b.id && a.start < b.end && b.start < a.end) expect(sol.get(a.id)).not.toBe(sol.get(b.id));
+  };
+
+  it("backtracks when a greedy choice dead-ends", () => {
+    // a (eligible 1,2) is placed first and tries 1, which starves d and e (both 1 or 3, overlapping each other).
+    const holds = [range("a", 0, 100, [1, 2]), range("d", 10, 50, [1, 3]), range("e", 20, 60, [1, 3])];
+    const sol = solve(holds);
+    expect(sol).not.toBeNull();
+    expectValid(holds, sol!);
+    expect(sol!.get("a")).toBe(2);
+  });
+
+  const tenTech = (identical: number) => {
+    const others = [1, 3, 4, 5, 6, 7, 8, 9, 10];
+    return [hold("a", 0, { eligible: [1, 2] }), ...Array.from({ length: identical }, (_, i) => hold(`i${i}`, 0, { eligible: others }))];
+  };
+
+  it("identical holds do not exhaust the node budget (solvable schedule is solved)", () => {
+    const holds = tenTech(9);
+    const sol = solve(holds);
+    expect(sol).not.toBeNull();
+    expectValid(holds, sol!);
+    expect(sol!.get("a")).toBe(2);
+  });
+  it("spotsFor counts the remaining spot with many identical holds", () => {
+    expect(spotsFor(tenTech(8), slot(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))).toBe(1);
+  });
+  it("performance guard: 13 identical holds over 12 techs is rejected quickly", () => {
+    const staff = Array.from({ length: 12 }, (_, i) => i + 1);
+    const twelve = Array.from({ length: 12 }, (_, i) => hold(`h${i}`, 0, { eligible: staff }));
+    const started = Date.now();
+    expect(solve(twelve)).not.toBeNull();
+    expect(solve([...twelve, hold("extra", 0, { eligible: staff })])).toBeNull();
+    expect(spotsFor(twelve, slot(0, staff))).toBe(0);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
 });

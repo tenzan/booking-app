@@ -34,24 +34,40 @@ export function solve(holds: Hold[]): Map<string, number> | null {
     assignment.set(h.id, h.fixed);
   }
 
-  const flexible = holds
-    .filter((h) => h.fixed === null)
-    .sort((a, b) => a.eligible.length - b.eligible.length || a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-
-  const candidates = flexible.map((h) => {
-    const rest = [...new Set(h.eligible)].filter((s) => s !== h.preferred).sort((a, b) => a - b);
-    return h.preferred !== null && h.eligible.includes(h.preferred) ? [h.preferred, ...rest] : rest;
-  });
+  // Interchangeable holds (same range, same eligible set, same effective preferred) share a group key
+  // and a candidate order. They are sorted consecutively and may only take strictly increasing
+  // candidate indices, which removes the n! permutations of identical holds without changing feasibility.
+  const info = new Map<Hold, { candidates: number[]; group: string }>();
+  for (const h of holds) {
+    if (h.fixed !== null) continue;
+    const eligible = [...new Set(h.eligible)].sort((a, b) => a - b);
+    const preferred = h.preferred !== null && eligible.includes(h.preferred) ? h.preferred : null;
+    const candidates = preferred === null ? eligible : [preferred, ...eligible.filter((s) => s !== preferred)];
+    info.set(h, { candidates, group: `${h.start}|${h.end}|${eligible.join(",")}|${preferred}` });
+  }
+  const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const flexible = [...info.keys()].sort(
+    (a, b) =>
+      a.eligible.length - b.eligible.length ||
+      a.start - b.start ||
+      cmp(info.get(a)!.group, info.get(b)!.group) ||
+      cmp(a.id, b.id),
+  );
 
   let nodes = 0;
+  const chosen: number[] = [];
   const place = (i: number): boolean => {
     if (i === flexible.length) return true;
     const h = flexible[i]!;
-    for (const staff of candidates[i]!) {
+    const { candidates, group } = info.get(h)!;
+    const first = i > 0 && info.get(flexible[i - 1]!)!.group === group ? chosen[i - 1]! + 1 : 0;
+    for (let c = first; c < candidates.length; c++) {
+      const staff = candidates[c]!;
       if (++nodes > NODE_BUDGET) return false;
       if (placed.some((p) => p.staff === staff && overlaps(p.hold, h))) continue;
       placed.push({ hold: h, staff });
       assignment.set(h.id, staff);
+      chosen[i] = c;
       if (place(i + 1)) return true;
       placed.pop();
       assignment.delete(h.id);
