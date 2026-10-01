@@ -310,6 +310,7 @@ export const en = {
           done: "Approved — {tech} is assigned. The customer has been emailed a confirmation.",
           techUnavailable: "That technician is no longer free for this time. The list is updated — please choose again.",
           customerIneligible: "This customer can no longer book online (the account or contact is inactive). Decline the request instead.",
+          tooLate: "The requested time has already started, so it can't be approved. Decline the request and ask the customer to book a new time.",
         },
         reasons: {
           busy: "Busy — {ref}",

@@ -17,6 +17,14 @@ export function bumpScheduleVersion(db: D1Database): D1PreparedStatement {
   return db.prepare("UPDATE schedule_state SET version = version + 1 WHERE id = 1");
 }
 
+/**
+ * Every capacity writer commits through this: `stmts` run between a guard on the schedule `version` the caller read
+ * (before its schedule data) and a version bump, so concurrent capacity changes serialize through withRetry.
+ */
+export function capacityBatch(db: D1Database, version: number, stmts: D1PreparedStatement[]): Promise<D1Result[]> {
+  return db.batch([scheduleVersionGuard(db, version), ...stmts, bumpScheduleVersion(db)]);
+}
+
 export async function readScheduleVersion(db: D1Database): Promise<number> {
   const v = await db.prepare("SELECT version FROM schedule_state WHERE id = 1").first<number>("version");
   return v ?? 0;

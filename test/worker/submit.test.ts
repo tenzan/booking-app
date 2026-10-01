@@ -118,6 +118,17 @@ describe("POST /api/customer/reservations", () => {
       expect(res.json.error).toBe("limit_reached");
     });
 
+    it("does not count a confirmed appointment that has already ended towards the limit", async () => {
+      await env.DB.prepare(
+        `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, status,
+           idempotency_key, created_at, updated_at)
+         VALUES ('past1', 'R-PAST-0001', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, 'confirmed', 'past-key', 0, 0)`,
+      )
+        .bind(pat.id, at(THU, 7), at(THU, 7, 30))
+        .run();
+      expect((await submit(pat, at(FRI, 10))).status).toBe(201);
+    });
+
     it("lets a concurrent pair for the same account succeed only once", async () => {
       const results = await Promise.all([submit(pat, at(FRI, 10)), submit(pat, at(FRI, 10, 30))]);
       expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
@@ -265,6 +276,28 @@ describe("POST /api/customer/reservations", () => {
     expect(await count("SELECT COUNT(*) AS n FROM tech_blocks")).toBe(16);
     const moved = await env.DB.prepare("SELECT updated_at FROM reservations WHERE id = ?").bind(pId).first<{ updated_at: number }>();
     expect(moved!.updated_at).toBe(at(THU, 8));
+  });
+
+  it("a moved request closed behind our back fails the move assertion and replans without orphan blocks", async () => {
+    await seedWeekly(5, 600, 660, [team.a, team.b]);
+    await env.DB.prepare("INSERT INTO staff_unavailability(staff_id, start_at, end_at) VALUES (?, ?, ?)")
+      .bind(team.b, at(FRI, 10, 45), at(FRI, 11, 15))
+      .run();
+    const first = await submit(pat, at(FRI, 10));
+    const pId = first.json.reservation.id;
+    expect(await provisional(pId)).toBe(team.a);
+    // pat's request is declined by a rival without bumping the schedule version: our plan still wants to move it to b.
+    const w = withBatchHook(async () => {
+      await env.DB.batch([
+        env.DB.prepare("UPDATE reservations SET status = 'declined' WHERE id = ?").bind(pId),
+        env.DB.prepare("DELETE FROM tech_blocks WHERE owner_id = ?").bind(pId),
+      ]);
+    });
+    const res = await submitReservation(w.env, "sam@example.test", body(sam.id, at(FRI, 10, 30)) as SubmitInput);
+    expect(res.created).toBe(true);
+    expect(w.calls.batches).toBe(2);
+    expect(await count("SELECT COUNT(*) AS n FROM tech_blocks WHERE owner_id = ?", pId)).toBe(0);
+    expect(await count("SELECT COUNT(*) AS n FROM tech_blocks")).toBe(8);
   });
 
   describe("conflict handling, forced deterministically", () => {

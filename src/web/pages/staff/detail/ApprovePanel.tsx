@@ -49,6 +49,7 @@ export function ApprovePanel({ r, options, myId, assignMe, onOptions, onDone, on
         if (fresh) onOptions(fresh);
         setProblem({ tone: "warning", text: t("web.staff.detail.approve.techUnavailable") });
       } else if (isApiError(e, 409, "customer_ineligible")) setProblem({ tone: "error", text: t("web.staff.detail.approve.customerIneligible") });
+      else if (isApiError(e, 409, "too_late")) setProblem({ tone: "error", text: t("web.staff.detail.approve.tooLate") });
       else if (!isApiError(e, 401)) setProblem({ tone: isApiError(e, 503) ? "warning" : "error", text: actionErrorText(e), retry: true });
     },
   });

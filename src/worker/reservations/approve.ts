@@ -2,7 +2,7 @@ import { component, solve } from "../../domain/matching";
 import { blockMinutes, occupiedRange } from "../../domain/slots";
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
-import { assertSql, audit, bumpScheduleVersion, scheduleVersionGuard, withRetry } from "../lib/db";
+import { assertSql, audit, capacityBatch, withRetry } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { notifyStaff } from "../repos/staff";
@@ -24,6 +24,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   const current = await getReservation(db, id);
   if (!current) throw new HttpError(404, "not_found");
   if (current.status !== "pending" || current.version !== version) throw new HttpError(409, "stale", { current });
+  if (current.startAt <= clock.now()) throw new HttpError(409, "too_late");
   if (!current.customer.active || !(await db.prepare(ELIGIBLE_SQL).bind(current.customer.id, current.contactEmail).first())) {
     throw new HttpError(409, "customer_ineligible");
   }
@@ -43,8 +44,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   const targetBlocks = blockMinutes(target.start, target.end, NO_BUFFER);
   const staff = await notifyStaff(db);
 
-  const stmts: D1PreparedStatement[] = [
-    scheduleVersionGuard(db, ctx.version),
+  await capacityBatch(db, ctx.version, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND version = ?", id, version),
     assertSql(db, ELIGIBLE_SQL, current.customer.id, current.contactEmail),
     ...moved.map((m) =>
@@ -80,8 +80,6 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
       customerId: current.customer.id,
       details: { assignedStaffId: staffId },
     }),
-    bumpScheduleVersion(db),
-  ];
-  await db.batch(stmts);
+  ]);
   return (await getReservation(db, id))!;
 }

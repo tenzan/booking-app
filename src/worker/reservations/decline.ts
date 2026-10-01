@@ -1,6 +1,6 @@
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
-import { assertSql, audit, bumpScheduleVersion, readScheduleVersion, scheduleVersionGuard, withRetry } from "../lib/db";
+import { assertSql, audit, capacityBatch, readScheduleVersion, withRetry } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { getReservation, type ReservationDTO } from "./queries";
@@ -19,8 +19,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, reason: stri
   if (current.status !== "pending" || current.version !== version) throw new HttpError(409, "stale", { current });
 
   const now = clock.now();
-  await db.batch([
-    scheduleVersionGuard(db, scheduleVersion),
+  await capacityBatch(db, scheduleVersion, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND version = ?", id, version),
     db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
     db
@@ -39,7 +38,6 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, reason: stri
       customerId: current.customer.id,
       details: { reason },
     }),
-    bumpScheduleVersion(db),
   ]);
   return (await getReservation(db, id))!;
 }

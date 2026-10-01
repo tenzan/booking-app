@@ -6,7 +6,7 @@ import { addDays, utcToWall } from "../../domain/time";
 import type { Env } from "../env";
 import { clock } from "../lib/clock";
 import { uuid } from "../lib/crypto";
-import { assertSql, audit, bumpScheduleVersion, scheduleVersionGuard, withRetry } from "../lib/db";
+import { assertSql, audit, capacityBatch, withRetry } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { notifyStaff } from "../repos/staff";
@@ -83,8 +83,9 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
   const now = clock.now();
 
   const active = await db
-    .prepare("SELECT COUNT(*) AS n FROM reservations WHERE customer_id = ? AND status IN ('pending','confirmed')")
-    .bind(input.customerId)
+    // An appointment that has already ended no longer counts, even before it is marked completed.
+    .prepare("SELECT COUNT(*) AS n FROM reservations WHERE customer_id = ? AND status IN ('pending','confirmed') AND end_at > ?")
+    .bind(input.customerId, now)
     .first<{ n: number }>();
   if ((active?.n ?? 0) >= ctx.settings.maxActivePerAccount) throw new HttpError(409, "limit_reached");
 
@@ -110,9 +111,11 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
   const ref = newRef();
   const staff = await notifyStaff(db);
 
-  const stmts: D1PreparedStatement[] = [
-    scheduleVersionGuard(db, ctx.version),
+  await capacityBatch(db, ctx.version, [
     assertSql(db, ELIGIBLE_SQL, input.customerId, email),
+    ...moved.map((m) =>
+      assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND provisional_staff_id IS ?", m.holdId, m.fromStaffId),
+    ),
     ...moved.map((m) => db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(m.holdId)),
     ...moved.map((m) =>
       db.prepare("UPDATE reservations SET provisional_staff_id = ?, updated_at = ? WHERE id = ? AND status = 'pending'").bind(m.staffId, now, m.holdId),
@@ -139,8 +142,6 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
       customerId: input.customerId,
       details: { startAt: slot.startAt, provisionalStaffId: staffId },
     }),
-    bumpScheduleVersion(db),
-  ];
-  await db.batch(stmts);
+  ]);
   return { id, ref, status: "pending", startAt: slot.startAt, endAt: slot.endAt, created: true };
 }

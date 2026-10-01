@@ -170,6 +170,17 @@ describe("with two eligible technicians plus the admin", () => {
     expect([res.status, res.json.error, res.json.details.current.status]).toEqual([409, "stale", "pending"]);
   });
 
+  it("refuses once the appointment time has arrived (too_late) and changes nothing", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    setNow(at(FRI, 10));
+    await expect(approveReservation(env, principal(team.admin, "Ada Admin"), id, team.admin, 1)).rejects.toMatchObject({
+      status: 409,
+      code: "too_late",
+    });
+    expect((await row(id)).status).toBe("pending");
+    expect(await jobs("confirmed")).toBe(0);
+  });
+
   it("refuses when the account was deactivated after the request", async () => {
     const id = await submit(pat, at(FRI, 10));
     await env.DB.prepare("UPDATE customers SET active = 0 WHERE id = ?").bind(pat.id).run();
