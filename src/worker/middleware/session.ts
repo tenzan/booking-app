@@ -53,11 +53,15 @@ export const loadSession: MiddlewareHandler<AppEnv> = async (c, next) => {
 
   const custRaw = getCookie(c, SESSION_COOKIE.customer);
   if (custRaw) {
+    const hash = await sha256Hex(custRaw);
     const row = await db
       .prepare("SELECT email FROM sessions WHERE id_hash = ? AND kind = 'customer' AND revoked_at IS NULL AND expires_at > ?")
-      .bind(await sha256Hex(custRaw), now)
+      .bind(hash, now)
       .first<{ email: string }>();
-    if (row) c.set("customerEmail", row.email);
+    if (row) {
+      c.set("customerEmail", row.email);
+      c.set("sessionHash", hash);
+    }
   }
 
   const staffRaw = getCookie(c, SESSION_COOKIE.staff);
