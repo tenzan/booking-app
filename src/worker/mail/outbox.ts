@@ -18,7 +18,8 @@ export type TemplateName =
   | "reassigned"
   | "expired"
   | "approval_reminder"
-  | "approval_escalation";
+  | "approval_escalation"
+  | "appointment_reminder";
 
 export interface EmailJobRow {
   id: string;

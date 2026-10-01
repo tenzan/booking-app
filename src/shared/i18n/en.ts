@@ -59,6 +59,13 @@ export const en = {
       intro: "Your remote support appointment is confirmed.",
       call: "A technician will telephone you at {phone} at the appointment time. Please have your computer turned on and {tool} ready.",
     },
+    reminder: {
+      subject: "Reminder: remote support on {when} ({ref})",
+      intro: "This is a reminder of your upcoming remote support appointment.",
+      noCancel: "It is now too close to the start to cancel online.",
+      noCancelPhone: "It is now too close to the start to cancel online. To cancel, please call {phone}.",
+      addToCalendar: "Add to calendar",
+    },
     assigned: {
       subject: "{ref} confirmed — assigned to {tech}",
       intro: "{approver} approved this request and assigned {tech}.",
@@ -961,7 +968,6 @@ export const en = {
         reminders: {
           title: "Customer reminders",
           lead: "When customers get a reminder before a confirmed appointment (up to 3).",
-          note: "Reminder emails start with a later update. The times you choose are saved now.",
           listLabel: "Reminder times",
           before: "{duration} before",
           remove: "Remove the reminder {duration} before",

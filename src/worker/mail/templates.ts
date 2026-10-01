@@ -5,6 +5,7 @@ import { safeRedirect } from "../lib/redirect";
 import { getSettings } from "../repos/settings";
 import { fmtDateTime, t, tzLabel } from "../../shared/i18n/i18n";
 import type { Settings } from "../../domain/settings";
+import { MIN } from "../../domain/time";
 import { renderEmail } from "./layout";
 import type { EmailJobRow } from "./outbox";
 
@@ -53,14 +54,22 @@ const VALID_STATUS: Record<string, string[]> = {
   // Reminders are about a decision still open.
   approval_reminder: ["pending"],
   approval_escalation: ["pending"],
+  // A reminder is for the confirmed appointment at the start it was queued for.
+  appointment_reminder: ["confirmed"],
 };
 
 /** Is a job's message still true of the reservation as it is now? `to` is the technician a reassignment notice names. */
-function stillTrue(template: string, status: string, assignedStaffId: number | null, payload: Record<string, unknown>): boolean {
+function stillTrue(
+  template: string,
+  state: { status: string; assigned_staff_id: number | null; start_at: number },
+  payload: Record<string, unknown>,
+): boolean {
   const valid = VALID_STATUS[template];
-  if (!valid || !valid.includes(status)) return false;
+  if (!valid || !valid.includes(state.status)) return false;
+  // A reminder for a start the appointment no longer has (it was moved) would name the wrong time.
+  if (template === "appointment_reminder") return state.start_at === payload.startAt;
   // A reassignment notice is only true while the appointment is still with the technician it names.
-  return template !== "reassigned" || assignedStaffId === payload.to;
+  return template !== "reassigned" || state.assigned_staff_id === payload.to;
 }
 
 /**
@@ -71,10 +80,10 @@ function stillTrue(template: string, status: string, assignedStaffId: number | n
 export async function jobStillValid(env: Env, job: EmailJobRow): Promise<boolean> {
   if (!VALID_STATUS[job.template]) return true;
   if (!job.reservation_id) return false;
-  const r = await env.DB.prepare("SELECT status, assigned_staff_id FROM reservations WHERE id = ?")
+  const r = await env.DB.prepare("SELECT status, assigned_staff_id, start_at FROM reservations WHERE id = ?")
     .bind(job.reservation_id)
-    .first<{ status: string; assigned_staff_id: number | null }>();
-  return r !== null && stillTrue(job.template, r.status, r.assigned_staff_id, parsePayload(job));
+    .first<{ status: string; assigned_staff_id: number | null; start_at: number }>();
+  return r !== null && stillTrue(job.template, r, parsePayload(job));
 }
 
 function loadReservation(env: Env, id: string): Promise<ReservationData | null> {
@@ -156,7 +165,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
   if (!VALID_STATUS[job.template]) throw new Error(`unknown email template: ${job.template}`);
   const r = job.reservation_id ? await loadReservation(env, job.reservation_id) : null;
   const payload = parsePayload(job);
-  if (!r || !stillTrue(job.template, r.status, r.assigned_staff_id, payload)) return "skip";
+  if (!r || !stillTrue(job.template, r, payload)) return "skip";
 
   const locale = env.APP_LOCALE || "en-US";
   const when = `${fmtDateTime(r.start_at, env.APP_TIMEZONE, locale)} ${tzLabel(env.APP_TIMEZONE, r.start_at, locale)}`;
@@ -205,6 +214,31 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           ],
           facts: common,
           actions,
+          footer: customerFooter,
+        }),
+      };
+    }
+    case "appointment_reminder": {
+      const viewUrl = `${env.APP_BASE_URL}/r#t=${await mintAccessToken(env, r)}`;
+      // The same rule the cancel endpoint applies, judged at send time: the customer may no longer be able to cancel online.
+      const canCancel = r.start_at - s.cancelCutoffMin * MIN > clock.now();
+      return {
+        subject: t("email.reminder.subject", { when, ref: r.ref }),
+        ...renderEmail({
+          ...base,
+          banner: { text: t("status.confirmed"), tone: "green" },
+          paragraphs: [
+            t("email.reminder.intro"),
+            t("email.confirmed.call", { phone: r.phone, tool: s.remoteToolName }),
+            ...(s.customerInstructions ? [s.customerInstructions] : []),
+            ...(canCancel ? [] : [t(s.supportPhone ? "email.reminder.noCancelPhone" : "email.reminder.noCancel", { phone: s.supportPhone })]),
+          ],
+          facts: common,
+          actions: [
+            { label: t("common.viewReservation"), url: viewUrl, primary: true },
+            ...(canCancel ? [{ label: t("common.cancelReservation"), url: `${viewUrl}&action=cancel` }] : []),
+            { label: t("email.reminder.addToCalendar"), url: `${viewUrl}&action=ics` },
+          ],
           footer: customerFooter,
         }),
       };

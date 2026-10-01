@@ -5,9 +5,11 @@ import { clock } from "../lib/clock";
 import { assertSql, audit, capacityBatch, withRetry } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
+import { getSettings } from "../repos/settings";
 import { notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
 import { blockInsert, ELIGIBLE_SQL, movedPending, movePendingStatements } from "./holds";
+import { reminderStatements } from "./reminders";
 import { getReservation, techOptions, type ReservationDTO } from "./queries";
 
 /**
@@ -46,6 +48,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   const moved = movedPending(ctx, assignment, id);
   const targetBlocks = rangeBlocks(target.start, target.end);
   const staff = await notifyStaff(db);
+  const settings = await getSettings(db, env);
 
   await capacityBatch(db, ctx.version, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND version = ?", id, version),
@@ -62,6 +65,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
       .bind(staffId, now, actor.id, now, id, version),
     blockInsert(db, staffId, targetBlocks, id),
     enqueueEmail(db, { template: "confirmed", to: current.contactEmail, dedupeKey: `confirmed:${id}:v${newVersion}`, reservationId: id }),
+    ...reminderStatements(db, settings, { id, startAt: current.startAt, contactEmail: current.contactEmail }, now),
     // The approver already knows; everyone else who follows requests is told who got it.
     ...staff
       .filter((s) => s.id !== actor.id)

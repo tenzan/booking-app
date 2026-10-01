@@ -604,16 +604,13 @@ function RemindersCard(p: CardProps) {
     summary: s("reminders.summary"),
     done: s("reminders.done"),
   };
-  const soon = <Soon />;
   return (
     <EditableCard
       {...p}
       id="reminders"
       title={s("reminders.title")}
-      badge={soon}
       lead={s("reminders.lead")}
       spec={spec}
-      note={<CardNote tone="soon">{s("reminders.note")}</CardNote>}
       values={
         <ReadValue
           label={s("reminders.listLabel")}
