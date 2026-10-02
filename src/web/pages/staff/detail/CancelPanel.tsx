@@ -63,7 +63,8 @@ export function CancelPanel({ r, onDone, onStale }: PanelProps) {
           <li>{k("emailCustomer")}</li>
           <li>{k("emailTeam")}</li>
           <li>{k("freesTime")}</li>
-          {r.replacedByStatus === "pending" && r.replacedByRef && <li className="font-medium text-slate-900 dark:text-slate-100">{k("alsoReplacement", { ref: r.replacedByRef })}</li>}
+          {/* Once it has started the change request stands on its own and is left pending (the server decides; this is only the notice). */}
+          {r.replacedByStatus === "pending" && r.replacedByRef && r.startAt > Date.now() && <li className="font-medium text-slate-900 dark:text-slate-100">{k("alsoReplacement", { ref: r.replacedByRef })}</li>}
         </ul>
       </div>
       <Field
