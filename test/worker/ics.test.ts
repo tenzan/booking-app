@@ -310,7 +310,8 @@ describe("GET /api/staff/reservations/:id/ics", () => {
     expect((await staffIcs(pat.cookie, id)).status).toBe(401);
     expect((await staffIcs(adminCookie, "no-such-id")).status).toBe(404);
     const snapshot = async () => ({
-      r: await env.DB.prepare("SELECT * FROM reservations").all(),
+      // Rows only: the result meta carries a timing (duration) that differs between runs.
+      r: (await env.DB.prepare("SELECT * FROM reservations").all()).results,
       a: await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log").first(),
       j: await env.DB.prepare("SELECT COUNT(*) AS n FROM email_jobs").first(),
     });

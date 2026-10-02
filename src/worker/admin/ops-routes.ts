@@ -11,6 +11,7 @@ import {
 } from "../../shared/schemas";
 import type {
   CalendarDTO,
+  CalendarProposalHoldDTO,
   CalendarReservationDTO,
   CalendarSlotDTO,
   EmailJobDTO,
@@ -32,12 +33,31 @@ const CALENDAR_DEFAULT_STATUSES = ["pending", "confirmed"] as const;
 /** Reservations a calendar feed carries at most (42 days of a small team's bookings fit comfortably). */
 const CALENDAR_RESERVATION_CAP = 1000;
 
+/** Open proposals' options starting in [from, to), soonest first; only `staffId`'s when given. */
+async function calendarProposalHolds(db: D1Database, from: number, to: number, staffId: number | undefined): Promise<CalendarProposalHoldDTO[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT r.id AS reservationId, r.ref, p.id AS proposalId, o.id AS optionId, o.start_at AS startAt, o.end_at AS endAt,
+              o.staff_id AS staffId, s.name AS staffName, c.name AS customerName, p.expires_at AS expiresAt
+       FROM proposal_options o
+       JOIN proposals p ON p.id = o.proposal_id
+       JOIN reservations r ON r.id = p.reservation_id
+       JOIN customers c ON c.id = r.customer_id
+       JOIN staff s ON s.id = o.staff_id
+       WHERE p.status = 'open' AND o.start_at >= ? AND o.start_at < ? AND (? IS NULL OR o.staff_id = ?)
+       ORDER BY o.start_at, o.id LIMIT ?`,
+    )
+    .bind(from, to, staffId ?? null, staffId ?? null, CALENDAR_RESERVATION_CAP)
+    .all<CalendarProposalHoldDTO>();
+  return results;
+}
+
 opsRoutes.get("/calendar", requireStaff(), async (c) => {
   const q = calendarQuerySchema.parse(c.req.query());
   if (q.to <= q.from) throw new HttpError(400, "invalid_range");
   if (q.to - q.from > CALENDAR_MAX_DAYS * 24 * 60 * MIN) throw new HttpError(400, "range_too_long");
 
-  const [list, ctx] = await Promise.all([
+  const [list, ctx, proposalHolds] = await Promise.all([
     listReservations(c.env.DB, {
       status: q.status ?? [...CALENDAR_DEFAULT_STATUSES],
       from: q.from,
@@ -46,6 +66,7 @@ opsRoutes.get("/calendar", requireStaff(), async (c) => {
       ...(q.staffId === undefined ? {} : { orProvisionalStaffId: q.staffId }),
     }),
     loadScheduleCtx(c.env, q.from, q.to),
+    calendarProposalHolds(c.env.DB, q.from, q.to, q.staffId),
   ]);
 
   // Provisional is internal: it only shows as a flag, and only on the technician's own view of the calendar.
@@ -82,6 +103,7 @@ opsRoutes.get("/calendar", requireStaff(), async (c) => {
     timezone: c.env.APP_TIMEZONE,
     reservations,
     truncated: list.nextCursor !== null,
+    proposalHolds,
     slots: [...days.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, slots]) => ({ date, slots })),
   };
   return c.json(body);
