@@ -14,3 +14,11 @@ export function isLocalBaseUrl(base: string): boolean {
 export function devMailEnabled(env: Pick<Env, "MAIL_MODE" | "APP_BASE_URL">): boolean {
   return env.MAIL_MODE === "dev" && isLocalBaseUrl(env.APP_BASE_URL);
 }
+
+/**
+ * The dev routes (/api/dev/*): dev mail enabled AND the request itself addressed to a loopback host, so a misconfigured
+ * deployment that somehow passes the env guard still never serves them to the network.
+ */
+export function devRoutesEnabled(env: Pick<Env, "MAIL_MODE" | "APP_BASE_URL">, requestUrl: string): boolean {
+  return devMailEnabled(env) && isLocalBaseUrl(requestUrl);
+}
