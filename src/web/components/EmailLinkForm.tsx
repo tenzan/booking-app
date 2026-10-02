@@ -8,6 +8,28 @@ import { Field, inputClass } from "./Field";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * The last address this device asked a sign-in link for, one per kind (a customer and a staff member may share a
+ * device). Only ever written after a request succeeded, never from a token or a URL; storage may throw or be empty.
+ */
+const rememberKey = (kind: "customer" | "staff") => `signin-email:${kind}`;
+function readRemembered(kind: "customer" | "staff"): string {
+  try {
+    const v = localStorage.getItem(rememberKey(kind));
+    return v !== null && EMAIL_RE.test(v) ? v : "";
+  } catch {
+    return "";
+  }
+}
+function writeRemembered(kind: "customer" | "staff", email: string | null) {
+  try {
+    if (email === null) localStorage.removeItem(rememberKey(kind));
+    else localStorage.setItem(rememberKey(kind), email);
+  } catch {
+    // A convenience only: without storage the field just starts empty.
+  }
+}
+
 interface EmailLinkFormProps {
   kind: "customer" | "staff";
   siteKey: string | null;
@@ -17,15 +39,24 @@ interface EmailLinkFormProps {
   hint?: string;
   submitLabel: string;
   onSent: (email: string) => void;
+  /** Back from "Check your email" to use a different address: start empty and focused instead of with the last one. */
+  startEmpty?: boolean;
 }
 
-/** "Email me a link" form shared by customer and staff sign-in. The server answers the same whether or not the address is known. */
-export function EmailLinkForm({ kind, siteKey, next, label, hint, submitLabel, onSent }: EmailLinkFormProps) {
-  const [email, setEmail] = useState("");
+/**
+ * "Email me a link" form shared by customer and staff sign-in. The server answers the same whether or not the address is
+ * known. The field starts with the address this device last asked a link for, with a way to use another.
+ */
+export function EmailLinkForm({ kind, siteKey, next, label, hint, submitLabel, onSent, startEmpty = false }: EmailLinkFormProps) {
+  const [remembered, setRemembered] = useState(() => (startEmpty ? "" : readRemembered(kind)));
+  const [email, setEmail] = useState(remembered);
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [captcha, setCaptcha] = useState<string | null>(null);
   const [captchaFailed, setCaptchaFailed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (startEmpty) inputRef.current?.focus();
+  }, []);
 
   const request = useMutation({
     mutationFn: (addr: string) =>
@@ -33,8 +64,19 @@ export function EmailLinkForm({ kind, siteKey, next, label, hint, submitLabel, o
         method: "POST",
         body: { email: addr, turnstileToken: captcha ?? undefined, redirectPath: next ?? undefined },
       }),
-    onSuccess: (_, addr) => onSent(addr),
+    onSuccess: (_, addr) => {
+      writeRemembered(kind, addr);
+      onSent(addr);
+    },
   });
+
+  function forget() {
+    writeRemembered(kind, null);
+    setRemembered("");
+    setEmail("");
+    setFieldError(null);
+    inputRef.current?.focus();
+  }
 
   const waitingForCaptcha = siteKey !== null && captcha === null;
 
@@ -83,6 +125,15 @@ export function EmailLinkForm({ kind, siteKey, next, label, hint, submitLabel, o
             />
           )}
         </Field>
+        {remembered !== "" && (
+          <button
+            type="button"
+            onClick={forget}
+            className="-mt-3 inline-flex min-h-11 items-center text-sm font-medium text-blue-700 underline underline-offset-2 hover:text-blue-900 dark:text-blue-300 dark:hover:text-blue-200"
+          >
+            {t("web.start.notYou")}
+          </button>
+        )}
         {siteKey && (
           <Turnstile
             siteKey={siteKey}

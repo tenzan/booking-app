@@ -15,6 +15,12 @@ export default function Start() {
   const [params] = useSearchParams();
   const next = safePath(params.get("next"));
   const [sentTo, setSentTo] = useState<string | null>(null);
+  // "Use a different email" from the sent confirmation: the form then starts empty.
+  const [another, setAnother] = useState(false);
+  const anotherAddress = () => {
+    setSentTo(null);
+    setAnother(true);
+  };
   const paused = me.data?.bookingEnabled === false;
 
   return (
@@ -33,7 +39,7 @@ export default function Start() {
       ) : paused ? (
         <BookingPaused supportPhone={me.data!.supportPhone} />
       ) : sentTo ? (
-        <LinkSent body={tNodes("web.start.sentBody", { email: <EmailStrong email={sentTo} /> })} onReset={() => setSentTo(null)} />
+        <LinkSent body={tNodes("web.start.sentBody", { email: <EmailStrong email={sentTo} /> })} onReset={anotherAddress} />
       ) : (
         <EmailLinkForm
           kind="customer"
@@ -43,6 +49,7 @@ export default function Start() {
           hint={t("web.start.emailHint")}
           submitLabel={t("web.start.submit")}
           onSent={setSentTo}
+          startEmpty={another}
         />
       )}
       {!me.data?.customer && !sentTo && !paused && <HowItWorks />}

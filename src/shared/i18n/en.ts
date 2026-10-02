@@ -265,6 +265,7 @@ export const en = {
       emailHint: "Use the email address your organization registered for remote support.",
       emailInvalid: "Please enter a valid email address.",
       emailPlaceholder: "name@example.com",
+      notYou: "Not you? Use another address",
       submit: "Email me a link",
       sending: "Sending…",
       turnstileWaiting: "Completing a quick security check…",

@@ -166,6 +166,12 @@ function ChooseOther({ id }: { id: string }) {
   const me = useMe();
   const navigate = useNavigate();
   const [sentTo, setSentTo] = useState<string | null>(null);
+  // "Use a different email" from the sent confirmation: the form then starts empty.
+  const [another, setAnother] = useState(false);
+  const anotherAddress = () => {
+    setSentTo(null);
+    setAnother(true);
+  };
   const dest = `/book?replaces=${encodeURIComponent(id)}`;
 
   if (me.isPending) return <Skeleton className="h-14" />;
@@ -176,7 +182,7 @@ function ChooseOther({ id }: { id: string }) {
       </Button>
     );
   }
-  if (sentTo) return <LinkSent body={tNodes("web.customer.proposal.otherSentBody", { email: <EmailStrong email={sentTo} /> })} onReset={() => setSentTo(null)} />;
+  if (sentTo) return <LinkSent body={tNodes("web.customer.proposal.otherSentBody", { email: <EmailStrong email={sentTo} /> })} onReset={anotherAddress} />;
   return (
     <div className="space-y-3">
       <p>{t("web.customer.proposal.otherSignIn")}</p>
@@ -187,6 +193,7 @@ function ChooseOther({ id }: { id: string }) {
         label={t("web.start.emailLabel")}
         submitLabel={t("web.start.submit")}
         onSent={setSentTo}
+        startEmpty={another}
       />
     </div>
   );
