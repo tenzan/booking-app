@@ -11,7 +11,7 @@ import { PageHeading, usePageTitle } from "../../components/Layout";
 import { Skeleton } from "../../components/Spinner";
 import { StatusBadge } from "../../components/StatusBadge";
 import { TimezoneNote } from "../../components/TimezoneNote";
-import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtTime, fmtTimeRange, todayIn } from "../../format";
+import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtStamp, fmtTime, fmtTimeRange, todayIn } from "../../format";
 import { t } from "../../i18n";
 import { BookingCard } from "./BookingCard";
 import { Countdown, useNow } from "./Countdown";
@@ -278,6 +278,14 @@ function WaitingRow({ r, tz, now }: { r: ReservationDTO; tz: string; now: number
           </span>
           <span>· {n === 1 ? t("web.staff.lifecycle.waiting.optionsOne") : t("web.staff.lifecycle.waiting.options", { n })}</span>
         </p>
+        {/* A pending request keeps its own approval deadline (moved out to the proposal's expiry when that was later). */}
+        {r.status === "pending" && r.expiresAt !== null && (
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            {r.expiresAt <= p.expiresAt
+              ? t("web.staff.lifecycle.waiting.lapsesWithProposal")
+              : t("web.staff.lifecycle.waiting.requestDeadline", { when: fmtStamp(r.expiresAt, tz) })}
+          </p>
+        )}
       </div>
       <Chevron />
     </Link>

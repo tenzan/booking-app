@@ -138,7 +138,7 @@ export function ProposalOptions({ r, proposal, tz }: { r: ReservationDTO; propos
                 {o.staffName}
               </span>
               {chosen && (
-                <span className="rounded-full bg-green-600 px-2 py-0.5 text-xs font-semibold text-white dark:bg-green-500 dark:text-green-950">
+                <span className="rounded-full bg-green-700 px-2 py-0.5 text-xs font-semibold text-white dark:bg-green-400 dark:text-green-950">
                   {t("web.staff.lifecycle.propose.chosen")}
                 </span>
               )}

@@ -64,6 +64,8 @@ export interface CustomerProposalDTO {
 /** Times a reservation could be proposed for, with the technicians free to take each. */
 export interface ProposalCandidatesDTO {
   timezone: string;
+  /** The booking window's last date (today + horizon): no candidates after it, so paging can stop there. */
+  lastDate: string;
   days: Array<{ date: string; slots: Array<{ startAt: number; endAt: number; staff: Array<{ id: number; name: string }> }> }>;
 }
 
@@ -312,6 +314,8 @@ export interface CalendarDTO {
   reservations: CalendarReservationDTO[];
   /** Open proposals' options starting in the range (filtered to the technician when the feed is). */
   proposalHolds: CalendarProposalHoldDTO[];
+  /** More proposal holds matched than the feed carries. */
+  holdsTruncated: boolean;
   /** More reservations matched than the feed carries; narrow the range or filters. */
   truncated: boolean;
   slots: Array<{ date: string; slots: CalendarSlotDTO[] }>;
