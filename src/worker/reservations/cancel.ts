@@ -21,12 +21,13 @@ export const customerCancelBody = z.object({ reason: z.string().max(REASON_MAX).
 /**
  * Cancel a pending or confirmed reservation: frees its blocks and any open proposal's option holds, closes the
  * reservation, cancels its obsolete queued mail and tells the customer and the team. A change request still pending on
- * it goes with it in the same batch (closed as 'original_cancelled'), and the one cancellation email covers both. Once the
- * original has started (staff may still cancel it) that request is no longer a change of it but a request of its own
- * (approval treats it so), and is left pending. Staff need a reason and may cancel until the appointment ends; customers may give one and cancel before the start (confirmed appointments only
- * until `cancelCutoffMin` before it). Ownership is the caller's job. An already-cancelled reservation is returned
- * unchanged when asked at its current version or by a retry of the cancelling request itself (same actor, reason and
- * version); any other version that moved (a racing approval, or a second canceller) is 409 stale.
+ * it goes with it in the same batch (closed as 'original_cancelled'), and the one cancellation email covers both. Once
+ * the original has started (staff may still cancel it) that request is no longer a change of it but a request of its
+ * own (approval treats it so), and is left pending. Staff need a reason and may cancel until the appointment ends;
+ * customers may give one and cancel before the start (confirmed appointments only until `cancelCutoffMin` before it).
+ * Ownership is the caller's job. An already-cancelled reservation is returned unchanged when asked at its current
+ * version or by a retry of the cancelling request itself (same actor, reason and version); any other version that moved
+ * (a racing approval, or a second canceller) is 409 stale.
  */
 export async function cancelReservation(
   env: Env,
