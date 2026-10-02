@@ -1,6 +1,7 @@
 import { app } from "./app";
 import { runSweeps } from "./cron";
 import type { Env } from "./env";
+import { handleInbound } from "./mail/inbound";
 import { processOutbox, safeError } from "./mail/outbox";
 
 /** The sweeps, then the outbox (so what they enqueued goes out now); a failure in one never stops the other. */
@@ -15,4 +16,5 @@ export default {
     // The cron's own scheduled time: the minute-0 check for cleanup does not depend on how late the invocation starts.
     ctx.waitUntil(tick(env, controller.scheduledTime));
   },
+  email: (message, env, ctx) => handleInbound(message, env, ctx),
 } satisfies ExportedHandler<Env>;

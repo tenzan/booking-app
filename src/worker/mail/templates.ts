@@ -13,6 +13,8 @@ export interface Rendered {
   subject: string;
   html: string;
   text: string;
+  /** Where a reply to this message goes (set for relayed customer replies). */
+  replyTo?: string;
 }
 
 interface ReservationData {
@@ -199,10 +201,47 @@ async function renderLogin(env: Env, job: EmailJobRow, s: Settings, kind: "custo
   return { subject, ...mail };
 }
 
+/** A customer's emailed reply, relayed to a staff member. Everything from the customer is data: escaped, never rendered. */
+function renderReplyRelay(env: Env, job: EmailJobRow, s: Settings): Rendered {
+  const p = parsePayload(job);
+  const from = typeof p.from === "object" && p.from !== null ? (p.from as { address?: unknown; name?: unknown }) : {};
+  const address = typeof from.address === "string" ? from.address : "";
+  const name = typeof from.name === "string" ? from.name : "";
+  const subject = typeof p.subject === "string" && p.subject !== "" ? p.subject : t("email.replyRelay.noSubject");
+  const excerpt = typeof p.textExcerpt === "string" && p.textExcerpt !== "" ? p.textExcerpt : t("email.replyRelay.noText");
+  const count = typeof p.attachmentsCount === "number" ? p.attachmentsCount : 0;
+  const receivedAt = typeof p.receivedAt === "number" ? p.receivedAt : job.created_at;
+  const locale = env.APP_LOCALE || "en-US";
+  const received = `${fmtDateTime(receivedAt, env.APP_TIMEZONE, locale)} ${tzLabel(env.APP_TIMEZONE, receivedAt, locale)}`;
+  const ref = typeof p.ref === "string" ? p.ref : null;
+  const reservationId = typeof p.reservationId === "string" ? p.reservationId : null;
+  const facts: Array<[string, string]> = [
+    [t("email.replyRelay.from"), name ? `${name} <${address}>` : address],
+    [t("email.replyRelay.received"), received],
+    ...(ref ? [[t("email.replyRelay.reference"), ref] as [string, string]] : []),
+  ];
+  return {
+    subject: t("email.replyRelay.subject", { subject }),
+    replyTo: address || undefined,
+    ...renderEmail({
+      orgName: s.orgName,
+      paragraphs: [t("email.replyRelay.intro")],
+      facts,
+      quote: excerpt,
+      actions: reservationId
+        ? [{ label: t("common.viewReservation"), url: `${env.APP_BASE_URL}/staff/r/${encodeURIComponent(reservationId)}`, primary: true }]
+        : [],
+      after: count > 0 ? [t(count === 1 ? "email.replyRelay.attachmentsOne" : "email.replyRelay.attachmentsOther", { count })] : [],
+      footer: t("email.footer.staff", { org: s.orgName }),
+    }),
+  };
+}
+
 export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | "skip"> {
   const s = await getSettings(env.DB, env);
   if (job.template === "customer_login") return renderLogin(env, job, s, "customer");
   if (job.template === "staff_login") return renderLogin(env, job, s, "staff");
+  if (job.template === "reply_relay") return renderReplyRelay(env, job, s);
 
   if (!VALID_STATUS[job.template]) throw new Error(`unknown email template: ${job.template}`);
   const r = job.reservation_id ? await loadReservation(env, job.reservation_id) : null;

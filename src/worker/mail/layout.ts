@@ -31,6 +31,8 @@ export interface EmailSpec {
   banner?: { text: string; tone: keyof typeof BANNER_COLORS };
   paragraphs: string[];
   facts?: Array<[label: string, value: string]>;
+  /** Third-party text shown as an escaped, preformatted block (never rendered as HTML). */
+  quote?: string;
   actions?: Array<{ label: string; url: string; primary?: boolean }>;
   /** Paragraphs shown after the actions. */
   after?: string[];
@@ -56,6 +58,11 @@ export function renderEmail(spec: EmailSpec): { html: string; text: string } {
       .join("");
     rows.push(`<tr><td style="padding:0 24px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">${facts}</table></td></tr>`);
   }
+  if (spec.quote) {
+    rows.push(
+      `<tr><td style="padding:0 24px 16px"><div style="padding:12px 16px;background:#f3f4f6;border-left:3px solid #9ca3af;border-radius:4px;font-size:15px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${escapeHtml(spec.quote)}</div></td></tr>`,
+    );
+  }
   if (spec.actions?.length) {
     const actions = spec.actions
       .map((a) => `<div style="margin:0 0 12px">${a.primary ? primaryButton(a.label, a.url) : secondaryLink(a.label, a.url)}</div>`)
@@ -80,6 +87,7 @@ export function renderEmail(spec: EmailSpec): { html: string; text: string } {
     spec.banner?.text,
     ...spec.paragraphs,
     spec.facts?.map(([l, v]) => `${l}: ${v}`).join("\n"),
+    spec.quote,
     spec.actions?.map((a) => `${a.label}: ${a.url}`).join("\n"),
     ...(spec.after ?? []),
     `--\n${spec.footer}`,

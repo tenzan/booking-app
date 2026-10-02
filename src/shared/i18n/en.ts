@@ -59,6 +59,17 @@ export const en = {
       replaces: "Replaces",
       supersedes: "Supersedes the change request",
     },
+    replyRelay: {
+      subject: "Customer reply: {subject}",
+      noSubject: "(no subject)",
+      intro: "A customer replied to one of our emails. Reply to this message to answer them directly.",
+      from: "From",
+      received: "Received",
+      reference: "Reservation",
+      noText: "(the reply has no text)",
+      attachmentsOne: "1 attachment was not forwarded — ask the customer to resend if needed.",
+      attachmentsOther: "{count} attachments were not forwarded — ask the customer to resend if needed.",
+    },
     confirmed: {
       subject: "Confirmed: remote support on {when} ({ref})",
       intro: "Your remote support appointment is confirmed.",

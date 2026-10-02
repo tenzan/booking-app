@@ -9,7 +9,6 @@ export interface Env {
   MAIL_FROM: string;
   MAIL_FROM_NAME: string;
   MAIL_MODE: "cloudflare" | "dev";
-  MAIL_REPLY_FORWARD_TO?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
   BOOTSTRAP_ADMIN_EMAILS?: string;

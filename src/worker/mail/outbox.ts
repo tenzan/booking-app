@@ -22,7 +22,8 @@ export type TemplateName =
   | "appointment_reminder"
   | "proposal"
   | "proposal_outcome"
-  | "rescheduled";
+  | "rescheduled"
+  | "reply_relay";
 
 export interface EmailJobRow {
   id: string;

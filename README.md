@@ -119,7 +119,6 @@ Other scripts: `npm test` (Vitest), `npm run test:scripts` (Node tests for the c
 | `ORG_NAME` | config | `Example Support` (initial value; editable in settings afterwards) |
 | `MAIL_FROM` | config | `no-reply@booking.example.com` (also the only allowed sender) |
 | `MAIL_FROM_NAME` | config | `Example Support` |
-| `MAIL_REPLY_FORWARD_TO` | config | Team mailbox for inbound replies (optional) |
 | `MAIL_MODE` | config | `cloudflare` (required for deployments) or `dev` (local mailbox at `/dev/mail`, localhost only) |
 | `APP_TIMEZONE` | config | `UTC` by default; any IANA timezone, for example `Asia/Tokyo` |
 | `APP_LOCALE` | config | `en` |

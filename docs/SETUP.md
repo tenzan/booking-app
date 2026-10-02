@@ -14,7 +14,6 @@ Create a dedicated token for this app: **Cloudflare dashboard → My Profile →
 | Account | D1 | Edit | Create the database, apply migrations |
 | Account | Turnstile | Edit | Create the bot-protection widget |
 | Account | Email Sending (may be labelled "Email Service") | Edit | Onboard the app hostname for sending |
-| Account | Email Routing Addresses | Edit | Verify the address customer replies are forwarded to |
 | Account | Account Settings | Read | Wrangler account lookups |
 | Account | Workers Tail | Read | Live logs (optional) |
 | Zone | Zone | Read | Look up the zone |
@@ -27,7 +26,7 @@ Create a dedicated token for this app: **Cloudflare dashboard → My Profile →
 - **Zone Resources:** *Specific zone* → the zone that will host the app hostname.
 - **Client IP filtering:** leave off if you deploy from CI (GitHub Actions IPs change).
 
-If you prefer not to grant the two email permissions, you can instead onboard the app hostname for Email Sending and Email Routing by hand in the dashboard (Email section) before the first deploy.
+If you prefer not to grant the email permissions, you can instead onboard the app hostname for Email Sending and Email Routing by hand in the dashboard (Email section) before the first deploy.
 
 > **Mail on your apex domain is not touched.** Sending and inbound routing are configured on the app hostname (e.g. `booking.example.com`) only. Never run the zone-level Email Routing wizard on the apex of a domain whose mail is hosted elsewhere — it proposes replacing the apex MX/SPF records.
 
@@ -46,7 +45,6 @@ Every deployment-specific value is an environment variable. Nothing organisation
 | `MAIL_MODE` | config | `cloudflare` | Must be `cloudflare` in production (`dev` writes to a local mailbox) |
 | `MAIL_FROM` | config | `no-reply@booking.example.com` | Must be on the onboarded app hostname |
 | `MAIL_FROM_NAME` | config | `Example Support` | Display name |
-| `MAIL_REPLY_FORWARD_TO` | config | `support-team@example.com` | Where customer replies are forwarded (optional) |
 | `BOOTSTRAP_ADMIN_EMAILS` | secret (runtime) | `admin@example.com` | First administrator(s); inert once an admin exists |
 | `WORKER_NAME` | config | `remote-support-booking` | Optional |
 | `D1_DATABASE_NAME` | config | `remote-support-booking` | Optional |
@@ -78,6 +76,15 @@ doppler run -- npm run deploy
 `npm run deploy` renders the production `wrangler.jsonc` (refusing dev mail mode and placeholder values), builds the app, applies D1 migrations to the remote database, deploys the Worker to `APP_DOMAIN` as a custom domain (Cloudflare creates the DNS record and certificate; the `*.workers.dev` URL is disabled), and finally pushes the runtime secrets (`TURNSTILE_SECRET_KEY`, `BOOTSTRAP_ADMIN_EMAILS`) with `wrangler secret bulk`.
 
 **Email sending:** in the Cloudflare dashboard, open **Email Service → Sending → Add domain** and add your app hostname (e.g. `booking.example.com`). The records it creates live on that hostname and its own bounce subdomain; nothing on your apex domain changes. Until this is done, emails stay in the outbox and are retried; failed ones can be retried from the staff area.
+
+**Receiving replies:** customers can answer the app's emails; the Worker relays each reply to every active team member who receives new-request emails (Team → "New-request emails"), with Reply-To set to the customer so staff simply reply. In the Cloudflare dashboard:
+
+1. Open **Email → Email Routing** for the zone and enable it **for the app hostname only** (e.g. `booking.example.com`, added as a subdomain), not for the apex.
+2. Add a routing rule for the sender address (`MAIL_FROM`, e.g. `no-reply@booking.example.com`), or a catch-all for that hostname, with the action **Send to a Worker** and this Worker as the destination.
+
+The Worker accepts mail only for addresses at `MAIL_FROM`'s domain, rejects messages over 1 MB, silently drops automatic mail (auto-replies, bounces, mailing-list and bulk mail, `no-reply`/`mailer-daemon` senders, anything from `MAIL_FROM` itself) and accepts at most 20 messages an hour per sender. It never replies to the sender and never forwards attachments (the staff email says how many there were). If the reply mentions a reservation reference (`R-XXXX-XXXX`), the staff email links to that reservation. Until a rule is in place, replies to the app's emails bounce or go nowhere.
+
+> **Do not run the Email Routing wizard on the apex.** For a domain whose mail is hosted elsewhere, the zone-level wizard proposes replacing the apex MX and SPF records and would break that mail. Only the app hostname is configured here.
 
 **First administrator:** open `https://APP_DOMAIN/staff/login` and request a link with an address listed in `BOOTSTRAP_ADMIN_EMAILS`.
 
