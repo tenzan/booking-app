@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type FormEvent, type ReactNode, type Ref } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiFetch, isApiError } from "../api";
 import { t } from "../i18n";
@@ -53,6 +53,7 @@ export function EmailLinkForm({ kind, siteKey, next, label, hint, submitLabel, o
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [captcha, setCaptcha] = useState<string | null>(null);
   const [captchaFailed, setCaptchaFailed] = useState(false);
+  const widget = useRef<TurnstileHandle>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (startEmpty) inputRef.current?.focus();
@@ -68,6 +69,12 @@ export function EmailLinkForm({ kind, siteKey, next, label, hint, submitLabel, o
       writeRemembered(kind, addr);
       onSent(addr);
     },
+    // Whatever the outcome (sent, 4xx including 429, network error), the server has seen the token and may have spent it:
+    // never send it again. The button waits for the fresh one the widget issues after the reset.
+    onSettled: () => {
+      setCaptcha(null);
+      widget.current?.reset();
+    },
   });
 
   function forget() {
@@ -82,6 +89,8 @@ export function EmailLinkForm({ kind, siteKey, next, label, hint, submitLabel, o
 
   function submit(e: FormEvent) {
     e.preventDefault();
+    // Never send a request without a fresh token (or while one is in flight, which would resend the spent one).
+    if (request.isPending || waitingForCaptcha) return;
     const addr = email.trim();
     if (!EMAIL_RE.test(addr)) {
       setFieldError(t("web.start.emailInvalid"));
@@ -137,7 +146,11 @@ export function EmailLinkForm({ kind, siteKey, next, label, hint, submitLabel, o
         {siteKey && (
           <Turnstile
             siteKey={siteKey}
-            onToken={(tok) => setCaptcha(tok)}
+            ref={widget}
+            onToken={(tok) => {
+              setCaptcha(tok);
+              if (tok !== null) setCaptchaFailed(false);
+            }}
             onError={() => {
               setCaptcha(null);
               setCaptchaFailed(true);
@@ -190,42 +203,86 @@ declare global {
   interface Window {
     turnstile?: {
       render(el: HTMLElement, opts: Record<string, unknown>): string;
+      reset(id: string): void;
       remove(id: string): void;
     };
   }
 }
 
-let turnstileScript: Promise<void> | null = null;
+/** How long the script may take to load before the widget is given up on (a hang fires neither load nor error). */
+const TURNSTILE_LOAD_TIMEOUT_MS = 10_000;
+
+let turnstileScript: { promise: Promise<void>; abandon: () => void } | null = null;
 
 /** Loads Cloudflare Turnstile once, only when the server says it is configured. */
-function loadTurnstile(): Promise<void> {
-  turnstileScript ??= new Promise<void>((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
-    s.async = true;
-    s.onload = () => resolve();
-    s.onerror = () => {
-      turnstileScript = null;
+function loadTurnstile(): { promise: Promise<void>; abandon: () => void } {
+  if (turnstileScript) return turnstileScript;
+  const s = document.createElement("script");
+  const entry = {
+    promise: new Promise<void>((resolve, reject) => {
+      s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => {
+        entry.abandon();
+        reject(new Error("turnstile_load_failed"));
+      };
+    }),
+    // Forget a script that failed or hung so the next mount starts a fresh load instead of waiting on this one forever.
+    abandon: () => {
+      if (turnstileScript === entry) turnstileScript = null;
       s.remove();
-      reject(new Error("turnstile_load_failed"));
-    };
-    document.head.appendChild(s);
-  });
-  return turnstileScript;
+    },
+  };
+  turnstileScript = entry;
+  document.head.appendChild(s);
+  return entry;
 }
 
-function Turnstile({ siteKey, onToken, onError }: { siteKey: string; onToken: (token: string | null) => void; onError: () => void }) {
+/** Lets the form ask for a new token once the current one has been sent (a token is single use). */
+interface TurnstileHandle {
+  reset(): void;
+}
+
+function Turnstile({
+  siteKey,
+  ref,
+  onToken,
+  onError,
+}: {
+  siteKey: string;
+  ref: Ref<TurnstileHandle>;
+  onToken: (token: string | null) => void;
+  onError: () => void;
+}) {
   const el = useRef<HTMLDivElement>(null);
+  const widgetId = useRef<string | null>(null);
   const handlers = useRef({ onToken, onError });
   handlers.current = { onToken, onError };
+  useImperativeHandle(ref, () => ({
+    reset() {
+      if (widgetId.current && window.turnstile) window.turnstile.reset(widgetId.current);
+    },
+  }));
 
   useEffect(() => {
-    let id: string | null = null;
     let cancelled = false;
-    loadTurnstile()
+    const script = loadTurnstile();
+    const fail = () => {
+      cancelled = true;
+      handlers.current.onError();
+    };
+    // A script that hangs fires neither load nor error: give up after a while and drop it so a retry can load afresh.
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      script.abandon();
+      fail();
+    }, TURNSTILE_LOAD_TIMEOUT_MS);
+    script.promise
       .then(() => {
+        clearTimeout(timer);
         if (cancelled || !el.current || !window.turnstile) return;
-        id = window.turnstile.render(el.current, {
+        widgetId.current = window.turnstile.render(el.current, {
           sitekey: siteKey,
           theme: "auto",
           size: "flexible",
@@ -234,10 +291,15 @@ function Turnstile({ siteKey, onToken, onError }: { siteKey: string; onToken: (t
           "error-callback": () => handlers.current.onError(),
         });
       })
-      .catch(() => !cancelled && handlers.current.onError());
+      .catch(() => {
+        clearTimeout(timer);
+        if (!cancelled) fail();
+      });
     return () => {
       cancelled = true;
-      if (id && window.turnstile) window.turnstile.remove(id);
+      clearTimeout(timer);
+      if (widgetId.current && window.turnstile) window.turnstile.remove(widgetId.current);
+      widgetId.current = null;
     };
   }, [siteKey]);
 
