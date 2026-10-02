@@ -261,11 +261,17 @@ export default function ReservationDetail() {
 }
 
 /**
- * Close reasons the system sets when another reservation takes over (not typed by anyone, so never quoted): an original
- * whose change request was approved, or a change request a newer one replaced.
+ * Close reasons the system sets (not typed by anyone, so never quoted): an original whose change request was approved,
+ * a change request a newer one replaced, or a change request cancelled together with its original.
  */
-const codedReason = (r: ReservationDTO): "rescheduled" | "superseded" | null =>
-  r.closeReason === "rescheduled" && r.replacedById !== null ? "rescheduled" : r.closeReason === "superseded" && r.replacesId !== null ? "superseded" : null;
+const codedReason = (r: ReservationDTO): "rescheduled" | "superseded" | "original_cancelled" | null =>
+  r.closeReason === "rescheduled" && r.replacedById !== null
+    ? "rescheduled"
+    : r.closeReason === "superseded" && r.replacesId !== null
+      ? "superseded"
+      : r.closeReason === "original_cancelled" && r.replacesId !== null
+        ? "original_cancelled"
+        : null;
 
 /** Who cancelled it and when: a team member, the customer, or the customer's approved change request. */
 function cancelledLine(r: ReservationDTO, tz: string): string {
@@ -274,6 +280,7 @@ function cancelledLine(r: ReservationDTO, tz: string): string {
   const coded = codedReason(r);
   if (coded === "rescheduled") return r.replacedByRef ? b("cancelledRescheduled", { when, ref: r.replacedByRef }) : b("cancelledRescheduledNoRef", { when });
   if (coded === "superseded") return b("cancelledSuperseded", { when });
+  if (coded === "original_cancelled") return b("cancelledWithOriginal", { when, ref: r.replacesRef ?? "—" });
   if (r.closedByKind === "customer") return b("cancelledByCustomer", { name: r.closedBy ?? "—", when });
   if (r.closedByKind === "staff") return b("cancelledByStaff", { name: r.closedBy ?? "—", when });
   return t("web.staff.detail.banner.cancelled", { when });

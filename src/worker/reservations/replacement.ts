@@ -52,13 +52,21 @@ export function releasedHolds(ctx: ScheduleCtx, r: ReservationDTO, original: Act
 /**
  * Close a reservation another one takes over, inside the batch that does it: assert it is as read, release its hold and
  * open proposal, cancel it with `reason` and cancel its obsolete queued mail. No cancellation emails: the batch that
- * replaces it tells the customer and the team. Used when a replacement is confirmed ('rescheduled': the original) and
- * when a newer change request supersedes a pending one ('superseded').
+ * closes it tells the customer and the team. Used when a replacement is confirmed ('rescheduled': the original, with
+ * `replacementId`), when a newer change request supersedes a pending one ('superseded', with `replacementId`), and when
+ * an original is cancelled with its pending change request ('original_cancelled': the request, with `originalId`).
  */
 export function cancelReplacedStatements(
   db: D1Database,
   target: { id: string; status: "pending" | "confirmed"; version: number },
-  o: { by: { kind: "staff" | "customer"; id: string }; reason: "rescheduled" | "superseded"; replacementId: string; customerId: number; now: number },
+  o: {
+    by: { kind: "staff" | "customer"; id: string };
+    reason: "rescheduled" | "superseded" | "original_cancelled";
+    replacementId?: string;
+    originalId?: string;
+    customerId: number;
+    now: number;
+  },
 ): D1PreparedStatement[] {
   return [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = ? AND version = ?", target.id, target.status, target.version),
@@ -77,7 +85,12 @@ export function cancelReplacedStatements(
       action: "reservation.cancelled",
       reservationId: target.id,
       customerId: o.customerId,
-      details: { reason: o.reason, from: target.status, replacedBy: o.replacementId },
+      details: {
+        reason: o.reason,
+        from: target.status,
+        ...(o.replacementId !== undefined ? { replacedBy: o.replacementId } : {}),
+        ...(o.originalId !== undefined ? { original: o.originalId } : {}),
+      },
     }),
   ];
 }

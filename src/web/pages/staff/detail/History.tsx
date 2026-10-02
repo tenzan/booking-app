@@ -12,12 +12,16 @@ const actionLabel = (action: string): string => {
 };
 
 /**
- * A cancellation's reason as typed, or the words for one the system set when another reservation replaced it
- * (`details.replacedBy`: reason "rescheduled" or "superseded").
+ * A cancellation's reason as typed, or the words for one the system set: when another reservation replaced it
+ * (`details.replacedBy`: reason "rescheduled" or "superseded"), or when it was a change request closed with its original
+ * (`details.original`: reason "original_cancelled").
  */
 export function auditReasonText(action: string, details: unknown, reason: string): string {
-  const replaced = typeof details === "object" && details !== null && typeof (details as { replacedBy?: unknown }).replacedBy === "string";
-  return action === "reservation.cancelled" && replaced && (reason === "rescheduled" || reason === "superseded") ? t(`web.staff.lifecycle.reasons.${reason}`) : reason;
+  if (action !== "reservation.cancelled" || typeof details !== "object" || details === null) return reason;
+  const d = details as { replacedBy?: unknown; original?: unknown };
+  const coded =
+    (typeof d.replacedBy === "string" && (reason === "rescheduled" || reason === "superseded")) || (typeof d.original === "string" && reason === "original_cancelled");
+  return coded ? t(`web.staff.lifecycle.reasons.${reason}`) : reason;
 }
 
 /** The reservation's audit trail, oldest first. */

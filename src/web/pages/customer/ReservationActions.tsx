@@ -139,12 +139,15 @@ export function CancelControl({ r, tz, transport, supportPhone, cutoffMin, autoO
   };
   const cancelled = (text: string) => (announceCancelled ? announceCancelled(text) : show({ tone: "success", body: text }));
 
+  // A change request still waiting on this reservation is cancelled with it (the server does both in one step).
+  const pendingChange = isActive(r, now) ? r.replacedByRef : null;
+
   const cancel = useMutation({
     mutationFn: () => transport.cancel({ reason: reason.trim() || undefined, version: r.version }),
     onSuccess: (next) => {
       setOpen(false);
       onChanged(next);
-      cancelled(t("web.customer.cancel.done"));
+      cancelled(pendingChange ? t("web.customer.cancel.doneWithReplacement", { ref: pendingChange }) : t("web.customer.cancel.done"));
       onSettled?.();
     },
     onError: (e) => {
@@ -215,6 +218,7 @@ export function CancelControl({ r, tz, transport, supportPhone, cutoffMin, autoO
                 {t(r.status === "confirmed" ? "web.customer.cancel.bodyConfirmed" : "web.customer.cancel.bodyPending", { when: fmtWhenTz(r.startAt, r.endAt, tz) })}
               </p>
               <p className="font-mono text-sm text-slate-600 dark:text-slate-400">{r.ref}</p>
+              {pendingChange && <p className="pt-2 font-medium">{t("web.customer.cancel.alsoReplacement", { ref: pendingChange })}</p>}
             </div>
             <Field
               id={`${titleId}-reason`}

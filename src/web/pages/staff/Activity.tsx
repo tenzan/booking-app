@@ -296,6 +296,8 @@ function describe(e: AuditEntryDTO, tz: string, names: Map<number, string>): { k
       // Closed because another reservation took over (the customer's change request).
       if (str(d.replacedBy) && d.reason === "rescheduled") return { key: "reservation_cancelledRescheduled", params: { ref: refLink(e) } };
       if (str(d.replacedBy) && d.reason === "superseded") return { key: "reservation_cancelledSuperseded", params: { ref: refLink(e) } };
+      // A pending change request closed with the reservation it asked to change.
+      if (str(d.original) && d.reason === "original_cancelled") return { key: "reservation_cancelledWithOriginal", params: { ref: refLink(e) } };
       return { key: "reservation_cancelled", params: { ref: refLink(e) } };
     case "reservation.expired":
       // `silent`: the news was stale when the sweep got to it (the time had passed, or a day late), so nobody was emailed.

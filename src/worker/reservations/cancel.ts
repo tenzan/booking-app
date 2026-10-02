@@ -8,6 +8,7 @@ import { enqueueEmail } from "../mail/outbox";
 import { getSettings } from "../repos/settings";
 import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
 import { cancelObsoleteMail, releaseHoldStatements } from "./holds";
+import { cancelReplacedStatements } from "./replacement";
 import { customerView, getReservation, type CustomerReservationDTO, type ReservationDTO } from "./queries";
 
 export type CancelActor = { kind: "staff"; staff: StaffPrincipal } | { kind: "customer"; email: string };
@@ -19,7 +20,8 @@ export const customerCancelBody = z.object({ reason: z.string().max(REASON_MAX).
 
 /**
  * Cancel a pending or confirmed reservation: frees its blocks and any open proposal's option holds, closes the
- * reservation, cancels its obsolete queued mail and tells the customer and the team. Staff need a reason and may
+ * reservation, cancels its obsolete queued mail and tells the customer and the team. A change request still pending on
+ * it goes with it in the same batch (closed as 'original_cancelled'), and the one cancellation email covers both. Staff need a reason and may
  * cancel until the appointment ends; customers may give one and cancel before the start (confirmed appointments only
  * until `cancelCutoffMin` before it). Ownership is the caller's job. An already-cancelled reservation is returned
  * unchanged when asked at its current version or by a retry of the cancelling request itself (same actor, reason and
@@ -78,9 +80,17 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
   // A staff actor already knows.
   const involved = current.assignedStaff ? await activeStaffByIds(db, [current.assignedStaff.id]) : [];
   const team = noticeRecipients(await notifyStaff(db), involved, actor.kind === "staff" ? actor.staff.id : undefined);
+  // The customer's change request for it, if one is waiting: nothing would be left for it to change.
+  const replacement = await db
+    .prepare("SELECT id, ref, version FROM reservations WHERE replaces_id = ? AND status = 'pending'")
+    .bind(id)
+    .first<{ id: string; ref: string; version: number }>();
+  const mailPayload = replacement ? { alsoCancelledRef: replacement.ref } : {};
 
   await capacityBatch(db, scheduleVersion, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = ? AND version = ?", id, current.status, version),
+    // No change request other than the one read (a racing one is caught here and the retry takes it along).
+    assertSql(db, "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM reservations WHERE replaces_id = ? AND status = 'pending' AND id IS NOT ?)", id, replacement?.id ?? null),
     ...releaseHoldStatements(db, id, now),
     db
       .prepare(
@@ -90,9 +100,28 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
       )
       .bind(now, actor.kind, closedBy, reason, now, id, current.status, version),
     cancelObsoleteMail(db, id),
-    enqueueEmail(db, { template: "cancelled", to: current.contactEmail, dedupeKey: `cancelled:${id}`, reservationId: id, payload: { audience: "customer" } }),
+    ...(replacement
+      ? cancelReplacedStatements(
+          db,
+          { id: replacement.id, status: "pending", version: replacement.version },
+          { by: { kind: actor.kind, id: closedBy }, reason: "original_cancelled", originalId: id, customerId: current.customer.id, now },
+        )
+      : []),
+    enqueueEmail(db, {
+      template: "cancelled",
+      to: current.contactEmail,
+      dedupeKey: `cancelled:${id}`,
+      reservationId: id,
+      payload: { audience: "customer", ...mailPayload },
+    }),
     ...team.map((s) =>
-      enqueueEmail(db, { template: "cancelled", to: s.email, dedupeKey: `cancelled-team:${id}:${s.id}`, reservationId: id, payload: { audience: "team" } }),
+      enqueueEmail(db, {
+        template: "cancelled",
+        to: s.email,
+        dedupeKey: `cancelled-team:${id}:${s.id}`,
+        reservationId: id,
+        payload: { audience: "team", ...mailPayload },
+      }),
     ),
     audit(db, {
       actorKind: actor.kind,

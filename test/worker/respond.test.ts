@@ -563,12 +563,13 @@ describe("choosing another time: replacement requests", () => {
       await approve(id, team.a);
       const ref = (await row(id)).ref as string;
       const replacement = await submit(pat, at(FRI, 11), { replacesId: id });
-      await api("POST", `/api/customer/reservations/${id}/cancel`, { cookie: pat.cookie, body: { version: 2 } });
       await env.DB.prepare("DELETE FROM email_jobs").run();
       await env.DB.prepare("DELETE FROM dev_mailbox").run();
 
+      // The original has started: it is left as it is.
+      setNow(at(FRI, 10, 5));
       await approve(replacement, team.b);
-      expect((await row(id)).close_reason).toBeNull();
+      expect(await row(id)).toMatchObject({ status: "confirmed", close_reason: null });
       expect((await jobs("confirmed")).map((j) => j.to_email)).toEqual(["pat@example.test"]);
       expect(await jobs("rescheduled")).toEqual([]);
       expect((await auditOf("reservation.approved")).details).toEqual({ assignedStaffId: team.b, replacesId: id, originalCancelled: false });
@@ -576,7 +577,7 @@ describe("choosing another time: replacement requests", () => {
       expect((await mailsTo("tech-c@example.test"))[0]!.text).toContain(`${ref}, which was left as it is`);
     });
 
-    it("an original cancelled while the approval is in flight: the retry approves the replacement normally", async () => {
+    it("an original cancelled while the approval is in flight takes its change request with it: the approval is stale", async () => {
       const id = await submit(pat, at(FRI, 10));
       await approve(id, team.a);
       const replacement = await submit(pat, at(FRI, 11), { replacesId: id });
@@ -584,11 +585,10 @@ describe("choosing another time: replacement requests", () => {
       const w = withBatchHook(async () => {
         await cancelReservation(env, { kind: "customer", email: "pat@example.test" }, id, { version: 2 });
       });
-      const r = await approveReservation(w.env, admin(), replacement, team.b, 1);
-      expect(w.calls.batches).toBe(2);
-      expect(r.status).toBe("confirmed");
+      await expect(approveReservation(w.env, admin(), replacement, team.b, 1)).rejects.toMatchObject({ status: 409, code: "stale" });
       expect(await row(id)).toMatchObject({ status: "cancelled", closed_by_kind: "customer" });
-      expect((await jobs("confirmed")).map((j) => j.to_email)).toEqual(["pat@example.test"]);
+      expect(await row(replacement)).toMatchObject({ status: "cancelled", close_reason: "original_cancelled" });
+      expect(await jobs("confirmed")).toEqual([]);
       expect((await jobs("cancelled")).map((j) => j.to_email)).toContain("pat@example.test");
     });
 
@@ -619,7 +619,7 @@ describe("choosing another time: replacement requests", () => {
   it("an expired replacement whose original is gone does not claim the original stays", async () => {
     const id = await submit(pat, at(FRI, 10));
     const replacement = await submit(pat, at(FRI, 11), { replacesId: id });
-    await cancelReservation(env, { kind: "customer", email: "pat@example.test" }, id, { version: 1 });
+    expect((await api("POST", `/api/staff/reservations/${id}/decline`, { cookie: adminCookie, body: { reason: "Fully booked", version: 1 } })).status).toBe(200);
     await processOutbox(env, 50);
     await env.DB.prepare("DELETE FROM dev_mailbox").run();
     setNow(at(THU, 17));
@@ -629,6 +629,108 @@ describe("choosing another time: replacement requests", () => {
     const mine = await mailsTo("pat@example.test");
     expect(mine).toHaveLength(1);
     expect(mine[0]!.text).not.toContain("stays as it is");
+  });
+});
+
+describe("an original with a pending change request", () => {
+  const cancelledJobs = async () =>
+    (await env.DB.prepare("SELECT to_email, reservation_id, payload FROM email_jobs WHERE template = 'cancelled' ORDER BY to_email").all<{ to_email: string; reservation_id: string; payload: string }>())
+      .results;
+
+  it("the customer cancelling the original cancels the change request in the same batch, with one email covering both", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await approve(id, team.a);
+    const ref = (await row(id)).ref as string;
+    const replacement = await submit(pat, at(FRI, 11), { replacesId: id });
+    const rRef = (await row(replacement)).ref as string;
+    expect(await blocksOf(replacement)).not.toEqual([]);
+    await env.DB.prepare("DELETE FROM dev_mailbox").run();
+    await env.DB.prepare("UPDATE email_jobs SET status = 'queued' WHERE reservation_id = ?").bind(replacement).run();
+
+    const w = withBatchHook(async () => {});
+    const c = await cancelReservation(w.env, { kind: "customer", email: "pat@example.test" }, id, { version: 2 });
+    expect(w.calls.batches).toBe(1);
+    expect(c.status).toBe("cancelled");
+    expect(await row(replacement)).toMatchObject({
+      status: "cancelled",
+      close_reason: "original_cancelled",
+      closed_by_kind: "customer",
+      closed_by: "pat@example.test",
+      provisional_staff_id: null,
+      version: 2,
+    });
+    expect(await blocksOf(replacement)).toEqual([]);
+    expect(await blocksOf(id)).toEqual([]);
+    // The change request's own queued mail is obsolete; it gets no cancellation email of its own.
+    expect(await count("SELECT COUNT(*) AS n FROM email_jobs WHERE reservation_id = ? AND status = 'queued'", replacement)).toBe(0);
+    const cancelled = await cancelledJobs();
+    expect(cancelled.every((j) => j.reservation_id === id)).toBe(true);
+    expect(cancelled.filter((j) => j.to_email === "pat@example.test")).toHaveLength(1);
+    expect(cancelled.every((j) => JSON.parse(j.payload).alsoCancelledRef === rRef)).toBe(true);
+    const a = await env.DB.prepare("SELECT * FROM audit_log WHERE action = 'reservation.cancelled' AND reservation_id = ?").bind(replacement).first<any>();
+    expect(a).toMatchObject({ actor_kind: "customer", actor: "pat@example.test" });
+    expect(JSON.parse(a.details)).toEqual({ reason: "original_cancelled", from: "pending", original: id });
+
+    await processOutbox(env, 50);
+    const mine = await mailsTo("pat@example.test");
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.subject).toContain(ref);
+    expect(mine[0]!.text).toContain(`Your change request ${rRef} has been cancelled too.`);
+    const teamMail = (await mailsTo("admin@example.test")).find((m) => m.subject.startsWith(`${ref} cancelled`))!;
+    expect(teamMail.text).toContain(`Its pending change request ${rRef} was cancelled with it.`);
+
+    // The customer's views: the original no longer points at a change, the request says why it closed.
+    const views = (await api("GET", "/api/customer/reservations", { cookie: pat.cookie })).json.reservations as any[];
+    expect(views.find((v) => v.id === id)).toMatchObject({ status: "cancelled", replacedByRef: null });
+    expect(views.find((v) => v.id === replacement)).toMatchObject({ status: "cancelled", closeReason: "original_cancelled" });
+  });
+
+  it("staff cancelling a pending original do the same, and a retry of that cancel is unchanged", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    const replacement = await submit(pat, at(FRI, 12), { replacesId: id });
+    const rRef = (await row(replacement)).ref as string;
+    await env.DB.prepare("DELETE FROM email_jobs").run();
+    const res = await api("POST", `/api/staff/reservations/${id}/cancel`, { cookie: adminCookie, body: { reason: "Solved by phone", version: 1 } });
+    expect([res.status, res.json.error]).toEqual([200, undefined]);
+    expect(await row(replacement)).toMatchObject({ status: "cancelled", close_reason: "original_cancelled", closed_by_kind: "staff", closed_by: String(team.admin) });
+    expect(await count("SELECT COUNT(*) AS n FROM tech_blocks")).toBe(0);
+    const jobsNow = await cancelledJobs();
+    expect(jobsNow.every((j) => j.reservation_id === id)).toBe(true);
+    expect(jobsNow.filter((j) => j.to_email === "pat@example.test").map((j) => JSON.parse(j.payload))).toEqual([{ audience: "customer", alsoCancelledRef: rRef }]);
+    const again = await api("POST", `/api/staff/reservations/${id}/cancel`, { cookie: adminCookie, body: { reason: "Solved by phone", version: 1 } });
+    expect(again.status).toBe(200);
+    expect(await count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'cancelled'")).toBe(jobsNow.length);
+  });
+
+  it("a change request made while the cancel is in flight is caught: the retry cancels it too", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await approve(id, team.a);
+    let replacement = "";
+    const w = withBatchHook(async () => {
+      if (replacement === "") replacement = await submit(pat, at(FRI, 11), { replacesId: id });
+    });
+    await cancelReservation(w.env, { kind: "customer", email: "pat@example.test" }, id, { version: 2 });
+    expect(w.calls.batches).toBe(2);
+    expect(await row(replacement)).toMatchObject({ status: "cancelled", close_reason: "original_cancelled" });
+  });
+
+  it("a pending original expiring leaves the change request pending; its email offers no rebooking while that request waits", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    const ref = (await row(id)).ref as string;
+    const replacement = await submit(pat, at(FRI, 12), { replacesId: id });
+    const rRef = (await row(replacement)).ref as string;
+    await env.DB.prepare("UPDATE reservations SET expires_at = ? WHERE id = ?").bind(at(THU, 9), id).run();
+    await env.DB.prepare("DELETE FROM dev_mailbox").run();
+    setNow(at(THU, 9));
+    expect((await runSweeps(env, at(THU, 9))).counts.expiry).toBe(1);
+    expect((await row(id)).status).toBe("expired");
+    expect((await row(replacement)).status).toBe("pending");
+    await processOutbox(env, 50);
+    const mine = (await mailsTo("pat@example.test")).find((m) => m.subject.includes(`in time (${ref})`))!;
+    expect(mine.text).toContain(`Your change request ${rRef} is still waiting for our team's review`);
+    expect(mine.text).not.toContain("Choose another time");
+    const teamMail = (await mailsTo("admin@example.test")).find((m) => m.subject.startsWith(`${ref} expired`))!;
+    expect(teamMail.text).toContain(`Its change request ${rRef} is still pending`);
   });
 });
 

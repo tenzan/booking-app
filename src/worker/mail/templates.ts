@@ -45,6 +45,8 @@ interface ReservationData {
   expires_at: number | null;
   /** The reservation's open proposal, if any. */
   open_proposal_id: string | null;
+  /** A change request still pending on this reservation (its reference), if any. */
+  pending_replacement_ref: string | null;
 }
 
 /** Selects a reservation's open proposal id as `open_proposal_id` (reservation aliased `r`). */
@@ -113,7 +115,8 @@ function loadReservation(env: Env, id: string): Promise<ReservationData | null> 
             c.name AS account_name, c.customer_number,
             approver.name AS approver_name, tech.name AS tech_name, r.assigned_staff_id, r.closed_by_kind,
             COALESCE(closer.name, r.closed_by) AS closer_name, r.replaces_id, orig.ref AS replaces_ref, orig.status AS replaces_status,
-            r.expires_at, ${OPEN_PROPOSAL_SQL}
+            r.expires_at, ${OPEN_PROPOSAL_SQL},
+            (SELECT n.ref FROM reservations n WHERE n.replaces_id = r.id AND n.status = 'pending') AS pending_replacement_ref
      FROM reservations r
      JOIN customers c ON c.id = r.customer_id
      LEFT JOIN reservations orig ON orig.id = r.replaces_id
@@ -373,7 +376,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           ...renderEmail({
             ...base,
             banner: { text: t("status.cancelled"), tone: "red" },
-            paragraphs: [by],
+            paragraphs: [by, ...(typeof payload.alsoCancelledRef === "string" ? [t("email.cancelledTeam.alsoReplacement", { ref: payload.alsoCancelledRef })] : [])],
             facts: [
               [t("common.account"), r.account_name],
               [t("common.customerNumber"), r.customer_number],
@@ -397,6 +400,8 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           paragraphs: [
             t(byTeam ? "email.cancelled.byTeam" : "email.cancelled.byYou"),
             ...(byTeam && r.close_reason ? [t("email.cancelled.reason", { reason: r.close_reason })] : []),
+            // The change request the same cancellation closed (it gets no email of its own).
+            ...(typeof payload.alsoCancelledRef === "string" ? [t("email.cancelled.alsoReplacement", { ref: payload.alsoCancelledRef })] : []),
           ],
           facts: common,
           actions: [{ label: t("email.cancelled.rebook"), url: env.APP_BASE_URL, primary: true }],
@@ -411,7 +416,11 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           ...renderEmail({
             ...base,
             banner: { text: t("status.expired"), tone: "red" },
-            paragraphs: [t("email.expiredTeam.intro"), ...(originalActive ? [t("email.expiredTeam.replacement", { ref: r.replaces_ref! })] : [])],
+            paragraphs: [
+              t("email.expiredTeam.intro"),
+              ...(originalActive ? [t("email.expiredTeam.replacement", { ref: r.replaces_ref! })] : []),
+              ...(r.pending_replacement_ref ? [t("email.expiredTeam.replacementPending", { ref: r.pending_replacement_ref })] : []),
+            ],
             facts: [
               [t("common.account"), r.account_name],
               [t("common.customerNumber"), r.customer_number],
@@ -429,10 +438,15 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
         ...renderEmail({
           ...base,
           banner: { text: t("status.expired"), tone: "red" },
-          // A request to change an existing reservation: that reservation itself is untouched.
-          paragraphs: [t("email.expired.intro"), ...originalStays],
+          // A request to change an existing reservation: that reservation itself is untouched. A request with a change
+          // request of its own still waiting: no rebooking offered, that request is what happens next.
+          paragraphs: [
+            t("email.expired.intro"),
+            ...originalStays,
+            ...(r.pending_replacement_ref ? [t("email.expired.replacementPending", { ref: r.pending_replacement_ref })] : []),
+          ],
           facts: common,
-          actions: [{ label: t("email.expired.rebook"), url: env.APP_BASE_URL, primary: true }],
+          actions: r.pending_replacement_ref ? [] : [{ label: t("email.expired.rebook"), url: env.APP_BASE_URL, primary: true }],
           footer: customerFooter,
         }),
       };
