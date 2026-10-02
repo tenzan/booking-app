@@ -6,6 +6,21 @@ export interface Mailer {
   send(m: { to: string; subject: string; html: string; text: string; replyTo?: string; headers?: Record<string, string> }): Promise<void>;
 }
 
+const HEADER_CODE = /\bE_HEADERS?_[A-Z_]+\b/;
+const HEADER_WORD = /\bheaders?\b/i;
+const REFUSAL = /\b(not allowed|disallowed|not permitted|not supported|unsupported|invalid|forbidden|refused|rejected)\b/i;
+
+/**
+ * True when the send binding refused the message because of its custom headers (an `E_HEADER_*` code, or a message that
+ * names a header and a refusal) — the only failure that is safe to answer with an immediate second send.
+ */
+export function isHeaderRejection(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const code = (e as { code?: unknown }).code;
+  if (typeof code === "string" && HEADER_CODE.test(code)) return true;
+  return HEADER_CODE.test(e.message) || (HEADER_WORD.test(e.message) && REFUSAL.test(e.message));
+}
+
 export function mailerFor(env: Env): Mailer {
   if (env.MAIL_MODE === "dev") {
     if (!devMailEnabled(env)) {
@@ -37,9 +52,11 @@ export function mailerFor(env: Env): Mailer {
         return;
       }
       // Custom headers are a nicety (they keep auto-responders quiet); if the binding refuses them, send without.
+      // Any other failure is thrown: the message may have gone out, and the outbox's backoff decides what happens next.
       try {
         await env.EMAIL.send({ ...msg, headers: m.headers });
       } catch (e) {
+        if (!isHeaderRejection(e)) throw e;
         console.warn("mail headers refused, sending without them:", e instanceof Error ? e.message.slice(0, 200) : "error");
         await env.EMAIL.send(msg);
       }

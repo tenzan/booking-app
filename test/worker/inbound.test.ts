@@ -578,6 +578,45 @@ describe("relay sends", () => {
   });
 });
 
+describe("failures", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("a database failure while handling is logged once and swallowed, never thrown to the runtime", async () => {
+    await seedTeam();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const batch = vi.spyOn(env.DB, "batch").mockRejectedValue(new Error("D1_ERROR: database unavailable, see https://db.example.test/x#t=secret"));
+    const spies = await deliver(mail());
+    batch.mockRestore();
+    expect(spies.setReject).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledOnce();
+    expect(error.mock.calls[0]![0]).toBe("inbound mail failed");
+    expect(String(error.mock.calls[0]![1])).toContain("D1_ERROR: database unavailable");
+    expect(String(error.mock.calls[0]![1])).not.toContain("#t=");
+    error.mockRestore();
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("a failure before the rate limit (the first query) is swallowed too", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const prepare = vi.spyOn(env.DB, "prepare").mockImplementation(() => {
+      throw new Error("D1_ERROR: no such table");
+    });
+    const spies = await deliver(mail());
+    prepare.mockRestore();
+    expect(spies.setReject).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledOnce();
+    error.mockRestore();
+  });
+
+  it("deliberate rejections are unchanged", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const spies = await deliver(mail(), { to: "someone@elsewhere.example" });
+    expect(spies.setReject).toHaveBeenCalledWith("Unknown recipient");
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
+});
+
 describe("rate limit", () => {
   it("relays at most 20 messages an hour per sender (case-insensitive), then drops silently", async () => {
     await seedTeam();
