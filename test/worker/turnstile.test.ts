@@ -85,4 +85,32 @@ describe("verifyTurnstile", () => {
     expect(await verifyTurnstile(cfg, TOKEN, null)).toBe(false);
     expectOneSafeWarning(warn);
   });
+
+  it.each([["invalid-input-secret"], ["missing-input-secret"], ["invalid-input-response", "invalid-input-secret"]])(
+    "logs the error codes once when siteverify rejects the secret (%s): operator misconfiguration",
+    async (...codes) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ success: false, "error-codes": codes }));
+      expect(await verifyTurnstile(cfg, TOKEN, null)).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledOnce();
+      expect(error.mock.calls[0]).toEqual(["turnstile verify rejected", codes.join(",")]);
+      const line = error.mock.calls[0]!.map(String).join(" ");
+      expect(line).not.toContain(TOKEN);
+      expect(line).not.toContain(SECRET);
+    },
+  );
+
+  it.each([[[]], [["invalid-input-response"]], [["timeout-or-duplicate"]], [["bad-request", "internal-error"]]])(
+    "stays quiet on a rejection that is the visitor's, not the configuration's (%j)",
+    async (codes) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ success: false, "error-codes": codes }));
+      expect(await verifyTurnstile(cfg, TOKEN, null)).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+    },
+  );
 });
