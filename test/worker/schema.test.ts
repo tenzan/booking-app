@@ -38,3 +38,15 @@ it("has the lookup indexes the outbox, sessions and token cleanup rely on", asyn
   expect(cols("auth_tokens")).toContain("expires_at");
   expect(cols("access_tokens")).toContain("expires_at");
 });
+
+it("finds a contact's recent bookings by email through an index (0006)", async () => {
+  const index = await env.DB.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_res_contact_email_created'").first<{ sql: string }>();
+  expect(index?.sql.replace(/\s+/g, " ")).toMatch(/ON reservations\(contact_email, created_at DESC\)/);
+  // The query lastPhonesForEmail runs (repos/customers.ts) searches that index instead of scanning reservations.
+  const { results } = await env.DB.prepare(
+    "EXPLAIN QUERY PLAN SELECT customer_id AS customerId, phone FROM reservations WHERE contact_email = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+  )
+    .bind("pat@example.test", 20)
+    .all<{ detail: string }>();
+  expect(results.map((r) => r.detail).join("\n")).toMatch(/SEARCH reservations USING INDEX idx_res_contact_email_created \(contact_email=\?\)/);
+});
