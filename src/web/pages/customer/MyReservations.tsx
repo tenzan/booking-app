@@ -9,12 +9,16 @@ import { EmptyState } from "../../components/EmptyState";
 import { PageHeading, usePageTitle } from "../../components/Layout";
 import { Skeleton } from "../../components/Spinner";
 import { StatusBadge } from "../../components/StatusBadge";
+import { focusWhenReady } from "../../components/Dialog";
 import { Toast, useToast } from "../../components/Toast";
 import { TimezoneNote } from "../../components/TimezoneNote";
 import { fmtWhen } from "../../format";
 import { fmtDateTime, LOCALE, t } from "../../i18n";
 import { ProposalSection } from "./ProposalResponse";
 import { CalendarButton, CancelControl, closeReasonText, ReplacementNote, sessionTransport } from "./ReservationActions";
+
+/** The id of a reservation card's expand/collapse button. */
+const toggleId = (id: string) => `reservation-toggle-${id}`;
 
 const isUpcoming = (r: CustomerReservationDTO, now: number) => (r.status === "pending" || r.status === "confirmed") && r.endAt > now;
 
@@ -24,6 +28,11 @@ export default function MyReservations() {
   const tz = me.data?.timezone ?? "UTC";
   const supportPhone = me.data?.supportPhone || null;
   const { toast, show, dismiss } = useToast();
+  const announce = (text: string, id: string) => {
+    show(text);
+    // The card re-renders in the other group: keep the keyboard where the customer was.
+    focusWhenReady(() => document.getElementById(toggleId(id)));
+  };
   const q = useQuery({
     queryKey: queryKeys.reservations,
     queryFn: () => apiFetch<{ reservations: CustomerReservationDTO[] }>("/api/customer/reservations").then((r) => r.reservations),
@@ -61,8 +70,8 @@ export default function MyReservations() {
       ) : (
         <>
           <TimezoneNote tz={tz} />
-          {upcoming.length > 0 && <Group title={t("web.my.upcoming")} items={upcoming} ctx={{ tz, supportPhone, announce: show }} />}
-          {past.length > 0 && <Group title={t("web.my.past")} items={past} ctx={{ tz, supportPhone, announce: show }} />}
+          {upcoming.length > 0 && <Group title={t("web.my.upcoming")} items={upcoming} ctx={{ tz, supportPhone, announce }} />}
+          {past.length > 0 && <Group title={t("web.my.past")} items={past} ctx={{ tz, supportPhone, announce }} />}
         </>
       )}
       <Toast toast={toast} onDismiss={dismiss} />
@@ -73,8 +82,8 @@ export default function MyReservations() {
 interface CardCtx {
   tz: string;
   supportPhone: string | null;
-  /** Page-level announcement (a cancelled card moves to the other group). */
-  announce: (text: string) => void;
+  /** Page-level announcement, then focus on the card's toggle (a cancelled card moves to the other group). */
+  announce: (text: string, id: string) => void;
 }
 
 function Group({ title, items, ctx }: { title: string; items: CustomerReservationDTO[]; ctx: CardCtx }) {
@@ -119,6 +128,7 @@ function ReservationCard({ r, ctx }: { r: CustomerReservationDTO; ctx: CardCtx }
     <Card flush>
       <button
         type="button"
+        id={toggleId(r.id)}
         aria-expanded={open}
         aria-controls={panelId}
         onClick={() => setOpen((o) => !o)}
@@ -168,7 +178,7 @@ function ReservationCard({ r, ctx }: { r: CustomerReservationDTO; ctx: CardCtx }
         {(r.status === "pending" || r.status === "confirmed") && (
           <div className="space-y-4">
             <CalendarButton r={r} transport={transport} />
-            <CancelControl r={r} tz={tz} transport={transport} supportPhone={supportPhone} onChanged={onChanged} announceCancelled={ctx.announce} />
+            <CancelControl r={r} tz={tz} transport={transport} supportPhone={supportPhone} onChanged={onChanged} announceCancelled={(text) => ctx.announce(text, r.id)} />
           </div>
         )}
       </div>
@@ -185,7 +195,8 @@ export function ReservationDetails({ r }: { r: CustomerReservationDTO }) {
     [t("common.callbackPhone"), r.phone],
     [t("common.issue"), r.issue],
   ];
-  if (r.closeReason) rows.push([t("web.my.reason"), closeReasonText(r.closeReason)]);
+  // "Moved to a new time" is already said by the replacement note above the details.
+  if (r.closeReason && !(r.closeReason === "rescheduled" && r.replacedByRef)) rows.push([t("web.my.reason"), closeReasonText(r.closeReason)]);
   return (
     <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-[minmax(8rem,auto)_1fr]">
       {rows.map(([k, v]) => (

@@ -12,12 +12,18 @@ import ReservationAccess from "./pages/customer/ReservationAccess";
 import Start from "./pages/customer/Start";
 import Success from "./pages/customer/Success";
 import Verify from "./pages/customer/Verify";
-import DevMail from "./pages/DevMail";
-import Dashboard from "./pages/staff/Dashboard";
-import StaffLogin from "./pages/staff/Login";
-import ReservationDetail from "./pages/staff/ReservationDetail";
-import StaffLayout, { RequireStaff } from "./pages/staff/StaffLayout";
-import StaffVerify from "./pages/staff/Verify";
+
+/**
+ * The staff area (and the dev mailbox) load on first visit: customers, who mostly arrive from an email link, never
+ * download them.
+ */
+const StaffLayout = lazy(() => import("./pages/staff/StaffLayout"));
+const RequireStaff = lazy(() => import("./pages/staff/StaffLayout").then((m) => ({ default: m.RequireStaff })));
+const StaffLogin = lazy(() => import("./pages/staff/Login"));
+const StaffVerify = lazy(() => import("./pages/staff/Verify"));
+const Dashboard = lazy(() => import("./pages/staff/Dashboard"));
+const ReservationDetail = lazy(() => import("./pages/staff/ReservationDetail"));
+const DevMail = lazy(() => import("./pages/DevMail"));
 
 /** Staff-only and heavier (it carries the shared Zod validators): loaded on first visit, not with the customer pages. */
 const SchedulePage = lazy(() => import("./pages/staff/schedule/SchedulePage"));
@@ -63,12 +69,12 @@ export default function App() {
           <Route path="my" element={<RequireCustomer><MyReservations /></RequireCustomer>} />
           <Route path="*" element={<NotFound />} />
         </Route>
-        <Route path="staff" element={<StaffLayout />}>
-          <Route path="login" element={<StaffLogin />} />
-          <Route path="auth/verify" element={<StaffVerify />} />
-          <Route element={<RequireStaff />}>
-            <Route index element={<Dashboard />} />
-            <Route path="r/:id" element={<ReservationDetail />} />
+        <Route path="staff" element={<Lazy><StaffLayout /></Lazy>}>
+          <Route path="login" element={<Lazy><StaffLogin /></Lazy>} />
+          <Route path="auth/verify" element={<Lazy><StaffVerify /></Lazy>} />
+          <Route element={<Lazy><RequireStaff /></Lazy>}>
+            <Route index element={<Lazy><Dashboard /></Lazy>} />
+            <Route path="r/:id" element={<Lazy><ReservationDetail /></Lazy>} />
             <Route path="calendar" element={<Lazy><CalendarPage /></Lazy>} />
             <Route path="activity" element={<Lazy><ActivityPage /></Lazy>} />
             <Route path="emails" element={<Lazy><EmailsPage /></Lazy>} />
@@ -82,7 +88,7 @@ export default function App() {
             <Route path="*" element={<NotFound home="/staff" homeLabel={t("web.staff.nav.dashboard")} />} />
           </Route>
         </Route>
-        <Route path="dev/mail" element={<DevMail />} />
+        <Route path="dev/mail" element={<Lazy><DevMail /></Lazy>} />
       </Routes>
     </BrowserRouter>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
 import type { CustomerReservationDTO } from "../../../shared/types";
 import { isApiError } from "../../api";
@@ -6,9 +6,9 @@ import { Button } from "../../components/Button";
 import { Notice } from "../../components/Card";
 import { focusWhenReady } from "../../components/Dialog";
 import { TimezoneNote } from "../../components/TimezoneNote";
-import { dateIn, fmtShortDate, fmtStamp, fmtTimeRange } from "../../format";
+import { dateIn, fmtShortDate, fmtStamp, fmtTimeRange, fmtTz, fmtWhenTz } from "../../format";
 import { t } from "../../i18n";
-import { errorText, fmtWhenTz, PhoneLink, type ReservationTransport } from "./ReservationActions";
+import { ErrorText, PhoneLink, type ReservationTransport } from "./ReservationActions";
 
 /** What an email link asked for: `option=<id>` preselects a time, `choice=keep|other` opens that step. */
 export interface ProposalIntent {
@@ -111,6 +111,7 @@ function Respond({ r, tz, transport, supportPhone, intent = {}, onChanged, other
   const confirmed = r.status === "confirmed";
   const headingId = useId();
   const stepHeading = useRef<HTMLHeadingElement>(null);
+  const radios = useRef<Array<HTMLButtonElement | null>>([]);
   const [problem, setProblem] = useState<Message | null>(null);
   const [stage, setStage] = useState<Stage>(() => {
     if (intent.option && p.options.some((o) => o.id === intent.option)) return { kind: "option", optionId: intent.option };
@@ -118,17 +119,19 @@ function Respond({ r, tz, transport, supportPhone, intent = {}, onChanged, other
     if (intent.choice === "other") return { kind: "other" };
     return { kind: "choose" };
   });
+  // The email offered a time this proposal no longer has (a newer proposal replaced the one the email was about).
+  const [staleOption] = useState(() => Boolean(intent.option) && !p.options.some((o) => o.id === intent.option));
 
   // Opened from an email button: land on the step it asked for (still only a question until confirmed).
   useEffect(() => {
     if (stage.kind !== "choose") focusWhenReady(() => stepHeading.current);
   }, []);
 
-  const go = (s: Stage) => {
+  const go = (s: Stage, focusStep = true) => {
     setStage(s);
     setProblem(null);
     if (s.kind === "choose") onIntentDone?.();
-    else focusWhenReady(() => stepHeading.current);
+    else if (focusStep) focusWhenReady(() => stepHeading.current);
   };
 
   /** A failed answer: the proposal closed meanwhile (the page then shows what happened), or something to retry. */
@@ -156,7 +159,7 @@ function Respond({ r, tz, transport, supportPhone, intent = {}, onChanged, other
       });
       return;
     }
-    setProblem({ tone: "error", body: errorText(e) });
+    setProblem({ tone: "error", body: <ErrorText e={e} /> });
   };
 
   const accept = useMutation({
@@ -181,6 +184,49 @@ function Respond({ r, tz, transport, supportPhone, intent = {}, onChanged, other
 
   const chosen = stage.kind === "option" ? p.options.find((o) => o.id === stage.optionId) : undefined;
   const when = (start: number, end: number) => fmtWhenTz(start, end, tz);
+
+  // One radio group: each offered time, "keep my original time" (confirmed only) and "choose another time".
+  const choices: Stage[] = [
+    ...p.options.map((o): Stage => ({ kind: "option", optionId: o.id })),
+    ...(confirmed ? [{ kind: "keep" } as Stage] : []),
+    { kind: "other" },
+  ];
+  const isChecked = (c: Stage) => c.kind === stage.kind && (c.kind !== "option" || (stage.kind === "option" && c.optionId === stage.optionId));
+  const checkedIndex = choices.findIndex(isChecked);
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
+    const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 0;
+    if (step === 0) return;
+    e.preventDefault();
+    const n = (i + step + choices.length) % choices.length;
+    go(choices[n]!, false);
+    radios.current[n]?.focus();
+  };
+  const radio = (c: Stage, i: number, className: string, content: ReactNode) => {
+    const checked = isChecked(c);
+    return (
+      <button
+        ref={(el) => {
+          radios.current[i] = el;
+        }}
+        key={i}
+        type="button"
+        role="radio"
+        aria-checked={checked}
+        tabIndex={checked || (checkedIndex === -1 && i === 0) ? 0 : -1}
+        disabled={busy}
+        onClick={() => go(c)}
+        onKeyDown={(e) => onKeyDown(e, i)}
+        className={`${className} rounded-xl border-2 transition-colors disabled:opacity-60 ${
+          checked
+            ? "border-blue-700 bg-blue-700 text-white dark:border-blue-400 dark:bg-blue-600"
+            : "border-slate-300 bg-white text-slate-900 hover:border-blue-600 hover:bg-blue-50 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:border-blue-400 dark:hover:bg-slate-800"
+        }`}
+      >
+        {content}
+      </button>
+    );
+  };
+  const chain = r.status === "pending" && r.replacesRef !== null;
 
   return (
     <section aria-labelledby={headingId} className="space-y-5 rounded-2xl border border-amber-300 bg-amber-50 p-5 text-amber-950 sm:p-6 dark:border-amber-400/40 dark:bg-amber-400/10 dark:text-amber-50">
@@ -212,39 +258,34 @@ function Respond({ r, tz, transport, supportPhone, intent = {}, onChanged, other
           <p>{t("email.proposal.choose")}</p>
           <TimezoneNote tz={tz} atMs={p.options[0]?.startAt} inheritColor className="mt-1 opacity-90" />
         </div>
-        <ul className="grid gap-3 sm:grid-cols-2">
-          {p.options.map((o) => {
-            const selected = stage.kind === "option" && stage.optionId === o.id;
-            return (
-              <li key={o.id}>
-                <button
-                  type="button"
-                  aria-pressed={selected}
-                  disabled={busy}
-                  onClick={() => go({ kind: "option", optionId: o.id })}
-                  className={`flex min-h-16 w-full flex-col items-start justify-center rounded-xl border-2 px-4 py-3 text-left transition-colors disabled:opacity-60 ${
-                    selected
-                      ? "border-blue-700 bg-blue-700 text-white dark:border-blue-400 dark:bg-blue-600"
-                      : "border-slate-300 bg-white text-slate-900 hover:border-blue-600 hover:bg-blue-50 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:border-blue-400 dark:hover:bg-slate-800"
-                  }`}
-                >
+        {staleOption && <Notice tone="info">{t("web.customer.proposal.staleOption")}</Notice>}
+        <div role="radiogroup" aria-label={t("web.customer.proposal.choicesLabel")} className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {p.options.map((o, i) =>
+              radio(
+                choices[i]!,
+                i,
+                "flex min-h-16 w-full flex-col items-start justify-center px-4 py-3 text-left",
+                <>
                   <span className="text-lg font-semibold">{fmtShortDate(dateIn(o.startAt, tz))}</span>
-                  <span className="tabular-nums">{fmtTimeRange(o.startAt, o.endAt, tz)}</span>
-                  {selected && <span className="text-sm font-medium">{t("web.customer.proposal.selected")}</span>}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-        <div className="flex flex-col gap-3 sm:flex-row">
-          {confirmed && (
-            <Button variant="secondary" size="lg" className="sm:flex-1" disabled={busy} aria-pressed={stage.kind === "keep"} onClick={() => go({ kind: "keep" })}>
-              {t("email.proposal.keep")}
-            </Button>
-          )}
-          <Button variant="secondary" size="lg" className="sm:flex-1" disabled={busy} aria-pressed={stage.kind === "other"} onClick={() => go({ kind: "other" })}>
-            {t("email.proposal.other")}
-          </Button>
+                  <span className="tabular-nums">
+                    {fmtTimeRange(o.startAt, o.endAt, tz)}
+                    <span className="sr-only"> {fmtTz(tz, o.startAt)}</span>
+                  </span>
+                </>,
+              ),
+            )}
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            {choices.slice(p.options.length).map((c, j) =>
+              radio(
+                c,
+                p.options.length + j,
+                "inline-flex min-h-13 items-center justify-center px-6 text-lg font-semibold sm:flex-1",
+                t(c.kind === "keep" ? "email.proposal.keep" : "email.proposal.other"),
+              ),
+            )}
+          </div>
         </div>
       </div>
 
@@ -259,7 +300,13 @@ function Respond({ r, tz, transport, supportPhone, intent = {}, onChanged, other
           </h3>
           {stage.kind === "option" && chosen && <p>{t("web.customer.proposal.confirmOptionBody", { when: when(chosen.startAt, chosen.endAt) })}</p>}
           {stage.kind === "keep" && <p>{t("web.customer.proposal.confirmKeepBody", { when: when(r.startAt, r.endAt) })}</p>}
-          {stage.kind === "other" && <p>{t(confirmed ? "web.customer.proposal.otherBodyConfirmed" : "web.customer.proposal.otherBodyPending")}</p>}
+          {stage.kind === "other" && (
+            <p>
+              {chain
+                ? t("web.customer.proposal.otherBodyChain", { pending: r.ref, ref: r.replacesRef! })
+                : t(confirmed ? "web.customer.proposal.otherBodyConfirmed" : "web.customer.proposal.otherBodyPending")}
+            </p>
+          )}
           <div aria-live="polite">{problem && <Notice tone={problem.tone}>{problem.body}</Notice>}</div>
           {stage.kind === "other" && other}
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">

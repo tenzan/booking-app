@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
 import type { CustomerReservationDTO } from "../../../shared/types";
@@ -86,6 +86,7 @@ function AccessBody({ view, token }: { view: AccessView; token: string }) {
     setIntent({});
   };
 
+  const manageId = useId();
   const manageable = (r.status === "confirmed" || r.status === "pending") && r.endAt > Date.now();
 
   const onChanged = (next: CustomerReservationDTO) => {
@@ -124,13 +125,13 @@ function AccessBody({ view, token }: { view: AccessView; token: string }) {
         <ReservationDetails r={r} />
       </Card>
       {/* Stays mounted once the reservation is closed, so the outcome of a cancel is still said here. */}
-      <section aria-labelledby={manageable ? "manage-heading" : undefined} className="space-y-4">
+      <section aria-labelledby={manageable ? manageId : undefined} className="space-y-4">
         {manageable && (
-          <h2 id="manage-heading" className="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">
+          <h2 id={manageId} className="text-sm font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">
             {t("web.customer.actionsHeading")}
           </h2>
         )}
-        <CalendarButton r={r} transport={transport} prompt={intent.action === "ics"} />
+        <CalendarButton r={r} transport={transport} prompt={intent.action === "ics"} onDone={intent.action === "ics" ? done : undefined} />
         <CancelControl
           r={r}
           tz={tz}

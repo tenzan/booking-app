@@ -11,13 +11,13 @@ import { fmtWhen } from "../../format";
 import { t } from "../../i18n";
 
 export default function Success() {
-  usePageTitle(t("web.success.heading"));
   const { id = "" } = useParams();
   const tz = useMe().data?.timezone ?? "UTC";
   const q = useQuery({
     queryKey: queryKeys.reservation(id),
     queryFn: () => apiFetch<{ reservation: CustomerReservationDTO }>(`/api/customer/reservations/${encodeURIComponent(id)}`).then((r) => r.reservation),
   });
+  usePageTitle(t(q.data?.replacesRef ? "web.customer.replace.successHeading" : "web.success.heading"));
 
   if (q.isPending) return <Skeleton className="h-96" />;
   if (q.isError) {

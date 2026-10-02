@@ -398,6 +398,8 @@ export const en = {
     /** Customer reservation lifecycle: cancel, proposal answers, choosing another time, calendar files. */
     customer: {
       actionsHeading: "Manage this reservation",
+      linkExpired: "This link has expired.",
+      linkExpiredSignIn: "Sign in to see your reservations",
       cancel: {
         button: "Cancel reservation",
         heading: "Cancel this reservation?",
@@ -431,7 +433,8 @@ export const en = {
         heading: "Please choose a new time",
         messageLabel: "Message from our team",
         optionsLabel: "Times we can offer",
-        selected: "Selected",
+        choicesLabel: "Your answer",
+        staleOption: "The time in your email is no longer offered. Please choose from the times below.",
         confirmOptionHeading: "Confirm your new time",
         confirmOptionBody: "Your appointment will be confirmed for {when}. The other times we offered will be released.",
         confirmOption: "Confirm this time",
@@ -443,6 +446,7 @@ export const en = {
         otherHeading: "Choose another time",
         otherBodyConfirmed: "You'll pick a new time on the booking page. Your current appointment stays as it is until our team confirms the new time.",
         otherBodyPending: "You'll pick a new time on the booking page. Your current request stays as it is until our team confirms the new time.",
+        otherBodyChain: "You'll pick a new time on the booking page. It replaces this change request ({pending}); {ref} stays as it is until our team confirms the new time.",
         otherContinue: "Continue to choose a time",
         otherSignIn: "To choose another time, sign in with your email address. We'll email you a link that takes you straight to the booking page.",
         otherSentBody: "We've sent a sign-in link to {email}. It takes you straight to choosing a new time.",
@@ -465,6 +469,8 @@ export const en = {
         current: "Currently: {when}",
         keepsConfirmed: "Your current appointment stays as it is until the new time is confirmed.",
         keepsPending: "Your current request stays as it is until the new time is confirmed.",
+        chainRequest: "This replaces your earlier change request {pending} (for {when}).",
+        chainKeeps: "{ref} stays as it is until the new time is confirmed.",
         notFound: "We couldn't find that reservation for this sign-in. It may belong to a different email address.",
         notActive: "Reservation {ref} can no longer be changed.",
         pendingChange: "You've already asked to change {ref}: your request {pending} is waiting for our team's review.",
@@ -474,10 +480,11 @@ export const en = {
         successBody: "Your current reservation {ref} stays as it is until the new time is confirmed. If we can't confirm the new time, nothing changes.",
       },
       link: {
-        replacesPending: "This request asks to replace {ref}. Your current time stays until this one is confirmed.",
+        replacesPending: "This request asks to change {ref}. Until it's confirmed, {ref} stays as it is.",
         replaces: "Replaces {ref}.",
         replacedByPending: "You've asked to move this to another time ({ref}). This time stays until the new one is confirmed.",
         replacedBy: "Moved to a new time: {ref}.",
+        replacedByOther: "A change request ({ref}) was made for this reservation; it's handled as a request of its own.",
       },
       closeReason: {
         rescheduled: "Moved to a new time",

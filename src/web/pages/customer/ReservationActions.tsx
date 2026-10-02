@@ -1,12 +1,13 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
+import { Link } from "react-router";
 import type { CustomerReservationDTO } from "../../../shared/types";
-import { ApiError, apiFetch, isApiError } from "../../api";
+import { apiFetch, apiFetchBlob, isApiError } from "../../api";
 import { Button } from "../../components/Button";
 import { Notice } from "../../components/Card";
 import { Dialog, focusWhenReady } from "../../components/Dialog";
 import { Field, inputClass } from "../../components/Field";
-import { fmtWhen, fmtTz } from "../../format";
+import { fmtWhenTz } from "../../format";
 import { t } from "../../i18n";
 
 /** Matches the server's limit on a customer's cancellation reason. */
@@ -31,7 +32,8 @@ export const tokenTransport = (token: string): ReservationTransport => ({
   cancel: (b) => post("/api/access/reservation/cancel", { ...b, token }),
   accept: (b) => post("/api/access/proposal/accept", { ...b, token }),
   reject: (b) => post("/api/access/proposal/reject", { ...b, token }),
-  ics: () => postBlob("/api/access/reservation/ics", { token }),
+  // A POST answered with a file (never a GET: the token stays out of URLs).
+  ics: () => apiFetchBlob("/api/access/reservation/ics", { method: "POST", body: { token } }),
 });
 
 export const sessionTransport = (id: string): ReservationTransport => {
@@ -40,29 +42,9 @@ export const sessionTransport = (id: string): ReservationTransport => {
     cancel: (b) => post(`${base}/cancel`, b),
     accept: (b) => post(`${base}/proposal/accept`, b),
     reject: (b) => post(`${base}/proposal/reject`, b),
-    ics: () => postBlob(`${base}/ics`, {}),
+    ics: () => apiFetchBlob(`${base}/ics`, { method: "POST", body: {} }),
   };
 };
-
-/** A POST answered with a file (never a GET: the token, when there is one, stays out of URLs). */
-async function postBlob(path: string, body: unknown): Promise<Blob> {
-  let res: Response;
-  try {
-    res = await fetch(path, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "X-Requested-With": "fetch", "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch {
-    throw new ApiError(0, "network");
-  }
-  if (!res.ok) {
-    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-    throw new ApiError(res.status, typeof data?.error === "string" ? data.error : "http_error", data?.details, data ?? undefined);
-  }
-  return res.blob();
-}
 
 /** Save `blob` as `name` through a temporary link. */
 function saveBlob(blob: Blob, name: string) {
@@ -173,20 +155,23 @@ export function CancelControl({ r, tz, transport, supportPhone, cutoffMin, autoO
         // Someone (or an earlier tap) already cancelled it: that is what was asked for.
         if (current?.status === "cancelled") cancelled(t("web.customer.cancel.already"));
         else show({ tone: "warning", body: t("web.customer.cancel.changed") });
+        onSettled?.();
       } else if (isApiError(e, 409, "past_cutoff")) {
         const d = e.details as { cutoffMin?: number; supportPhone?: string } | undefined;
         setOpen(false);
         setPastCutoff({ minutes: d?.cutoffMin ?? cutoffMin ?? 0, phone: d?.supportPhone || supportPhone });
         focusWhenReady(() => resultRef.current);
+        onSettled?.();
       } else if (isApiError(e, 409, "too_late")) {
         setOpen(false);
         show({ tone: "warning", body: t("web.customer.cancel.tooLate") });
+        onSettled?.();
       }
       // Anything else stays in the dialog (see dialogError) so the customer can try again.
     },
   });
 
-  const dialogError = cancel.error && !isApiError(cancel.error, 409) ? errorText(cancel.error) : null;
+  const dialogError = cancel.error && !isApiError(cancel.error, 409) ? <ErrorText e={cancel.error} /> : null;
   const tooLong = reason.length > REASON_MAX;
 
   function submit(e: FormEvent) {
@@ -199,6 +184,8 @@ export function CancelControl({ r, tz, transport, supportPhone, cutoffMin, autoO
     setOpen(false);
     cancel.reset();
     onSettled?.();
+    // Back to the button: the dialog may have opened by itself (an email link), with nothing focused before it.
+    focusWhenReady(() => buttonRef.current ?? resultRef.current);
   }
 
   const activeNow = isActive(r, now);
@@ -215,7 +202,7 @@ export function CancelControl({ r, tz, transport, supportPhone, cutoffMin, autoO
           {t("web.customer.cancel.button")}
         </Button>
       )}
-      <Dialog open={open} onClose={close} closable={!cancel.isPending} labelledBy={titleId} describedBy={descId} initialFocus={titleRef} returnFocus={buttonRef.current}>
+      <Dialog open={open} onClose={close} closable={!cancel.isPending} labelledBy={titleId} describedBy={descId} initialFocus={titleRef}>
         <form onSubmit={submit} noValidate className="flex h-full flex-col">
           <header className="border-b border-slate-200 px-4 pt-4 pb-3 sm:px-6 sm:pt-5 dark:border-slate-800">
             <h2 ref={titleRef} id={titleId} tabIndex={-1} className="text-xl font-bold tracking-tight outline-none">
@@ -264,11 +251,35 @@ export function errorText(e: unknown): string {
   return t("web.errors.generic");
 }
 
+/** errorText, except that an emailed link that has expired meanwhile says so and offers signing in. */
+export function ErrorText({ e }: { e: unknown }) {
+  if (!isApiError(e, 404, "invalid_link")) return <>{errorText(e)}</>;
+  return (
+    <span className="flex flex-wrap items-center gap-x-2">
+      {t("web.customer.linkExpired")}
+      <Link to="/" className="inline-flex min-h-11 items-center font-semibold underline underline-offset-2">
+        {t("web.customer.linkExpiredSignIn")}
+      </Link>
+    </span>
+  );
+}
+
 /**
  * "Add to calendar" for a confirmed appointment: the file is fetched with a POST and saved from a Blob as `<ref>.ics`.
  * `prompt` (the `#…&action=ics` email link) adds a line saying what the button is for; nothing downloads by itself.
  */
-export function CalendarButton({ r, transport, prompt = false }: { r: CustomerReservationDTO; transport: ReservationTransport; prompt?: boolean }) {
+export function CalendarButton({
+  r,
+  transport,
+  prompt = false,
+  onDone,
+}: {
+  r: CustomerReservationDTO;
+  transport: ReservationTransport;
+  prompt?: boolean;
+  /** The file was saved (the email link's request is answered). */
+  onDone?: () => void;
+}) {
   const [done, setDone] = useState(false);
   const noteId = useId();
   const ics = useMutation({
@@ -277,10 +288,11 @@ export function CalendarButton({ r, transport, prompt = false }: { r: CustomerRe
     onSuccess: (blob) => {
       saveBlob(blob, `${r.ref}.ics`);
       setDone(true);
+      onDone?.();
     },
   });
   if (r.status !== "confirmed") return null;
-  const error = ics.error ? (isApiError(ics.error, 409, "not_confirmed") ? t("web.customer.calendar.notConfirmed") : errorText(ics.error)) : null;
+  const error = ics.error ? isApiError(ics.error, 409, "not_confirmed") ? t("web.customer.calendar.notConfirmed") : <ErrorText e={ics.error} /> : null;
   return (
     <div className="space-y-2">
       {prompt && <p className="font-medium">{t("web.customer.calendar.prompt")}</p>}
@@ -306,7 +318,9 @@ export function ReplacementNote({ r }: { r: CustomerReservationDTO }) {
   const active = r.status === "pending" || r.status === "confirmed";
   let text: string | null = null;
   if (r.replacedByRef && active) text = t("web.customer.link.replacedByPending", { ref: r.replacedByRef });
-  else if (r.replacedByRef && r.status === "cancelled") text = t("web.customer.link.replacedBy", { ref: r.replacedByRef });
+  // Moved only when the replacement's approval closed it; closed any other way, the request is a separate one.
+  else if (r.replacedByRef && r.status === "cancelled" && r.closeReason === "rescheduled") text = t("web.customer.link.replacedBy", { ref: r.replacedByRef });
+  else if (r.replacedByRef) text = t("web.customer.link.replacedByOther", { ref: r.replacedByRef });
   else if (r.replacesRef && r.status === "pending") text = t("web.customer.link.replacesPending", { ref: r.replacesRef });
   else if (r.replacesRef && r.status !== "declined" && r.status !== "expired" && r.status !== "cancelled") text = t("web.customer.link.replaces", { ref: r.replacesRef });
   return text ? <Notice tone="info">{text}</Notice> : null;
@@ -318,6 +332,3 @@ export function closeReasonText(reason: string): string {
   const text = t(key);
   return text === key ? reason : text;
 }
-
-/** "Fri, Oct 2, 2026, 11:00 – 11:30 Asia/Tokyo (GMT+9)": a time range with its time-zone label, for standalone mentions. */
-export const fmtWhenTz = (startAt: number, endAt: number, tz: string): string => `${fmtWhen(startAt, endAt, tz)} ${fmtTz(tz, startAt)}`;
