@@ -4,7 +4,7 @@ An open-source, self-hostable appointment-request app for small service teams th
 
 ## Status
 
-Under active development; not production-ready yet. The feature list below describes the finished app. Plan 1 (the core booking flow) and Plan 2 (administration and scheduling) are done.
+Plans 1 to 3 are done: the core booking flow, administration and scheduling, and the reservation lifecycle. Deployment hardening is what remains; it is not production-ready until the steps still missing from [`docs/SETUP.md`](docs/SETUP.md) are written and tried.
 
 Implemented now:
 
@@ -12,15 +12,19 @@ Implemented now:
 - Staff magic-link sign-in, request dashboard and detail, approval with technician assignment (moving other pending requests when needed), decline with a reason, reassignment to another technician and staff cancellation with a reason.
 - Customer "My reservations" and per-reservation access links from emails.
 - Staff scheduling: weekly hours per technician, date-specific schedules, holidays and technician time off. Every change is previewed first: affected requests and appointments are listed, and anything that would lose its technician must be reassigned, cancelled or declined before the change is saved.
-- Customer administration (accounts and contacts) with CSV import (preview, then apply), team management (roles, bookable, notifications, deactivation) and settings (organisation details, appointment length and buffers, booking window, business hours).
+- Customer administration (accounts and contacts) with CSV import (preview, then apply), team management (roles, bookable, notifications, deactivation) and settings (organisation details, appointment length and buffers, booking window, business hours, approval deadlines, customer reminders, rescheduling).
 - Calendar, activity log and an email page where administrators retry failed emails.
 - An administrator switch (Settings or the staff dashboard) pauses and resumes online booking (to stop spam); existing reservations, their links and all staff features keep working.
 - Email outbox with retries for every notification, a local development mailbox, audit log entries, rate limits and optional Turnstile.
+- Customer cancellation (from the account or an emailed link, until a configurable cut-off).
+- Rescheduling proposals: staff offer one to three other times, each held for a technician; the customer picks one, keeps the original or asks for a different time (a replacement request that staff approve, which cancels the original with a single "rescheduled" email).
+- Lifecycle jobs on a one-minute cron: approval reminders and escalation, expiry of unanswered requests and proposals, customer appointment reminders, completion of finished appointments and hourly cleanup of old tokens, sessions and mail.
+- `.ics` calendar export for customers and staff.
+- Customers' email replies relayed to the staff.
 
 Still to come:
 
-- Plan 3 (lifecycle): customer cancellation, rescheduling proposals, the approval-reminder, escalation, expiry and customer-reminder jobs, completion, `.ics` export and relaying customers' email replies to the staff.
-- Plan 4 (deployment): the remaining deployment hardening and the steps still missing from `docs/SETUP.md`.
+- Deployment hardening: the remaining deployment steps and checks, tracked in [`docs/SETUP.md`](docs/SETUP.md).
 
 ## Who it is for
 
@@ -110,6 +114,20 @@ Open `http://localhost:5173`. With `MAIL_MODE=dev`, outgoing email is written to
 Other scripts: `npm test` (Vitest), `npm run test:scripts` (Node tests for the config renderer, secret sync and dev seed), `npm run typecheck`, `npm run build`, `npm run e2e` (Playwright end-to-end tests on a desktop and a phone viewport: booking and approval, schedule change with reassignment, CSV import, staff cancellation, pausing online booking).
 
 `npm run seed` is synthetic, idempotent and non-destructive: it adds whatever is missing of staff `admin@example.test` and `tech1@`–`tech3@example.test`, the customers in `docs/sample-customers.csv` (e.g. `frontdesk@example.test`) and — only while there are no weekly hours at all — Mon–Fri 09:00–12:00 / 13:00–17:00; it never deletes anything and never changes anything you've edited. `npm run seed -- --reset` restores that baseline: it deletes local reservations, emails, sessions, rate-limit counters, the audit log, date schedules, holidays, time off, saved settings and any other staff or customers. Staff sign in at `http://localhost:5173/staff/login`. `npm run e2e` starts (or reuses) the dev server on port 5173 and runs `npm run seed -- --reset` first.
+
+### Running a second copy locally
+
+To work on two branches at once, check the second one out as a git worktree and run it on another port:
+
+```bash
+git worktree add ../booking-app-2 <branch>
+cd ../booking-app-2
+cp .env.example .env     # then add the line APP_BASE_URL=http://localhost:5180 to this .env
+npm i
+npm run dev -- --port 5180   # renders wrangler.jsonc, migrates this copy's database, then runs `vite --port 5180`
+```
+
+`APP_BASE_URL` must name the port you use: every non-GET request is checked against it (the `Origin` check), so with the default `http://localhost:5173` sign-in and every other action are refused on another port. Each copy has its own local database, so the second one starts empty: run `npm run seed` in it too. `npm run e2e` always uses port 5173, so run it only in a copy that keeps the default.
 
 ## Configuration reference
 

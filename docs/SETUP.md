@@ -80,7 +80,7 @@ doppler run -- npm run deploy
 1. Open **Email → Email Routing** for the zone and enable it **for the app hostname only** (e.g. `booking.example.com`, added as a subdomain), not for the apex.
 2. Add a routing rule for the sender address (`MAIL_FROM`, e.g. `no-reply@booking.example.com`), or a catch-all for that hostname, with the action **Send to a Worker** and this Worker as the destination.
 
-The Worker accepts mail only for addresses at `MAIL_FROM`'s domain, rejects messages over 1 MB, silently drops automatic mail (auto-replies, bounces and delivery reports, mailing-list and bulk mail, `no-reply`/`mailer-daemon`/`bounce` style senders, anything from an address at your own domain) and accepts at most 20 messages an hour per sender and 200 an hour in total. The relayed email shows the sender's address (not verified) and quotes their text; it is sent with `Auto-Submitted: auto-generated` and `X-Auto-Response-Suppress: All` when the Cloudflare binding accepts custom headers (otherwise it is sent without them). It never replies to the sender and never forwards attachments (the staff email says how many there were). If the reply mentions a reservation reference (`R-XXXX-XXXX`), the staff email links to that reservation. Until a rule is in place, replies to the app's emails bounce or go nowhere.
+The Worker accepts mail only for addresses at `MAIL_FROM`'s domain, rejects messages over 1 MB, silently drops automatic mail (auto-replies, bounces and delivery reports, mailing-list and bulk mail, `no-reply`/`mailer-daemon`/`bounce` style senders, anything from an address at your own domain) and accepts at most 20 messages an hour per sender and, as a global ceiling, 200 an hour in total (messages over a limit are dropped, which also bounds the mail a flood can make the Worker send to your team). The relayed email shows the sender's address, clearly marked as not verified (anyone can forge a From address, so treat a reply as a message to read, not as proof of who wrote it), and quotes their text; it is sent with `Auto-Submitted: auto-generated` and `X-Auto-Response-Suppress: All` when the Cloudflare binding accepts custom headers (otherwise it is sent without them). It never replies to the sender and never forwards attachments (the staff email says how many there were). If the reply mentions a reservation reference (`R-XXXX-XXXX`), the staff email links to that reservation. Until a rule is in place, replies to the app's emails bounce or go nowhere.
 
 > **Do not run the Email Routing wizard on the apex.** For a domain whose mail is hosted elsewhere, the zone-level wizard proposes replacing the apex MX and SPF records and would break that mail. Only the app hostname is configured here.
 
@@ -123,3 +123,38 @@ To try the app with sample data on your own machine instead, see "Quick start" i
 ## 8. Deploying schema changes
 
 `npm run deploy` applies D1 migrations to the remote database **before** it uploads the new Worker, so for a short while the previous release runs against the new schema (and if the deploy fails after the migrations, it keeps doing so). Keep every migration backward-compatible with the previous release: add tables, nullable columns or columns with defaults; do not drop or rename columns the running code still reads, and do not add constraints or triggers that the previous release's writes would violate. Make enforcing changes one release later — for example, ship the code that always fills a new column first, then add the trigger or `NOT NULL` rebuild that enforces it in the next release.
+
+## 9. Reminders and deadlines
+
+A Cron Trigger runs the Worker every minute (the schedule is in the rendered `wrangler.jsonc`; nothing to configure on Cloudflare). Each run does the following, handling at most 50 rows per kind so a backlog drains over the next minutes, and then sends whatever mail that queued:
+
+- **Expires unanswered requests.** A pending request that reaches its deadline is closed as expired, its technician hold is released and the customer and the team are told.
+- **Reminds and escalates.** Before the deadline, the people who receive new-request emails get one reminder, and the administrators one escalation, for each request still waiting. A request with an open rescheduling proposal is not reminded: staff are already acting on it.
+- **Expires proposals** the customer has not answered (see "Rescheduling" below) and tells both sides.
+- **Completes appointments.** A confirmed appointment whose end has passed becomes completed (no email).
+- **Cleans up, once an hour.** Expired sign-in and access tokens and ended sessions after a week, rate-limit counters after a day, delivered mail after 90 days (failed mail stays until an administrator deals with it) and the development mailbox after a week.
+
+Customer reminders for a confirmed appointment (for example 24 hours and 1 hour before it) are queued when the appointment is approved and sent by the outbox at the right time; moving or cancelling the appointment withdraws the ones not yet sent.
+
+All of this is configurable in **Settings** (administrators only):
+
+| Setting (section) | Default | Meaning |
+|---|---|---|
+| Remind the team after (Approval deadlines) | 2 business hours | Counted from when the request came in; business hours and holidays are those of Settings → Business hours and Holidays |
+| Escalate after (Approval deadlines) | 4 business hours | Sent to the administrators |
+| Expire unanswered requests after (Approval deadlines) | 8 business hours | The request expires at this deadline, or this long before its start if that comes first |
+| ...or this long before the start (Approval deadlines) | 60 minutes | Whichever comes first. The reminder and escalation always come at least 30 minutes before the expiry |
+| Reminder times (Customer reminders) | 24 hours and 1 hour before | Up to three, before a confirmed appointment |
+| Cancellation cutoff (Appointments) | 60 minutes | Customers can cancel online until this long before the start; staff can always cancel |
+
+Settings changes apply to requests made afterwards: a request keeps the deadlines it was given when it came in.
+
+## 10. Rescheduling
+
+**Proposals.** On a pending request or a confirmed appointment, staff can choose **Propose another time** and offer the customer one to three other times, each with its technician. Every offered time is held for its technician while the proposal is open, so a time that was offered cannot be booked by someone else in the meantime; the original keeps its own hold too. The customer receives an email, picks one time (which makes the appointment confirmed at that time with that technician, with one "rescheduled" email), keeps the original time, or asks for a different time. A new proposal replaces the open one, and staff can withdraw a proposal, which releases its times and tells the customer the original stands.
+
+**Expiry.** An unanswered proposal expires at the earlier of: the proposal-expiry setting (**Settings → Rescheduling**, default 24 business hours) after it was made, and a set time before the current appointment starts (default 120 minutes). It also lapses an hour before the earliest time it offers. No new proposal can be made once the appointment is closer than that second value. When a proposal expires its held times are released, the customer and the team are told, and the original time stands. A pending request's approval deadline was moved out to the proposal's expiry while the proposal was open (so it cannot expire while the customer is deciding), and it is not moved back: the normal expiry then handles the request.
+
+**Replacement requests ("choose another time").** A customer who wants a different time than the ones offered, or for an appointment they already have, chooses another time themselves. That creates a new pending request that replaces the original; the original keeps its time and technician until staff approve the replacement. Approving it (or the customer accepting a proposal on it) cancels the original in the same step, frees its time and sends one "rescheduled" email instead of a cancellation. If staff decline the replacement or it expires, the original is unaffected. A customer has at most one pending replacement per appointment, and an open proposal on the original is closed when the replacement is made.
+
+Customers can also add a confirmed appointment to their calendar (`.ics` download) from their reservation page, and staff from the request page.

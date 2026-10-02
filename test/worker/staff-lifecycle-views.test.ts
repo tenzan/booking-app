@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { api } from "../helpers";
 import { loginCustomer, loginStaff, seedCustomer, seedTeam, seedWeekly, TZ } from "../fixtures";
 import { setNow } from "../../src/worker/lib/clock";
@@ -8,7 +8,6 @@ import { wallToUtc } from "../../src/domain/time";
 /** What the staff UI needs to show the reservation lifecycle: replacement links, who closed it, open proposals, option holds. */
 
 afterEach(() => setNow(null));
-vi.setConfig({ testTimeout: 20_000 });
 
 const THU = "2026-10-01";
 const FRI = "2026-10-02";

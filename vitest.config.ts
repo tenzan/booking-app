@@ -13,6 +13,12 @@ export default defineConfig(async () => {
         BOOTSTRAP_ADMIN_EMAILS: "boot-admin@example.test",
       } },
     })],
-    test: { setupFiles: ["./test/setup.ts"], include: ["test/**/*.test.ts"] },
+    test: {
+      setupFiles: ["./test/setup.ts"],
+      include: ["test/**/*.test.ts"],
+      // Tests sign several people in and book through the API: a few seconds alone, more under a loaded parallel run.
+      testTimeout: 20_000,
+      hookTimeout: 20_000,
+    },
   };
 });
