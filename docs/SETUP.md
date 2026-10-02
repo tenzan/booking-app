@@ -97,7 +97,7 @@ doppler configs tokens create github-actions --project <your-project> --config p
 
 Without that secret the deploy job is skipped, so forks of this repository stay green.
 
-After deploying, the workflow runs the smoke test (`node scripts/smoke.mjs "https://$APP_DOMAIN"`, with `APP_DOMAIN` from Doppler; see section 11), and the job fails if a check fails. On the very first deployment the custom domain's DNS record and certificate can take a few minutes, so the smoke test may fail then: re-run the workflow once the site loads.
+After deploying, the workflow runs the smoke test (`node scripts/smoke.mjs "https://$APP_DOMAIN" --wait 60`, with `APP_DOMAIN` from Doppler; see section 11), and the job fails if a check fails. On the very first deployment the custom domain's DNS record and certificate can take a few minutes: `--wait 60` makes the script poll `/api/health` (6 tries, 10 seconds apart) before checking, but if the site is still not up after that the smoke test fails: re-run the workflow once the site loads. The smoke step is limited to 5 minutes.
 
 ## 6. Importing customers
 
@@ -182,7 +182,7 @@ npx wrangler deployments list           # recent deployments with their version 
 npx wrangler rollback [version-id]      # without an id, rolls back to the previous deployment
 ```
 
-A rollback changes the code only. **D1 migrations are forward-only and are not undone**, so the older code must run against the newer schema. This is why every migration has to stay backward compatible with the previous release (section 8): after a rollback the previous release runs against the current schema. If a bad migration or bad data is the problem, restore the database instead (next section). Run the smoke test after a rollback too.
+A rollback changes the code only: `wrangler rollback` does not undo secret or binding changes, and it does not undo D1 migrations. **D1 migrations are forward-only**, so the older code must run against the newer schema. This is why every migration has to stay backward compatible with the previous release (section 8): after a rollback the previous release runs against the current schema. If a bad migration or bad data is the problem, restore the database instead (next section). Run the smoke test after a rollback too.
 
 ### D1 backups (Time Travel)
 
@@ -204,9 +204,10 @@ After a deployment, check the live site from outside:
 
 ```bash
 npm run smoke -- https://booking.example.com
+npm run smoke -- https://booking.example.com --wait 60   # first poll /api/health for up to 60 seconds
 ```
 
-It prints a pass/fail table and exits non-zero if anything fails: the health endpoint; the redirect from `http://` to `https://`; the security headers on the page and the API (`Content-Security-Policy` with `frame-ancestors 'none'`, `Referrer-Policy`, `X-Content-Type-Options`, `Strict-Transport-Security`); that the development routes (`/api/dev/*`) are not reachable; that a state-changing API call without the `X-Requested-With: fetch` header is refused (the CSRF guard); and that `/api/auth/me` answers, reporting whether online booking is currently enabled (informational). The deploy workflow runs it automatically after every deployment. It sends no credentials and changes no data, so it is safe to run against production. Against a local server (`http://localhost:5173`) the HTTPS redirect is skipped and the `Strict-Transport-Security` checks fail, which is expected.
+It prints a pass/fail table and exits non-zero if anything fails: the health endpoint; the redirect from `http://` to `https://`; the security headers on the page and the API (`Content-Security-Policy` with `frame-ancestors 'none'`, `Referrer-Policy`, `X-Content-Type-Options`, and `Strict-Transport-Security` with a max-age of at least a day); that the development routes (`/api/dev/*`) are not reachable (404 `not_found`); that a state-changing API call without the `X-Requested-With: fetch` header is refused (403 `csrf`, the CSRF guard); and that `/api/auth/me` answers, reporting whether online booking is currently enabled (informational). Each request times out after 15 seconds and shows as a failed check. The HTTPS redirect comes from the Cloudflare zone's **Always Use HTTPS** setting (**SSL/TLS → Edge Certificates**), so turn it on for the zone; the HSTS header comes from the app's own responses (the Worker for the API and `public/_headers` for the pages, added in a parallel change). The deploy workflow runs the script automatically after every deployment (with `--wait 60`). It sends no credentials and changes no data, so it is safe to run against production. Against a local server (`http://localhost:5173`) the HTTPS redirect is skipped and the `Strict-Transport-Security` checks fail, which is expected.
 
 ### What the cron does on the first deployment
 

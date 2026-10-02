@@ -45,5 +45,7 @@ jobs:
         run: doppler run -- npm run deploy
       - name: Smoke test
         if: env.DOPPLER_TOKEN != ''
+        timeout-minutes: 5
         # Single quotes: the inner shell, which has the Doppler variables, expands $APP_DOMAIN.
-        run: doppler run -- sh -c 'node scripts/smoke.mjs "https://$APP_DOMAIN"'
+        # --wait 60: a first deployment's DNS record and certificate can take a moment.
+        run: doppler run -- sh -c 'node scripts/smoke.mjs "https://$APP_DOMAIN" --wait 60'
