@@ -1,7 +1,7 @@
 // Plain-node tests for scripts/lib/smoke.mjs (no network: runSmoke gets a fake fetch). Run with: npm run test:scripts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { allPassed, checkSecurityHeaders, formatTable, isHttpsRedirect, parseBaseUrl, parseCsp, runSmoke } from "./lib/smoke.mjs";
+import { allPassed, checkSecurityHeaders, formatTable, isHttpsRedirect, parseArgs, parseBaseUrl, parseCsp, runSmoke } from "./lib/smoke.mjs";
 
 const GOOD = {
   "content-security-policy": "default-src 'self'; frame-ancestors 'none'",
@@ -35,8 +35,24 @@ test("checkSecurityHeaders flags each missing or wrong header", () => {
   assert.deepEqual(oks(checkSecurityHeaders("P", new Headers())), [false, false, false, false]);
 });
 
-test("HSTS needs a max-age", () => {
-  assert.equal(checkSecurityHeaders("P", headers({ "strict-transport-security": "includeSubDomains" }))[3].ok, false);
+test("HSTS needs a max-age of at least one day", () => {
+  const hsts = (v) => checkSecurityHeaders("P", headers({ "strict-transport-security": v }))[3].ok;
+  assert.equal(hsts("includeSubDomains"), false);
+  assert.equal(hsts("max-age=0"), false);
+  assert.equal(hsts("max-age=86399"), false);
+  assert.equal(hsts("max-age=86400"), true);
+  assert.equal(hsts("includeSubDomains; max-age=31536000"), true);
+});
+
+test("parseArgs reads the base URL and --wait seconds", () => {
+  assert.deepEqual(parseArgs(["https://booking.example.com"]), { baseUrl: "https://booking.example.com", wait: 0 });
+  assert.deepEqual(parseArgs(["https://booking.example.com", "--wait", "60"]), { baseUrl: "https://booking.example.com", wait: 60 });
+  assert.deepEqual(parseArgs(["--wait=30", "https://booking.example.com"]), { baseUrl: "https://booking.example.com", wait: 30 });
+  assert.throws(() => parseArgs(["https://booking.example.com", "--wait", "soon"]), /--wait/);
+  assert.throws(() => parseArgs(["https://booking.example.com", "--wait", "-5"]), /--wait/);
+  assert.throws(() => parseArgs(["https://booking.example.com", "--wait"]), /--wait/);
+  assert.throws(() => parseArgs([]), /Usage/);
+  assert.throws(() => parseArgs(["https://a.example.com", "https://b.example.com"]), /Usage/);
 });
 
 test("isHttpsRedirect accepts redirects to https on the same host only", () => {
@@ -89,6 +105,8 @@ function fakeFetch(over = {}, calls = []) {
     calls.push({ key, init });
     const r = routes[key];
     if (r instanceof Error) throw r;
+    if (r === "hang") return new Promise(() => {}); // never settles and ignores the abort signal
+    if (typeof r === "function") return r();
     if (!r) throw new Error(`unexpected request ${key}`);
     return new Response(r.body, { status: r.status, headers: r.headers });
   };
@@ -152,8 +170,8 @@ test("runSmoke skips the redirect check, with a note, for an http base URL", asy
   const fetchImpl = async (input, init = {}) => {
     const url = new URL(String(input));
     calls.push(`${init.method ?? "GET"} ${url.href}`);
-    if (url.pathname === "/api/dev/cron") return new Response("{}", { status: 404 });
-    if (url.pathname === "/api/auth/customer/request") return new Response("{}", { status: 403 });
+    if (url.pathname === "/api/dev/cron") return new Response('{"error":"not_found"}', { status: 404 });
+    if (url.pathname === "/api/auth/customer/request") return new Response('{"error":"csrf"}', { status: 403 });
     if (url.pathname === "/") return new Response("<html>", { status: 200, headers: { ...GOOD, "content-type": "text/html" } });
     return new Response('{"ok":true,"bookingEnabled":false}', { status: 200, headers: GOOD });
   };
@@ -163,4 +181,114 @@ test("runSmoke skips the redirect check, with a note, for an http base URL", asy
   assert.match(redirect.detail, /not https/);
   assert.equal(allPassed(results), true);
   assert.ok(calls.every((c) => c.includes("localhost:5181")), "no request leaves the base URL");
+});
+
+const HOST = "https://booking.example.com";
+const failedNames = (results) => results.filter((r) => r.ok === false).map((r) => r.name);
+const okHealth = () => new Response('{"ok":true}', { status: 200, headers: { ...GOOD, "content-type": "application/json" } });
+
+test("runSmoke fails a request that never answers, with a timeout detail, and finishes", async () => {
+  const results = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/auth/me`]: "hang" }), { timeoutMs: 30 });
+  const me = results.find((r) => r.detail.includes("timed out"));
+  assert.ok(me, formatTable(results));
+  assert.equal(me.ok, false);
+  assert.match(me.detail, /30 ?ms/);
+  assert.equal(failedNames(results).length, 1);
+});
+
+test("runSmoke times out a body that never finishes", async () => {
+  const stuck = () => {
+    const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("{")); } });
+    return new Response(body, { status: 200, headers: { ...GOOD, "content-type": "application/json" } });
+  };
+  const results = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/health`]: stuck }), { timeoutMs: 30 });
+  assert.ok(results.some((r) => r.ok === false && r.detail.includes("timed out")), formatTable(results));
+});
+
+test("runSmoke passes an abort signal to every request", async () => {
+  const calls = [];
+  await runSmoke(HOST, fakeFetch({}, calls));
+  assert.ok(calls.length >= 6 && calls.every((c) => c.init.signal instanceof AbortSignal));
+});
+
+test("wait: polls /api/health until the first 200, then runs the checks", async () => {
+  const sleeps = [];
+  let health = 0;
+  const flaky = () => (++health < 3 ? new Response("bad gateway", { status: 502 }) : okHealth());
+  const results = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/health`]: flaky }), { wait: 60, sleep: async (ms) => sleeps.push(ms) });
+  assert.deepEqual(sleeps, [10000, 10000]);
+  assert.equal(health, 4, "three polls plus the health check itself");
+  assert.equal(allPassed(results), true, formatTable(results));
+});
+
+test("wait: stops after 6 attempts and the health row fails", async () => {
+  const sleeps = [];
+  let health = 0;
+  const down = () => { health++; return new Response("down", { status: 503 }); };
+  const results = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/health`]: down }), { wait: 60, sleep: async (ms) => sleeps.push(ms) });
+  assert.equal(sleeps.length, 5);
+  assert.equal(health, 7, "six polls plus the health check itself");
+  assert.ok(failedNames(results).some((n) => n.startsWith("GET /api/health")));
+});
+
+test("wait: treats a network error as not ready yet", async () => {
+  let health = 0;
+  const sleeps = [];
+  const refuse = () => {
+    if (++health < 2) throw new Error("ECONNREFUSED");
+    return okHealth();
+  };
+  const results = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/health`]: refuse }), { wait: 20, sleep: async (ms) => sleeps.push(ms) });
+  assert.deepEqual(sleeps, [10000]);
+  assert.equal(allPassed(results), true, formatTable(results));
+});
+
+test("no wait by default: a down health endpoint is checked once without sleeping", async () => {
+  let health = 0;
+  const down = () => { health++; return new Response("down", { status: 503 }); };
+  const sleeps = [];
+  await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/health`]: down }), { sleep: async (ms) => sleeps.push(ms) });
+  assert.equal(health, 1);
+  assert.deepEqual(sleeps, []);
+});
+
+test("dev cron and CSRF checks require the expected JSON error body, and show it when it differs", async () => {
+  const results = await runSmoke(
+    HOST,
+    fakeFetch({
+      [`POST ${HOST}/api/dev/cron`]: { status: 404, headers: { "content-type": "text/html" }, body: "<html>Not found</html>" },
+      [`POST ${HOST}/api/auth/customer/request`]: { status: 403, headers: { "content-type": "text/html" }, body: "Forbidden by a proxy" },
+    }),
+  );
+  const cron = results.find((r) => r.name.includes("/api/dev/cron"));
+  const csrf = results.find((r) => r.name.includes("CSRF"));
+  assert.equal(cron.ok, false);
+  assert.match(cron.detail, /404/);
+  assert.match(cron.detail, /Not found/);
+  assert.equal(csrf.ok, false);
+  assert.match(csrf.detail, /Forbidden by a proxy/);
+});
+
+test("runSmoke fails when / is not 200 HTML", async () => {
+  const notFound = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/`]: { status: 404, headers: { ...GOOD, "content-type": "text/html" }, body: "nope" } }));
+  assert.ok(failedNames(notFound).includes("GET /: 200 HTML"));
+  const json = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/`]: { status: 200, headers: { ...GOOD, "content-type": "application/json" }, body: "{}" } }));
+  assert.ok(failedNames(json).includes("GET /: 200 HTML"));
+});
+
+test("runSmoke fails the redirect check for a non-https or other-host Location", async () => {
+  const key = "GET http://booking.example.com/";
+  for (const location of ["http://booking.example.com/", "https://other.example.net/", "/login"]) {
+    const results = await runSmoke(HOST, fakeFetch({ [key]: { status: 301, headers: { location }, body: "" } }));
+    const row = results.find((r) => r.name.includes("redirects to https"));
+    assert.equal(row.ok, false, location);
+    assert.ok(row.detail.includes(location));
+  }
+});
+
+test("runSmoke fails when /api/auth/me is not 200", async () => {
+  const results = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/auth/me`]: { status: 500, headers: {}, body: "oops" } }));
+  const me = results.find((r) => r.name.startsWith("GET /api/auth/me"));
+  assert.equal(me.ok, false);
+  assert.match(me.detail, /500/);
 });
