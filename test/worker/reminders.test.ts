@@ -64,8 +64,8 @@ describe("enqueueing on approval", () => {
     const id = await confirmed();
     const jobs = await reminders();
     expect(jobs.map((j) => [j.send_after, j.dedupe_key, JSON.parse(j.payload), j.to_email, j.reservation_id, j.status])).toEqual([
-      [START - 1440 * MIN, `reminder:${id}:${START}:1440`, { startAt: START }, "pat@example.test", id, "queued"],
-      [START - 60 * MIN, `reminder:${id}:${START}:60`, { startAt: START }, "pat@example.test", id, "queued"],
+      [START - 1440 * MIN, `reminder:${id}:v2:${START}:1440`, { startAt: START }, "pat@example.test", id, "queued"],
+      [START - 60 * MIN, `reminder:${id}:v2:${START}:60`, { startAt: START }, "pat@example.test", id, "queued"],
     ]);
   });
 
@@ -74,7 +74,7 @@ describe("enqueueing on approval", () => {
     const id = await submit();
     setNow(START - 124 * MIN); // approved late: 1440 passed, 120 is 4 min away (too close), 60 is fine
     await approve(id);
-    expect((await reminders()).map((j) => j.dedupe_key)).toEqual([`reminder:${id}:${START}:60`]);
+    expect((await reminders()).map((j) => j.dedupe_key)).toEqual([`reminder:${id}:v2:${START}:60`]);
   });
 
   it("queues exactly at the five minute boundary", async () => {
@@ -93,7 +93,7 @@ describe("enqueueing on approval", () => {
   });
 
   it("reminderStatements is pure on its inputs and uses the given reservation", () => {
-    const stmts = reminderStatements(env.DB, { ...DEFAULT_SETTINGS, customerReminderOffsetsMin: [60, 30, 10] }, { id: "x", startAt: START, contactEmail: "a@example.test" }, clock.now());
+    const stmts = reminderStatements(env.DB, { ...DEFAULT_SETTINGS, customerReminderOffsetsMin: [60, 30, 10] }, { id: "x", startAt: START, contactEmail: "a@example.test", version: 2 }, clock.now());
     expect(stmts.length).toBe(3);
   });
 });

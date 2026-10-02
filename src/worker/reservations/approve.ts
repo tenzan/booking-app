@@ -8,11 +8,11 @@ import { enqueueEmail } from "../mail/outbox";
 import { getSettings } from "../repos/settings";
 import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
-import { blockInsert, cancelObsoleteMail, ELIGIBLE_SQL, movedPending, movePendingStatements, releaseHoldStatements } from "./holds";
+import { blockInsert, ELIGIBLE_SQL, movedPending, movePendingStatements } from "./holds";
 import { closeProposalStatements } from "./propose";
 import { reminderStatements } from "./reminders";
 import { getReservation, techOptions, type ReservationDTO } from "./queries";
-import { releasedHolds, replacedBy, type ActiveOriginal } from "./replacement";
+import { cancelReplacedStatements, releasedHolds, replacedBy } from "./replacement";
 
 /**
  * Confirm a pending request with `staffId` as its technician. Same batch discipline as submit: the schedule
@@ -22,7 +22,7 @@ import { releasedHolds, replacedBy, type ActiveOriginal } from "./replacement";
  * In the same batch: an open proposal on the request is withdrawn (staff decided; the customer just gets the
  * confirmation), and for a replacement request whose original is still pending or confirmed, that original is cancelled
  * (close_reason 'rescheduled') and the customer gets one `rescheduled` email instead of a confirmation and a cancellation.
- * A replacement whose original is gone by now is approved like any request.
+ * A replacement whose original is gone or has already started is approved like any request; the original is left as is.
  */
 export async function approveReservation(env: Env, actor: StaffPrincipal, id: string, staffId: number, version: number): Promise<ReservationDTO> {
   return withRetry(() => attempt(env, actor, id, staffId, version));
@@ -37,7 +37,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   if (!current.customer.active || !(await db.prepare(ELIGIBLE_SQL).bind(current.customer.id, current.contactEmail).first())) {
     throw new HttpError(409, "customer_ineligible");
   }
-  const { replacesId, original } = await replacedBy(db, id);
+  const { replacesId, original } = await replacedBy(db, id, clock.now());
 
   const ctx = await loadScheduleCtx(env, current.startAt, current.endAt);
   const target = ctx.holds.find((h) => h.id === id);
@@ -67,7 +67,15 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
     assertSql(db, ELIGIBLE_SQL, current.customer.id, current.contactEmail),
     // Released before anything takes their blocks: the request's open proposal, and the original it replaces.
     ...(openProposal ? closeProposalStatements(db, id, openProposal.id, "withdrawn", now) : []),
-    ...(original ? cancelOriginalStatements(db, original, { replacementId: id, actor, customerId: current.customer.id, now }) : []),
+    ...(original
+      ? cancelReplacedStatements(db, original, {
+          by: { kind: "staff", id: String(actor.id) },
+          reason: "rescheduled",
+          replacementId: id,
+          customerId: current.customer.id,
+          now,
+        })
+      : []),
     // The target's blocks go first so a moved request may take its old provisional technician.
     db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
     ...movePendingStatements(db, moved, now),
@@ -88,7 +96,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
           payload: { startAt: current.startAt, fromStartAt: original.startAt, via: "replacement", replacesRef: original.ref },
         })
       : enqueueEmail(db, { template: "confirmed", to: current.contactEmail, dedupeKey: `confirmed:${id}:v${newVersion}`, reservationId: id }),
-    ...reminderStatements(db, settings, { id, startAt: current.startAt, contactEmail: current.contactEmail }, now),
+    ...reminderStatements(db, settings, { id, startAt: current.startAt, contactEmail: current.contactEmail, version: newVersion }, now),
     ...team.map((s) =>
       enqueueEmail(db, {
         template: "assigned",
@@ -108,36 +116,4 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
     }),
   ]);
   return (await getReservation(db, id))!;
-}
-
-/**
- * Cancel the original a replacement replaces, in the replacement's approving batch: assert it is as read, release its
- * hold and open proposal, close it as 'rescheduled' and cancel its obsolete queued mail. No cancellation emails: the
- * customer gets the replacement's `rescheduled` email, the team the replacement's `assigned` notice.
- */
-function cancelOriginalStatements(
-  db: D1Database,
-  original: ActiveOriginal,
-  o: { replacementId: string; actor: StaffPrincipal; customerId: number; now: number },
-): D1PreparedStatement[] {
-  return [
-    assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = ? AND version = ?", original.id, original.status, original.version),
-    ...releaseHoldStatements(db, original.id, o.now),
-    db
-      .prepare(
-        `UPDATE reservations SET status = 'cancelled', closed_at = ?, closed_by_kind = 'staff', closed_by = ?, close_reason = 'rescheduled',
-           provisional_staff_id = NULL, version = version + 1, updated_at = ?
-         WHERE id = ? AND status = ? AND version = ?`,
-      )
-      .bind(o.now, String(o.actor.id), o.now, original.id, original.status, original.version),
-    cancelObsoleteMail(db, original.id),
-    audit(db, {
-      actorKind: "staff",
-      actor: String(o.actor.id),
-      action: "reservation.cancelled",
-      reservationId: original.id,
-      customerId: o.customerId,
-      details: { reason: "rescheduled", from: original.status, replacedBy: o.replacementId },
-    }),
-  ];
 }

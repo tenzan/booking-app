@@ -428,7 +428,7 @@ export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOpti
   const free = new Set(freeList);
   // Exactly the free technicians: the context's provisional fallback (which only keeps capacity held) is no option.
   // A confirmed appointment is unfixed here so that each candidate is tried in place of its technician.
-  const released = releasedHolds(ctx, r, r.status === "pending" ? (await replacedBy(env.DB, r.id)).original : null);
+  const released = releasedHolds(ctx, r, r.status === "pending" ? (await replacedBy(env.DB, r.id, clock.now())).original : null);
   const holds = ctx.holds.filter((h) => !released.has(h.id)).map((h) => (h.id === r.id ? { ...h, fixed: null, eligible: freeList } : h));
   const assignable = new Set(assignableFor(holds, r.id));
   const currentId = r.status === "confirmed" ? (r.assignedStaff?.id ?? null) : null;

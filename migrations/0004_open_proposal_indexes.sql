@@ -3,3 +3,5 @@
 -- Indexes only: backward compatible.
 CREATE INDEX idx_proposals_open ON proposals(expires_at) WHERE status = 'open';
 CREATE INDEX idx_options_occ ON proposal_options(occ_start);
+-- Replacement requests are looked up by the reservation they change (one pending change per original, the max-active count).
+CREATE INDEX idx_res_replaces ON reservations(replaces_id);

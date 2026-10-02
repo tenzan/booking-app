@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../helpers";
 import { loginCustomer, loginStaff, seedCustomer, seedTeam, seedWeekly, TZ, withBatchHook } from "../fixtures";
 import { clock, setNow } from "../../src/worker/lib/clock";
@@ -16,6 +16,8 @@ import { wallToUtc } from "../../src/domain/time";
 import type { StaffPrincipal } from "../../src/worker/env";
 
 afterEach(() => setNow(null));
+// Each test signs several people in and books through the API: a few seconds alone, more under a loaded parallel run.
+vi.setConfig({ testTimeout: 20_000 });
 
 const THU = "2026-10-01";
 const FRI = "2026-10-02";
@@ -123,8 +125,8 @@ describe("accepting a proposed time", () => {
     expect(chosenBlocks).toHaveLength(8);
     // The appointment's reminders for 10:00 are queued.
     expect((await jobs("appointment_reminder")).map((j) => [j.dedupe_key, j.status])).toEqual([
-      [`reminder:${id}:${at(FRI, 10)}:1440`, "queued"],
-      [`reminder:${id}:${at(FRI, 10)}:60`, "queued"],
+      [`reminder:${id}:v2:${at(FRI, 10)}:1440`, "queued"],
+      [`reminder:${id}:v2:${at(FRI, 10)}:60`, "queued"],
     ]);
     await env.DB.prepare("DELETE FROM email_jobs WHERE template <> 'appointment_reminder'").run();
     await env.DB.prepare("DELETE FROM dev_mailbox").run();
@@ -164,10 +166,10 @@ describe("accepting a proposed time", () => {
 
     // Old reminders cancelled, new ones for 11:00 queued.
     expect((await jobs("appointment_reminder")).map((j) => [j.dedupe_key, j.status, j.send_after])).toEqual([
-      [`reminder:${id}:${at(FRI, 10)}:1440`, "cancelled", at(THU, 10)],
-      [`reminder:${id}:${at(FRI, 10)}:60`, "cancelled", at(FRI, 9)],
-      [`reminder:${id}:${at(FRI, 11)}:1440`, "queued", at(THU, 11)],
-      [`reminder:${id}:${at(FRI, 11)}:60`, "queued", at(FRI, 10)],
+      [`reminder:${id}:v2:${at(FRI, 10)}:1440`, "cancelled", at(THU, 10)],
+      [`reminder:${id}:v2:${at(FRI, 10)}:60`, "cancelled", at(FRI, 9)],
+      [`reminder:${id}:v4:${at(FRI, 11)}:1440`, "queued", at(THU, 11)],
+      [`reminder:${id}:v4:${at(FRI, 11)}:60`, "queued", at(FRI, 10)],
     ]);
     // The customer gets one rescheduled email; the team (notify staff and both technicians) the outcome.
     expect((await jobs("rescheduled")).map((j) => [j.to_email, j.dedupe_key])).toEqual([["pat@example.test", `rescheduled:${id}:v4`]]);
@@ -212,7 +214,7 @@ describe("accepting a proposed time", () => {
     expect((await blocksOf(id)).every((b) => b.staff_id === team.b && b.owner_kind === "reservation")).toBe(true);
     expect(await blocksOf(id)).toHaveLength(8);
     expect(provisional).not.toBeNull();
-    expect((await jobs("appointment_reminder")).map((j) => j.dedupe_key)).toEqual([`reminder:${id}:${at(FRI, 12)}:1440`, `reminder:${id}:${at(FRI, 12)}:60`]);
+    expect((await jobs("appointment_reminder")).map((j) => j.dedupe_key)).toEqual([`reminder:${id}:v3:${at(FRI, 12)}:1440`, `reminder:${id}:v3:${at(FRI, 12)}:60`]);
     expect((await auditOf("reservation.rescheduled")).details).toMatchObject({ from: { startAt: at(FRI, 10), staffId: null }, to: { startAt: at(FRI, 12), staffId: team.b } });
     await processOutbox(env, 50);
     const mails = await mailsTo("pat@example.test");
@@ -436,6 +438,14 @@ describe("choosing another time: replacement requests", () => {
     expect(await proposalRow(p.id)).toMatchObject({ status: "rejected", resolved_at: at(THU, 8) });
     expect(await optionBlocks()).toBe(0);
     expect((await auditOf("reservation.proposal_rejected")).details).toEqual({ proposalId: p.id, via: "replacement", replacementId: result.id });
+    // The team hears that the held times were released (no answer email to the customer: the request-received covers it).
+    expect((await jobs("proposal_outcome")).map((j) => [j.to_email, JSON.parse(j.payload).via])).toEqual([
+      ["admin@example.test", "replacement"],
+      ["tech-a@example.test", "replacement"],
+      ["tech-b@example.test", "replacement"],
+      ["tech-c@example.test", "replacement"],
+      ["tech-d@example.test", "replacement"],
+    ]);
     expect((await auditOf("reservation.requested")).details).toMatchObject({ replacesId: id });
 
     await processOutbox(env, 50);
@@ -444,7 +454,9 @@ describe("choosing another time: replacement requests", () => {
     expect(mine[0]!.text).toContain("stays as it is until the new time is confirmed");
     const ref = (await row(id)).ref as string;
     expect(mine[0]!.text).toContain(ref);
-    expect((await mailsTo("admin@example.test"))[0]!.text).toContain(ref);
+    const adminMails = await mailsTo("admin@example.test");
+    expect(adminMails.find((m) => m.subject.includes("asked for another time"))!.text).toContain("proposed times have been released");
+    expect(adminMails.find((m) => m.subject.includes("New remote support request"))!.text).toContain(`Replaces: ${ref}`);
   });
 
   it("may take a time only the original's own proposal was holding (released in the same batch)", async () => {
@@ -522,10 +534,10 @@ describe("choosing another time: replacement requests", () => {
       expect(await blocksOf(replacement)).toHaveLength(8);
 
       expect((await jobs("appointment_reminder")).map((j) => [j.dedupe_key, j.status]).sort((x, y) => x[1]!.localeCompare(y[1]!) || x[0]!.localeCompare(y[0]!))).toEqual([
-        [`reminder:${id}:${at(FRI, 10)}:1440`, "cancelled"],
-        [`reminder:${id}:${at(FRI, 10)}:60`, "cancelled"],
-        [`reminder:${replacement}:${at(FRI, 10, 30)}:1440`, "queued"],
-        [`reminder:${replacement}:${at(FRI, 10, 30)}:60`, "queued"],
+        [`reminder:${id}:v2:${at(FRI, 10)}:1440`, "cancelled"],
+        [`reminder:${id}:v2:${at(FRI, 10)}:60`, "cancelled"],
+        [`reminder:${replacement}:v2:${at(FRI, 10, 30)}:1440`, "queued"],
+        [`reminder:${replacement}:v2:${at(FRI, 10, 30)}:60`, "queued"],
       ]);
       const customerJobs = (await env.DB.prepare("SELECT template FROM email_jobs WHERE to_email = 'pat@example.test' AND template <> 'appointment_reminder'").all<any>()).results;
       expect(customerJobs.map((j) => j.template)).toEqual(["rescheduled"]);
@@ -563,7 +575,7 @@ describe("choosing another time: replacement requests", () => {
       expect(await jobs("rescheduled")).toEqual([]);
       expect((await auditOf("reservation.approved")).details).toEqual({ assignedStaffId: team.b, replacesId: id, originalCancelled: false });
       await processOutbox(env, 50);
-      expect((await mailsTo("tech-c@example.test"))[0]!.text).toContain(`${ref}, which is no longer active`);
+      expect((await mailsTo("tech-c@example.test"))[0]!.text).toContain(`${ref}, which was left as it is`);
     });
 
     it("an original cancelled while the approval is in flight: the retry approves the replacement normally", async () => {
@@ -656,6 +668,10 @@ describe("staff decisions withdraw an open proposal (ruling)", () => {
     expect(await proposalRow(p.id)).toMatchObject({ status: "withdrawn" });
     expect(await optionBlocks()).toBe(0);
     expect((await row(id)).assigned_staff_id).toBe(team.b);
+    // The time is unchanged, so the customer is told the proposed times were withdrawn.
+    expect((await jobs("proposal_outcome")).map((j) => [j.to_email, j.dedupe_key])).toEqual([["pat@example.test", `proposal-outcome:${p.id}`]]);
+    await processOutbox(env, 50);
+    expect((await mailsTo("pat@example.test")).at(-1)!.text).toContain("Your original appointment stands");
   });
 });
 
@@ -740,4 +756,167 @@ describe("proposal expiry sweep", () => {
 it("has the indexes serving the open-proposal scans", async () => {
   const { results } = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_options_occ', 'idx_proposals_open') ORDER BY name").all<{ name: string }>();
   expect(results.map((r) => r.name)).toEqual(["idx_options_occ", "idx_proposals_open"]);
+});
+
+describe("fix round 1", () => {
+  const setSetting = (key: string, value: unknown) =>
+    env.DB.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)").bind(key, JSON.stringify(value)).run();
+
+  it("accepting a proposal on a pending replacement approves it: its original is cancelled in the same batch, one email", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await approve(id, team.a);
+    const ref = (await row(id)).ref as string;
+    const replacement = await submit(pat, at(FRI, 11), { replacesId: id });
+    const p = await propose(replacement, [{ startAt: at(FRI, 12), staffId: team.b }], 1);
+    await env.DB.prepare("DELETE FROM email_jobs WHERE template <> 'appointment_reminder'").run();
+    await env.DB.prepare("DELETE FROM dev_mailbox").run();
+
+    const w = withBatchHook(async () => {});
+    const r = await acceptProposal(w.env, "pat@example.test", replacement, { proposalId: p.id, optionId: p.options[0]!.id });
+    expect(w.calls.batches).toBe(1);
+    expect(r).toMatchObject({ status: "confirmed", startAt: at(FRI, 12) });
+    expect(await row(id)).toMatchObject({ status: "cancelled", close_reason: "rescheduled", closed_by_kind: "customer", closed_by: "pat@example.test" });
+    expect(await blocksOf(id)).toEqual([]);
+    expect((await jobs("appointment_reminder")).filter((j) => j.dedupe_key.startsWith(`reminder:${id}:`)).map((j) => j.status)).toEqual(["cancelled", "cancelled"]);
+    const customerJobs = (await env.DB.prepare("SELECT template, payload FROM email_jobs WHERE to_email = 'pat@example.test' AND template <> 'appointment_reminder'").all<any>()).results;
+    expect(customerJobs.map((j) => [j.template, JSON.parse(j.payload).via])).toEqual([["rescheduled", "replacement"]]);
+    expect(await jobs("cancelled")).toEqual([]);
+    const c = await auditOf("reservation.cancelled");
+    expect(c).toMatchObject({ actor_kind: "customer", actor: "pat@example.test", reservation_id: id });
+    expect(c.details).toEqual({ reason: "rescheduled", from: "confirmed", replacedBy: replacement });
+    expect((await auditOf("reservation.rescheduled")).details).toMatchObject({ replacesId: id });
+
+    await processOutbox(env, 50);
+    const mine = await mailsTo("pat@example.test");
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.text).toContain(`Previous time: Fri, Oct 2, 2026, 10:00 ${TZ_LABEL}`);
+    expect(mine[0]!.text).toContain(`New time: Fri, Oct 2, 2026, 12:00 ${TZ_LABEL}`);
+    expect(mine[0]!.text).toContain(ref);
+    expect(mine[0]!.text).not.toMatch(TECH_NAMES);
+    expect((await mailsTo("tech-a@example.test"))[0]!.text).toContain(`Replaces ${ref}, which has been cancelled.`);
+  });
+
+  it("an appointment moved away and back gets reminders for its start again", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await approve(id, team.a);
+    const token = await mintToken(id);
+    const p1 = await propose(id, [{ startAt: at(FRI, 11), staffId: team.b }], 2);
+    expect((await acceptViaToken(token, p1.id, p1.options[0]!.id)).status).toBe(200);
+    const p2 = await propose(id, [{ startAt: at(FRI, 10), staffId: team.a }], 4);
+    expect((await acceptViaToken(token, p2.id, p2.options[0]!.id)).status).toBe(200);
+    expect(await row(id)).toMatchObject({ start_at: at(FRI, 10), version: 6 });
+    const queued = (await jobs("appointment_reminder")).filter((j) => j.status === "queued").map((j) => [j.dedupe_key, j.send_after]);
+    expect(queued).toEqual([
+      [`reminder:${id}:v6:${at(FRI, 10)}:1440`, at(THU, 10)],
+      [`reminder:${id}:v6:${at(FRI, 10)}:60`, at(FRI, 9)],
+    ]);
+  });
+
+  it("choosing another time from a pending change request supersedes it: never more than the original plus one change", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await approve(id, team.a);
+    const first = await submit(pat, at(FRI, 11), { replacesId: id });
+    const firstRef = (await row(first)).ref as string;
+    const p = await propose(first, [{ startAt: at(FRI, 12), staffId: team.b }], 1);
+    await env.DB.prepare("DELETE FROM email_jobs").run();
+    await env.DB.prepare("DELETE FROM dev_mailbox").run();
+    const activeCount = () => count("SELECT COUNT(*) AS n FROM reservations WHERE customer_id = ? AND status IN ('pending','confirmed')", pat.id);
+
+    const key = crypto.randomUUID();
+    const res = await submitRes(pat, at(FRI, 12, 30), { replacesId: first, idempotencyKey: key });
+    expect([res.status, res.json.error]).toEqual([201, undefined]);
+    const second = res.json.reservation.id as string;
+    expect(await row(second)).toMatchObject({ status: "pending", replaces_id: id });
+    expect(await row(first)).toMatchObject({ status: "cancelled", closed_by_kind: "customer", closed_by: "pat@example.test", close_reason: "superseded" });
+    expect(await blocksOf(first)).toEqual([]);
+    expect((await proposalRow(p.id)).status).toBe("rejected");
+    expect(await optionBlocks()).toBe(0);
+    expect(await row(id)).toMatchObject({ status: "confirmed", version: 2 });
+    expect(await activeCount()).toBe(2);
+    expect((await auditOf("reservation.requested")).details).toMatchObject({ replacesId: id, supersedes: first });
+    expect(await jobs("cancelled")).toEqual([]);
+    const mine = await mailsTo("pat@example.test");
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.text).toContain(`replaces your earlier change request ${firstRef}`);
+    expect((await mailsTo("admin@example.test")).find((m) => m.subject.includes("New remote support request"))!.text).toContain(`Supersedes the change request: ${firstRef}`);
+
+    // A retry of that very submit returns what it created.
+    const replay = await submitRes(pat, at(FRI, 12, 30), { replacesId: first, idempotencyKey: key });
+    expect([replay.status, replay.json.reservation.id]).toEqual([200, second]);
+
+    // And again from the newest change; a normal request is still over the limit.
+    const third = await submit(pat, at(FRI, 11), { replacesId: second });
+    expect(await row(third)).toMatchObject({ replaces_id: id });
+    expect((await row(second)).close_reason).toBe("superseded");
+    expect(await activeCount()).toBe(2);
+    expect((await submitRes(pat, at(FRI, 12))).json.error).toBe("limit_reached");
+    // The original itself already has its one pending change.
+    expect((await submitRes(pat, at(FRI, 12), { replacesId: id })).json.error).toBe("replacement_exists");
+  });
+
+  it("an idempotency key replayed with another replacesId is idempotency_conflict", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await approve(id, team.a);
+    const key = crypto.randomUUID();
+    expect((await submitRes(pat, at(FRI, 11), { replacesId: id, idempotencyKey: key })).status).toBe(201);
+    for (const extra of [{}, { replacesId: "nope" }]) {
+      const res = await submitRes(pat, at(FRI, 11), { idempotencyKey: key, ...extra });
+      expect([res.status, res.json.error]).toEqual([409, "idempotency_conflict"]);
+    }
+  });
+
+  it("a pending replacement never counts toward the per-account limit while its original is active", async () => {
+    await setSetting("maxActivePerAccount", 2);
+    const id = await submit(pat, at(FRI, 10));
+    await approve(id, team.a);
+    await submit(pat, at(FRI, 11), { replacesId: id });
+    // Original + normal request = 2; the replacement is not counted.
+    await submit(pat, at(FRI, 12));
+    expect((await submitRes(pat, at(FRI, 12, 30))).json.error).toBe("limit_reached");
+  });
+
+  it("approving a replacement whose original has already started confirms it as a normal request and leaves the original", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await approve(id, team.a);
+    const replacement = await submit(pat, at(FRI, 12), { replacesId: id });
+    await env.DB.prepare("DELETE FROM email_jobs").run();
+    setNow(at(FRI, 10, 5));
+    const r = await approveReservation(env, admin(), replacement, team.b, 1);
+    expect(r.status).toBe("confirmed");
+    expect(await row(id)).toMatchObject({ status: "confirmed", version: 2 });
+    expect(await blocksOf(id)).toHaveLength(8);
+    expect((await jobs("confirmed")).map((j) => j.to_email)).toEqual(["pat@example.test"]);
+    expect(await jobs("rescheduled")).toEqual([]);
+    expect((await auditOf("reservation.approved")).details).toEqual({ assignedStaffId: team.b, replacesId: id, originalCancelled: false });
+  });
+
+  it("an accepted option keeps the occupied range stored with it, whatever the buffers are now", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await approve(id, team.a);
+    const p = await propose(id, [{ startAt: at(FRI, 11), staffId: team.b }], 2);
+    await setSetting("bufferAfterMin", 20);
+    expect((await acceptViaToken(await mintToken(id), p.id, p.options[0]!.id)).status).toBe(200);
+    expect(await row(id)).toMatchObject({ occ_start: at(FRI, 11), occ_end: at(FRI, 11, 40) });
+    expect(await blocksOf(id)).toHaveLength(8);
+  });
+
+  it("the proposal-expiry sweep handles at most 50 proposals per run", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    await env.DB.batch(
+      Array.from({ length: 51 }, (_, i) =>
+        env.DB.prepare("INSERT INTO proposals(id, reservation_id, status, created_by, created_at, expires_at) VALUES (?, ?, 'open', ?, ?, ?)").bind(
+          `p${String(i).padStart(2, "0")}`,
+          id,
+          team.admin,
+          at(THU, 8),
+          at(THU, 9),
+        ),
+      ),
+    );
+    setNow(at(THU, 10));
+    expect(await expireProposals(env, at(THU, 10))).toBe(50);
+    expect(await count("SELECT COUNT(*) AS n FROM proposals WHERE status = 'open'")).toBe(1);
+    expect(await expireProposals(env, at(THU, 10))).toBe(1);
+    expect(await count("SELECT COUNT(*) AS n FROM proposals WHERE status = 'expired'")).toBe(51);
+  }, 60_000);
 });

@@ -10,6 +10,7 @@ import { cancelObsoleteMail, ELIGIBLE_SQL } from "./holds";
 import { closeProposalStatements } from "./propose";
 import { getReservation, toCustomerView, type CustomerReservationDTO, type ReservationDTO } from "./queries";
 import { reminderStatements } from "./reminders";
+import { cancelReplacedStatements, replacedBy } from "./replacement";
 
 const idField = z.string().min(1).max(100);
 export const acceptBody = z.object({ proposalId: idField, optionId: idField });
@@ -55,7 +56,10 @@ const assertOpenStatements = (db: D1Database, current: ReservationDTO, proposalI
  * lost in between), the other options are released and the proposal is accepted. Queued mail about the old time is
  * cancelled and reminders for the new time queued; the customer gets one `rescheduled` email and the team the outcome.
  * A pending request needs an eligible customer and contact (403 not_eligible), as approval would; a confirmed
- * appointment does not. `email` is who answered (the session's contact, or the reservation's contact for a link).
+ * appointment does not. Accepting on a pending replacement request is its approval: the original it replaces, while
+ * still active (pending or confirmed, not started), is cancelled in the same batch as an approval would, and the
+ * customer's `rescheduled` email names the original's time as the previous one. `email` is who answered (the session's
+ * contact, or the reservation's contact for a link).
  */
 export async function acceptProposal(env: Env, email: string, id: string, input: { proposalId: string; optionId: string }): Promise<CustomerReservationDTO> {
   return withRetry(() => acceptAttempt(env, email, id, input.proposalId, input.optionId));
@@ -74,11 +78,13 @@ async function acceptAttempt(env: Env, email: string, id: string, proposalId: st
     throw new HttpError(403, "not_eligible");
   }
 
+  const { original } = pending ? await replacedBy(db, id, now) : { original: null };
   const newVersion = current.version + 1;
   const fromStaff = current.assignedStaff?.id ?? null;
   const settings = await getSettings(db, env);
-  // Everyone who follows requests, and the technicians the appointment moves from and to.
-  const team = noticeRecipients(await notifyStaff(db), await activeStaffByIds(db, [...(fromStaff !== null ? [fromStaff] : []), option.staff_id]));
+  // Everyone who follows requests, and the technicians the appointment moves from and to (a replaced original's included).
+  const involved = [...(fromStaff !== null ? [fromStaff] : []), option.staff_id, ...(original?.assignedStaffId ? [original.assignedStaffId] : [])];
+  const team = noticeRecipients(await notifyStaff(db), await activeStaffByIds(db, involved));
 
   await capacityBatch(db, scheduleVersion, [
     ...assertOpenStatements(db, current, proposalId, now),
@@ -90,6 +96,9 @@ async function acceptAttempt(env: Env, email: string, id: string, proposalId: st
       optionId,
       proposalId,
     ),
+    ...(original
+      ? cancelReplacedStatements(db, original, { by: { kind: "customer", id: email }, reason: "rescheduled", replacementId: id, customerId: current.customer.id, now })
+      : []),
     db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
     db.prepare("UPDATE tech_blocks SET owner_kind = 'reservation', owner_id = ? WHERE owner_kind = 'option' AND owner_id = ?").bind(id, optionId),
     // Releases the other options' blocks (the chosen one's are the reservation's now) and accepts the proposal.
@@ -104,13 +113,15 @@ async function acceptAttempt(env: Env, email: string, id: string, proposalId: st
       .bind(option.start_at, option.end_at, option.occ_start, option.occ_end, option.staff_id, now, now, id, current.status, current.version),
     // Mail about the old time (reminders, a confirmation not yet sent) goes before the new time's is queued.
     cancelObsoleteMail(db, id),
-    ...reminderStatements(db, settings, { id, startAt: option.start_at, contactEmail: current.contactEmail }, now),
+    ...reminderStatements(db, settings, { id, startAt: option.start_at, contactEmail: current.contactEmail, version: newVersion }, now),
     enqueueEmail(db, {
       template: "rescheduled",
       to: current.contactEmail,
       dedupeKey: `rescheduled:${id}:v${newVersion}`,
       reservationId: id,
-      payload: { startAt: option.start_at, fromStartAt: current.startAt, fromStatus: current.status, via: "proposal" },
+      payload: original
+        ? { startAt: option.start_at, fromStartAt: original.startAt, via: "replacement", replacesRef: original.ref }
+        : { startAt: option.start_at, fromStartAt: current.startAt, fromStatus: current.status, via: "proposal" },
     }),
     ...team.map((m) =>
       enqueueEmail(db, {
@@ -118,7 +129,7 @@ async function acceptAttempt(env: Env, email: string, id: string, proposalId: st
         to: m.email,
         dedupeKey: `proposal-outcome-team:${proposalId}:${m.id}`,
         reservationId: id,
-        payload: { audience: "team", proposalId, outcome: "accepted", fromStartAt: current.startAt },
+        payload: { audience: "team", proposalId, outcome: "accepted", fromStartAt: current.startAt, ...(original ? { replacesRef: original.ref } : {}) },
       }),
     ),
     audit(db, {
@@ -132,6 +143,7 @@ async function acceptAttempt(env: Env, email: string, id: string, proposalId: st
         proposalId,
         from: { startAt: current.startAt, staffId: fromStaff },
         to: { startAt: option.start_at, staffId: option.staff_id },
+        ...(original ? { replacesId: original.id } : {}),
       },
     }),
   ]);

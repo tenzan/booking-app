@@ -46,6 +46,8 @@ export const en = {
       intro:
         "Your reservation request has been received. Your appointment is not yet confirmed. We will email you once our technical-service team has reviewed it.",
       replacement: "This asks to change your reservation {ref}, which stays as it is until the new time is confirmed.",
+      supersedes:
+        "This replaces your earlier change request {previous}, which has been withdrawn. Your reservation {ref} stays as it is until the new time is confirmed.",
     },
     newRequest: {
       subject: "New remote support request {ref} — {when}",
@@ -55,6 +57,7 @@ export const en = {
       propose: "Propose another time",
       details: "Open details",
       replaces: "Replaces",
+      supersedes: "Supersedes the change request",
     },
     confirmed: {
       subject: "Confirmed: remote support on {when} ({ref})",
@@ -72,7 +75,7 @@ export const en = {
       subject: "{ref} confirmed — assigned to {tech}",
       intro: "{approver} approved this request and assigned {tech}.",
       replaces: "Replaces {ref}, which has been cancelled.",
-      replacesInactive: "It was requested to replace {ref}, which is no longer active.",
+      replacesInactive: "It was requested to replace {ref}, which was left as it is (no longer active, or already started).",
     },
     declined: {
       subject: "We couldn't confirm your request ({ref})",
@@ -164,11 +167,6 @@ export const en = {
         confirmed: "We've withdrawn the new times we proposed. Your original appointment stands.",
         pending: "We've withdrawn the new times we proposed. Your request is still pending review — we'll email you once it's confirmed.",
       },
-      accepted: {
-        subject: "Your new time is confirmed ({ref})",
-        confirmed: "Thank you for choosing a new time. Your appointment is confirmed for the time below.",
-        pending: "Thank you for choosing a new time. Your appointment is confirmed for the time below.",
-      },
       rejected: {
         subject: "You kept your original time ({ref})",
         confirmed: "You chose to keep your original time. Your appointment stays as it is, and the other times we offered have been released.",
@@ -193,9 +191,9 @@ export const en = {
         subject: "{ref}: proposal expired — {when}",
         intro: "The customer didn't answer the proposal before it expired. The proposed times have been released; the original time stays as it is.",
       },
-      withdrawn: {
-        subject: "{ref}: proposal withdrawn — {when}",
-        intro: "The proposed times were withdrawn and released; the original time stays as it is.",
+      replaced: {
+        subject: "{ref}: the customer asked for another time — {when}",
+        intro: "Instead of a proposed time, the customer requested another time (a new request that replaces this one once approved). The proposed times have been released.",
       },
     },
   },

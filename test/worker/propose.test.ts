@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../helpers";
 import { loginCustomer, loginStaff, seedCustomer, seedTeam, seedWeekly, TZ, withBatchHook } from "../fixtures";
 import { clock, setNow } from "../../src/worker/lib/clock";
@@ -12,6 +12,8 @@ import { addDays, MIN, wallToUtc } from "../../src/domain/time";
 import type { StaffPrincipal } from "../../src/worker/env";
 
 afterEach(() => setNow(null));
+// Each test signs several people in and books through the API: a few seconds alone, more under a loaded parallel run.
+vi.setConfig({ testTimeout: 20_000 });
 
 const THU = "2026-10-01";
 const FRI = "2026-10-02";
