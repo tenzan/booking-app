@@ -157,12 +157,10 @@ export function EmailLinkForm({ kind, siteKey, next, label, hint, submitLabel, o
             }}
           />
         )}
-        <div aria-live="polite" className="empty:mb-0">
-          {captchaFailed ? (
-            <Notice tone="error">{t("web.start.turnstileFailed")}</Notice>
-          ) : error ? (
-            <Notice tone="error">{error}</Notice>
-          ) : null}
+        {/* Both can apply at once (a request failed, then the fresh check did too): the request's outcome first. */}
+        <div aria-live="polite" className="space-y-3 empty:mb-0">
+          {error && <Notice tone="error">{error}</Notice>}
+          {captchaFailed && <Notice tone="error">{t("web.start.turnstileFailed")}</Notice>}
         </div>
         <Button type="submit" size="lg" block loading={request.isPending} disabled={waitingForCaptcha}>
           {request.isPending ? t("web.start.sending") : waitingForCaptcha ? t("web.start.turnstileWaiting") : submitLabel}
@@ -229,6 +227,9 @@ function loadTurnstile(): { promise: Promise<void>; abandon: () => void } {
       };
     }),
     // Forget a script that failed or hung so the next mount starts a fresh load instead of waiting on this one forever.
+    // Removing the element does not cancel a download already in progress: a hung script that arrives late still runs,
+    // and the next mount has appended a fresh copy, so after a hang api.js can end up loaded twice. Accepted: it needs a
+    // hang followed by a late arrival, and the widget is rendered through whichever `window.turnstile` is there.
     abandon: () => {
       if (turnstileScript === entry) turnstileScript = null;
       s.remove();
