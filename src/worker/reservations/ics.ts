@@ -55,14 +55,15 @@ const baseUrl = (env: Env) => env.APP_BASE_URL.replace(/\/+$/, "");
 const uidFor = (env: Env, ref: string) => `${ref}@${new URL(env.APP_BASE_URL).hostname}`;
 
 /**
- * The customer's event for a reservation the caller has already proven access to. It links to the reservation page
- * without any token (the file may be forwarded or stored anywhere) and never names a technician.
+ * The customer's event for a reservation the caller has already proven access to. It links to the customer's
+ * reservations page (reached by signing in) and never to a token link, since the file may be forwarded or stored
+ * anywhere; it never names a technician.
  */
 export async function customerIcs(env: Env, reservationId: string): Promise<IcsFile> {
   const r = await loadRow(env.DB, reservationId);
   const status = eventStatus(r);
   const s = await getSettings(env.DB, env);
-  const url = `${baseUrl(env)}/r`;
+  const url = `${baseUrl(env)}/my`;
   const description = [
     t("ics.reference", { ref: r.ref }),
     ...(status === "CANCELLED"

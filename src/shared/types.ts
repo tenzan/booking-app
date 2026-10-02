@@ -75,6 +75,10 @@ export interface CustomerReservationDTO {
   closeReason: string | null;
   /** Same selection as the staff view's `proposal`, without technician data. */
   proposal: CustomerProposalDTO | null;
+  /** The reservation this one asks to replace ("choose another time"), if any. */
+  replacesRef: string | null;
+  /** The latest request to replace this one that is pending or went through (declined or expired ones don't count). */
+  replacedByRef: string | null;
 }
 
 export type TechUnavailableReason = "not_scheduled" | "unavailable" | "busy" | "needed_for_other_request";
