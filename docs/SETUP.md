@@ -126,7 +126,7 @@ To try the app with sample data on your own machine instead, see "Quick start" i
 
 ## 9. Reminders and deadlines
 
-A Cron Trigger runs the Worker every minute (the schedule is in the rendered `wrangler.jsonc`; nothing to configure on Cloudflare). Each run does the following, handling at most 50 rows per kind so a backlog drains over the next minutes, and then sends whatever mail that queued:
+A Cron Trigger runs the Worker every minute (the schedule is in the rendered `wrangler.jsonc`; nothing to configure on Cloudflare). Each run does the following, then sends whatever mail that queued. The sweeps handle at most 50 rows per kind and the hourly cleanup at most 1000 rows per table, so a backlog drains over the next runs:
 
 - **Expires unanswered requests.** A pending request that reaches its deadline is closed as expired, its technician hold is released and the customer and the team are told.
 - **Reminds and escalates.** Before the deadline, the people who receive new-request emails get one reminder, and the administrators one escalation, for each request still waiting. A request with an open rescheduling proposal is not reminded: staff are already acting on it.
