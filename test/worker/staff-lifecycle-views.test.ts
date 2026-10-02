@@ -152,6 +152,7 @@ describe("calendar feed: proposal holds", () => {
 
     const res = await api("GET", `/api/staff/calendar?${day}`, { cookie: techCookie });
     expect(res.status).toBe(200);
+    expect(res.json.holdsTruncated).toBe(false);
     expect(res.json.proposalHolds).toEqual([
       {
         reservationId: pending,

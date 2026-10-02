@@ -267,6 +267,7 @@ export default function CalendarPage() {
       </div>
 
       {cal.data?.truncated && <Notice tone="warning">{k("truncated")}</Notice>}
+      {showHolds && cal.data?.holdsTruncated && <Notice tone="warning">{t("web.staff.lifecycle.calendar.holdsTruncated")}</Notice>}
 
       {cal.isPending ? (
         <div aria-busy="true">
@@ -697,7 +698,7 @@ function HoldRow({ h, tz, linkState }: { h: CalendarProposalHoldDTO; tz: string;
         </p>
       </div>
       <span className="shrink-0 rounded-full bg-violet-100 px-2.5 py-1 text-sm font-medium text-violet-900 ring-1 ring-violet-300 ring-inset dark:bg-violet-400/15 dark:text-violet-200 dark:ring-violet-400/40">
-        {t("web.staff.schedule.impact.option")}
+        {t("web.staff.lifecycle.calendar.holdBadge")}
       </span>
     </Link>
   );

@@ -4,6 +4,7 @@ import { minNoticeAt } from "../../domain/deadlines";
 import { component, solve, type Hold } from "../../domain/matching";
 import { findSlot, freeStaffAt, occupiedRange, rangeBlocks } from "../../domain/slots";
 import { addDays, eachDate, MIN, utcToWall, wallToUtc } from "../../domain/time";
+import { MAX_PROPOSAL_OPTIONS, PROPOSAL_MESSAGE_MAX } from "../../shared/schemas";
 import type { ProposalCandidatesDTO, ProposalStatus } from "../../shared/types";
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
@@ -17,8 +18,7 @@ import { loadScheduleCtx } from "../scheduling/context";
 import { blockInsert, movedPending, movePendingStatements } from "./holds";
 import { getReservation, type ReservationDTO } from "./queries";
 
-export const MAX_PROPOSAL_OPTIONS = 3;
-export const PROPOSAL_MESSAGE_MAX = 500;
+export { MAX_PROPOSAL_OPTIONS, PROPOSAL_MESSAGE_MAX };
 /** An option may start no sooner than this after the proposal expires (spec: expiry ≤ earliest option − 60 min). */
 const OPTION_LEAD_MS = 60 * MIN;
 
@@ -277,8 +277,9 @@ export async function proposalCandidates(env: Env, id: string, fromDate: string,
   if (current.startAt - settings.proposalExpiryBeforeStartMin * MIN <= now) throw new HttpError(409, "too_late");
   const earliest = minNoticeAt(now, settings, await bhCtx(db, env, settings));
   const first = fromDate < today ? today : fromDate;
-  const last = [toDate, addDays(today, settings.bookingHorizonDays)].sort()[0]!;
-  if (first > last) return { timezone: tz, days: [] };
+  const lastDate = addDays(today, settings.bookingHorizonDays);
+  const last = [toDate, lastDate].sort()[0]!;
+  if (first > last) return { timezone: tz, lastDate, days: [] };
 
   const ctx = await loadScheduleCtx(env, wallToUtc(first, 0, tz), wallToUtc(addDays(last, 1), 0, tz));
   const superseded = new Set(current.proposal?.status === "open" ? current.proposal.options.map((o) => o.id) : []);
@@ -301,5 +302,5 @@ export async function proposalCandidates(env: Env, id: string, fromDate: string,
       .sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
     if (staff.length > 0) day.slots.push({ startAt: slot.startAt, endAt: slot.endAt, staff });
   }
-  return { timezone: tz, days };
+  return { timezone: tz, lastDate, days };
 }

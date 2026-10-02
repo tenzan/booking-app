@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
+import { MAX_PROPOSAL_OPTIONS as MAX_OPTIONS, PROPOSAL_MESSAGE_MAX as MESSAGE_MAX } from "../../../../shared/schemas";
 import type { ProposalCandidatesDTO, ReservationDTO } from "../../../../shared/types";
 import { apiFetch, isApiError, queryKeys } from "../../../api";
 import { Button } from "../../../components/Button";
@@ -14,9 +15,6 @@ import { actionErrorText, type PanelProps } from "./shared";
 
 const k = (key: string, params?: Record<string, string | number>) => t(`web.staff.lifecycle.propose.${key}`, params);
 
-/** At most this many times per proposal (the API's limit). */
-const MAX_OPTIONS = 3;
-const MESSAGE_MAX = 500;
 /** Dates per candidates request (the API allows up to 14). */
 const PAGE_DAYS = 14;
 
@@ -71,8 +69,11 @@ export function ProposePanel({ r, tz, onDone, onStale, onWithdrawn, onChanged }:
         `/api/staff/reservations/${encodeURIComponent(r.id)}/proposal-candidates?from=${pageParam}&to=${addDays(pageParam, PAGE_DAYS - 1)}`,
       ),
     initialPageParam: today,
-    // A short page means the booking window ends there.
-    getNextPageParam: (last, _all, lastParam) => (last.days.length < PAGE_DAYS ? undefined : addDays(lastParam, PAGE_DAYS)),
+    // Up to the booking window's last date: no empty page after it.
+    getNextPageParam: (last, _all, lastParam) => {
+      const next = addDays(lastParam, PAGE_DAYS);
+      return next > last.lastDate ? undefined : next;
+    },
     refetchOnWindowFocus: "always",
     retry: (n, e) => !isApiError(e, 409) && !isApiError(e, 404) && n < 2,
   });
@@ -83,17 +84,26 @@ export function ProposePanel({ r, tz, onDone, onStale, onWithdrawn, onChanged }:
 
   const defaultTech = (slot: CandidateSlot) => (slot.staff.some((s) => s.id === currentTech) ? currentTech! : slot.staff[0]!.id);
 
-  // Reloaded times can take a chosen time or technician away: drop the time, or move it to a technician still free.
+  // Reloaded times can take a chosen time or technician away: drop the time, or move it to a technician still free,
+  // and say so (in the panel's live region, after any message already there).
   useEffect(() => {
     if (!candidates.data) return;
-    setPicks((old) => {
-      const next = old.flatMap((p) => {
-        const slot = slotAt.get(p.startAt);
-        if (!slot) return [];
-        return [slot.staff.some((s) => s.id === p.staffId) ? p : { ...p, staffId: defaultTech(slot) }];
-      });
-      return next.length === old.length && next.every((p, i) => p === old[i]) ? old : next;
+    const notes: string[] = [];
+    const next = picks.flatMap((p) => {
+      const when = fmtStamp(p.startAt, tz);
+      const slot = slotAt.get(p.startAt);
+      if (!slot) {
+        notes.push(k("pickDropped", { when }));
+        return [];
+      }
+      if (slot.staff.some((s) => s.id === p.staffId)) return [p];
+      const staffId = defaultTech(slot);
+      notes.push(k("pickTechChanged", { when, name: slot.staff.find((s) => s.id === staffId)?.name ?? "" }));
+      return [{ ...p, staffId }];
     });
+    if (notes.length === 0) return;
+    setPicks(next);
+    setProblem((old) => ({ tone: old?.tone ?? "warning", text: [...(old ? [old.text] : []), ...notes].join(" ") }));
   }, [candidates.data]);
 
   const toggle = (slot: CandidateSlot) => {
@@ -387,12 +397,11 @@ function CustomerPreview({ r, picks, message, tz }: { r: ReservationDTO; picks: 
             <ul className="space-y-1.5">
               {picks.map((p) => (
                 <li key={p.startAt} className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-semibold text-blue-800 tabular-nums dark:border-blue-400/40 dark:bg-slate-900 dark:text-blue-200">
-                  {t("email.proposal.option", { when: fmtWhen(p.startAt, p.endAt, tz) })}
+                  {t("email.proposal.option", { when: fmtStamp(p.startAt, tz) })}
                 </li>
               ))}
             </ul>
-            <p className="text-slate-600 dark:text-slate-400">{k("previewKeep")}</p>
-            <TimezoneNote tz={tz} atMs={picks[0]!.startAt} />
+            <p className="text-slate-600 dark:text-slate-400">{r.status === "confirmed" ? k("previewKeepConfirmed") : k("previewOtherPending")}</p>
           </>
         )}
       </div>

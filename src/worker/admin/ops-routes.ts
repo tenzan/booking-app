@@ -34,7 +34,12 @@ const CALENDAR_DEFAULT_STATUSES = ["pending", "confirmed"] as const;
 const CALENDAR_RESERVATION_CAP = 1000;
 
 /** Open proposals' options starting in [from, to), soonest first; only `staffId`'s when given. */
-async function calendarProposalHolds(db: D1Database, from: number, to: number, staffId: number | undefined): Promise<CalendarProposalHoldDTO[]> {
+async function calendarProposalHolds(
+  db: D1Database,
+  from: number,
+  to: number,
+  staffId: number | undefined,
+): Promise<{ holds: CalendarProposalHoldDTO[]; truncated: boolean }> {
   const { results } = await db
     .prepare(
       `SELECT r.id AS reservationId, r.ref, p.id AS proposalId, o.id AS optionId, o.start_at AS startAt, o.end_at AS endAt,
@@ -47,9 +52,9 @@ async function calendarProposalHolds(db: D1Database, from: number, to: number, s
        WHERE p.status = 'open' AND o.start_at >= ? AND o.start_at < ? AND (? IS NULL OR o.staff_id = ?)
        ORDER BY o.start_at, o.id LIMIT ?`,
     )
-    .bind(from, to, staffId ?? null, staffId ?? null, CALENDAR_RESERVATION_CAP)
+    .bind(from, to, staffId ?? null, staffId ?? null, CALENDAR_RESERVATION_CAP + 1)
     .all<CalendarProposalHoldDTO>();
-  return results;
+  return { holds: results.slice(0, CALENDAR_RESERVATION_CAP), truncated: results.length > CALENDAR_RESERVATION_CAP };
 }
 
 opsRoutes.get("/calendar", requireStaff(), async (c) => {
@@ -57,7 +62,7 @@ opsRoutes.get("/calendar", requireStaff(), async (c) => {
   if (q.to <= q.from) throw new HttpError(400, "invalid_range");
   if (q.to - q.from > CALENDAR_MAX_DAYS * 24 * 60 * MIN) throw new HttpError(400, "range_too_long");
 
-  const [list, ctx, proposalHolds] = await Promise.all([
+  const [list, ctx, holds] = await Promise.all([
     listReservations(c.env.DB, {
       status: q.status ?? [...CALENDAR_DEFAULT_STATUSES],
       from: q.from,
@@ -103,7 +108,8 @@ opsRoutes.get("/calendar", requireStaff(), async (c) => {
     timezone: c.env.APP_TIMEZONE,
     reservations,
     truncated: list.nextCursor !== null,
-    proposalHolds,
+    proposalHolds: holds.holds,
+    holdsTruncated: holds.truncated,
     slots: [...days.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, slots]) => ({ date, slots })),
   };
   return c.json(body);

@@ -578,13 +578,14 @@ async function withdrawOption(c: ConflictDTO) {
 }
 
 /** Opens the reservation with the propose panel, in a new tab: the impact dialog stays as it is here. */
-function ProposeLink({ c }: { c: ConflictDTO }) {
+function ProposeLink({ c, describedBy }: { c: ConflictDTO; describedBy: string }) {
   return (
     <a
       href={`/staff/r/${encodeURIComponent(c.reservationId)}?action=propose`}
       target="_blank"
       rel="noopener noreferrer"
       aria-label={t("web.staff.lifecycle.impact.proposeLabel", { ref: c.ref })}
+      aria-describedby={describedBy}
       className="inline-flex min-h-11 items-center justify-start gap-2 rounded-xl border border-slate-300 bg-white px-4 font-semibold text-slate-900 hover:bg-slate-100 sm:justify-center dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
     >
       {t("web.staff.lifecycle.impact.propose")}
@@ -788,7 +789,7 @@ function ConflictCard({
           )}
           {c.kind === "reservation" && (
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-              <ProposeLink c={c} />
+              <ProposeLink c={c} describedBy={`${headingId}-propose-note`} />
               <Button
                 variant="ghost"
                 disabled={disabled}
@@ -798,6 +799,9 @@ function ConflictCard({
               >
                 {c.status === "confirmed" ? k("impact.cancelAppointment") : k("impact.decline")}
               </Button>
+              <p id={`${headingId}-propose-note`} className="basis-full text-sm text-slate-600 dark:text-slate-400">
+                {t("web.staff.lifecycle.impact.proposeNote")}
+              </p>
             </div>
           )}
           {c.kind === "option" && (

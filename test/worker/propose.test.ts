@@ -451,7 +451,8 @@ describe("GET /api/staff/reservations/:id/proposal-candidates", () => {
       { startAt: at(FRI, 12), endAt: at(FRI, 12, 30), staff: names([team.a]) },
       { startAt: at(FRI, 12, 30), endAt: at(FRI, 13), staff: names([team.a]) },
     ];
-    expect(res.json).toEqual({ timezone: TZ, days: [{ date: FRI, slots: expected }] });
+    // lastDate: the booking window's last date (today + 30 days), so a client knows when to stop paging.
+    expect(res.json).toEqual({ timezone: TZ, lastDate: addDays(THU, 30), days: [{ date: FRI, slots: expected }] });
 
     // Its own open proposal would be superseded, so its options don't count.
     expect((await propose(id, [{ startAt: at(FRI, 11), staffId: team.a }], 2)).status).toBe(200);
@@ -476,7 +477,7 @@ describe("GET /api/staff/reservations/:id/proposal-candidates", () => {
     await setSetting("bookingHorizonDays", 1);
     await seedWeekly(6, 600, 780, [team.a, team.b]);
     expect((await candidates(id, FRI, SAT)).json.days.map((d: any) => d.date)).toEqual([FRI]);
-    expect((await candidates(id, SAT, SAT)).json.days).toEqual([]);
+    expect((await candidates(id, SAT, SAT)).json).toEqual({ timezone: TZ, lastDate: FRI, days: [] });
   });
 
   it("is too late within proposalExpiryBeforeStartMin of the start, and leaves out slots an expiry could not precede", async () => {
