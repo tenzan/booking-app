@@ -17,7 +17,7 @@ Implemented now:
 - An administrator switch (Settings or the staff dashboard) pauses and resumes online booking (to stop spam); existing reservations, their links and all staff features keep working.
 - Email outbox with retries for every notification, a local development mailbox, audit log entries, rate limits and optional Turnstile.
 - Customer cancellation (from the account or an emailed link, until a configurable cut-off).
-- Rescheduling proposals: staff offer one to three other times, each held for a technician; the customer picks one, keeps the original or asks for a different time (a replacement request that staff approve, which cancels the original with a single "rescheduled" email).
+- Rescheduling proposals: staff offer one to three other times, each held for a technician; the customer picks one or asks for a different time (a replacement request that staff approve, which cancels the original with a single "rescheduled" email). For a confirmed appointment the customer can also keep the original time.
 - Lifecycle jobs on a one-minute cron: approval reminders and escalation, expiry of unanswered requests and proposals, customer appointment reminders, completion of finished appointments and hourly cleanup of old tokens, sessions and mail.
 - `.ics` calendar export for customers and staff.
 - Customers' email replies relayed to the staff.
