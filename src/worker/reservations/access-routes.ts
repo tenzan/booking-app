@@ -7,6 +7,7 @@ import { HttpError, readJson } from "../lib/http";
 import { rateLimit } from "../lib/rate-limit";
 import { getSettings } from "../repos/settings";
 import { cancelAsCustomer, customerCancelBody } from "./cancel";
+import { customerIcs, icsResponse } from "./ics";
 import { kickOutbox } from "../mail/outbox";
 import { getAccessTokenTarget, getCustomerReservationByAccessToken } from "./queries";
 import { acceptBody, acceptProposal, rejectBody, rejectProposal } from "./respond";
@@ -36,6 +37,15 @@ accessRoutes.post("/reservation", async (c) => {
   if (!reservation) throw new HttpError(404, "invalid_link");
   const settings = await getSettings(c.env.DB, c.env);
   return c.json({ reservation, timezone: c.env.APP_TIMEZONE, supportPhone: settings.supportPhone, cancelCutoffMin: settings.cancelCutoffMin });
+});
+
+/** The appointment as a calendar file. The token only scopes access; it is never written into the file. */
+accessRoutes.post("/reservation/ics", async (c) => {
+  await limitByIp(c);
+  const { token } = await readJson(c, body);
+  const target = await getAccessTokenTarget(c.env.DB, await sha256Hex(token), clock.now());
+  if (!target) throw new HttpError(404, "invalid_link");
+  return icsResponse(c, await customerIcs(c.env, target.id));
 });
 
 /** Cancel through the link: the token scopes this to one reservation and the contact on it is the one acting. */

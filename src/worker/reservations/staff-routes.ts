@@ -9,6 +9,7 @@ import { requireStaff } from "../middleware/session";
 import { approveReservation } from "./approve";
 import { cancelReservation } from "./cancel";
 import { declineReservation } from "./decline";
+import { icsResponse, staffIcs } from "./ics";
 import { CANDIDATE_MAX_DAYS, proposalCandidates, proposeBody, proposeReservation, withdrawProposal } from "./propose";
 import { reassignReservation } from "./reassign";
 import { getAudit, getReservation, listReservations, techOptions } from "./queries";
@@ -35,6 +36,8 @@ staffReservationRoutes.get("/reservations/:id", async (c) => {
   const [options, trail] = await Promise.all([techOptions(c.env, reservation), getAudit(c.env.DB, reservation.id)]);
   return c.json({ reservation, techOptions: options, audit: trail });
 });
+
+staffReservationRoutes.get("/reservations/:id/ics", async (c) => icsResponse(c, await staffIcs(c.env, c.req.param("id"))));
 
 staffReservationRoutes.post("/reservations/:id/approve", async (c) => {
   const { staffId, version } = await readJson(c, approveBody);

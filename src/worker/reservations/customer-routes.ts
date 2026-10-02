@@ -10,6 +10,7 @@ import { accountIdsForContact, eligibleAccountsForEmail, lastPhonesForEmail } fr
 import { assertBookingEnabled } from "../repos/settings";
 import { customerAvailability } from "../scheduling/availability";
 import { cancelAsCustomer, customerCancelBody } from "./cancel";
+import { customerIcs, icsResponse } from "./ics";
 import { getCustomerReservation, listCustomerReservations } from "./queries";
 import { acceptBody, acceptProposal, rejectBody, rejectProposal } from "./respond";
 import { submitReservation } from "./submit";
@@ -72,6 +73,13 @@ customerRoutes.get("/reservations/:id", async (c) => {
   const reservation = await getCustomerReservation(c.env.DB, c.req.param("id"), accountIds);
   if (!reservation) throw new HttpError(404, "not_found");
   return c.json({ reservation });
+});
+
+/** The appointment as a calendar file (a POST so it is only ever fetched by the page itself). Ownership as for cancel. */
+customerRoutes.post("/reservations/:id/ics", async (c) => {
+  const id = c.req.param("id");
+  await assertOwned(c.env.DB, c.var.customerEmail!, id);
+  return icsResponse(c, await customerIcs(c.env, id));
 });
 
 /**

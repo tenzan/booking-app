@@ -197,6 +197,20 @@ export const en = {
       },
     },
   },
+  /** Calendar (.ics) export: text inside the downloaded event. */
+  ics: {
+    customerSummary: "Remote support — {org}",
+    staffSummary: "Remote support — {customer} ({ref})",
+    reference: "Reference: {ref}",
+    call: "A technician will call you at {phone} at the appointment time.",
+    ready: "Please have your computer turned on and {tool} ready.",
+    cancelled: "This appointment has been cancelled.",
+    link: "Reservation: {url}",
+    contact: "Contact: {name} ({email})",
+    phone: "Callback phone: {phone}",
+    issue: "Issue: {issue}",
+    technician: "Technician: {name}",
+  },
   web: {
     common: {
       loading: "Loading…",
