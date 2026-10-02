@@ -8,7 +8,7 @@ import { getSettings } from "../repos/settings";
 import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
 import { cancelObsoleteMail, ELIGIBLE_SQL } from "./holds";
 import { closeProposalStatements } from "./propose";
-import { getReservation, toCustomerView, type CustomerReservationDTO, type ReservationDTO } from "./queries";
+import { customerView, getReservation, type CustomerReservationDTO, type ReservationDTO } from "./queries";
 import { reminderStatements } from "./reminders";
 import { cancelReplacedStatements, replacedBy } from "./replacement";
 
@@ -38,7 +38,7 @@ async function loadOpen(env: Env, id: string, proposalId: string): Promise<OpenP
   if (!current || !proposal) throw new HttpError(404, "not_found");
   const now = clock.now();
   if (proposal.status !== "open" || proposal.expires_at <= now || (current.status !== "pending" && current.status !== "confirmed")) {
-    throw new HttpError(409, "proposal_closed", { current: toCustomerView(current) });
+    throw new HttpError(409, "proposal_closed", { current: await customerView(db, id) });
   }
   return { scheduleVersion, current, now };
 }
@@ -147,7 +147,7 @@ async function acceptAttempt(env: Env, email: string, id: string, proposalId: st
       },
     }),
   ]);
-  return toCustomerView((await getReservation(db, id))!);
+  return (await customerView(db, id))!;
 }
 
 /**
@@ -179,7 +179,7 @@ async function rejectAttempt(env: Env, email: string, id: string, proposalId: st
       details: { proposalId, via: "keep" },
     }),
   ]);
-  return toCustomerView((await getReservation(db, id))!);
+  return (await customerView(db, id))!;
 }
 
 /** `proposal_outcome` to the customer (one per proposal) and to each of `team`. */

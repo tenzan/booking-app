@@ -211,9 +211,15 @@ export async function listReservations(
   return { reservations: page, nextCursor: results.length > limit && last ? encodeCursor([last.startAt, last.createdAt, last.id]) : null };
 }
 
+/**
+ * `replaces_ref`: the reservation this one asks to replace. `replaced_by_ref`: the latest request replacing this one that
+ * is still pending or went through (a declined, expired or superseded one replaces nothing).
+ */
 const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
-    r.contact_name, r.phone, r.issue, r.created_at, r.close_reason
-  FROM reservations r JOIN customers c ON c.id = r.customer_id`;
+    r.contact_name, r.phone, r.issue, r.created_at, r.close_reason, orig.ref AS replaces_ref,
+    (SELECT n.ref FROM reservations n WHERE n.replaces_id = r.id AND n.status IN ('pending','confirmed','completed')
+      ORDER BY n.created_at DESC, n.id DESC LIMIT 1) AS replaced_by_ref
+  FROM reservations r JOIN customers c ON c.id = r.customer_id LEFT JOIN reservations orig ON orig.id = r.replaces_id`;
 
 interface CustomerRow {
   id: string;
@@ -229,6 +235,8 @@ interface CustomerRow {
   issue: string;
   created_at: number;
   close_reason: string | null;
+  replaces_ref: string | null;
+  replaced_by_ref: string | null;
 }
 
 const toCustomerDTO = (r: CustomerRow, proposal: CustomerProposalDTO | null): CustomerReservationDTO => ({
@@ -246,6 +254,8 @@ const toCustomerDTO = (r: CustomerRow, proposal: CustomerProposalDTO | null): Cu
   createdAt: r.created_at,
   closeReason: r.close_reason,
   proposal,
+  replacesRef: r.replaces_ref,
+  replacedByRef: r.replaced_by_ref,
 });
 
 async function customerDTOs(db: D1Database, rows: CustomerRow[]): Promise<CustomerReservationDTO[]> {
@@ -253,23 +263,14 @@ async function customerDTOs(db: D1Database, rows: CustomerRow[]): Promise<Custom
   return rows.map((r) => toCustomerDTO(r, toCustomerProposal(proposals.get(r.id) ?? null)));
 }
 
-/** The customer's view of a staff DTO: no technician, approver or contact-email fields ever cross over. */
-export const toCustomerView = (r: ReservationDTO): CustomerReservationDTO => ({
-  id: r.id,
-  ref: r.ref,
-  status: r.status,
-  version: r.version,
-  startAt: r.startAt,
-  endAt: r.endAt,
-  accountName: r.customer.name,
-  customerNumber: r.customer.number,
-  contactName: r.contactName,
-  phone: r.phone,
-  issue: r.issue,
-  createdAt: r.createdAt,
-  closeReason: r.closeReason,
-  proposal: toCustomerProposal(r.proposal),
-});
+/**
+ * The customer's view of reservation `id`, for a caller who has already proven access to it (an answer to their action,
+ * or the current state in a 409): no technician, approver or contact-email fields ever cross over.
+ */
+export async function customerView(db: D1Database, id: string): Promise<CustomerReservationDTO | null> {
+  const row = await db.prepare(`${CUSTOMER_SELECT} WHERE r.id = ?`).bind(id).first<CustomerRow>();
+  return row ? (await customerDTOs(db, [row]))[0]! : null;
+}
 
 const placeholders = (n: number) => Array.from({ length: n }, () => "?").join(",");
 

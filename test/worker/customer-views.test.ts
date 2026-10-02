@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { api } from "../helpers";
-import { lastMailTo, loginCustomer, seedCustomer, seedTeam, seedWeekly, TZ } from "../fixtures";
+import { lastMailTo, loginCustomer, loginStaff, seedCustomer, seedTeam, seedWeekly, TZ } from "../fixtures";
 import { clock, setNow } from "../../src/worker/lib/clock";
 import { sha256Hex } from "../../src/worker/lib/crypto";
 import { wallToUtc } from "../../src/domain/time";
@@ -26,10 +26,10 @@ beforeEach(async () => {
   sam.cookie = await loginCustomer("sam@example.test");
 });
 
-const submit = async (who: { id: number; cookie: string }, startAt: number, issue = "Printer is offline") => {
+const submit = async (who: { id: number; cookie: string }, startAt: number, issue = "Printer is offline", extra: Record<string, unknown> = {}) => {
   const res = await api("POST", "/api/customer/reservations", {
     cookie: who.cookie,
-    body: { customerId: who.id, startAt, contactName: "Pat Example", phone: "+81 3-1234-5678", issue, idempotencyKey: crypto.randomUUID() },
+    body: { customerId: who.id, startAt, contactName: "Pat Example", phone: "+81 3-1234-5678", issue, idempotencyKey: crypto.randomUUID(), ...extra },
   });
   expect(res.status).toBe(201);
   return res.json.reservation.id as string;
@@ -78,6 +78,8 @@ describe("GET /api/customer/reservations", () => {
       closeReason: null,
       version: 1,
       proposal: null,
+      replacesRef: null,
+      replacedByRef: null,
     });
   });
 
@@ -161,7 +163,24 @@ describe("GET /api/customer/reservations/:id", () => {
     expect(text).not.toContain("Test Person");
     expect(text).not.toContain("example.test");
     expect(Object.keys(res.json.reservation).sort()).toEqual(
-      ["accountName", "closeReason", "contactName", "createdAt", "customerNumber", "endAt", "id", "issue", "phone", "proposal", "ref", "startAt", "status", "version"],
+      [
+        "accountName",
+        "closeReason",
+        "contactName",
+        "createdAt",
+        "customerNumber",
+        "endAt",
+        "id",
+        "issue",
+        "phone",
+        "proposal",
+        "ref",
+        "replacedByRef",
+        "replacesRef",
+        "startAt",
+        "status",
+        "version",
+      ],
     );
   });
 });
@@ -251,5 +270,45 @@ describe("POST /api/access/reservation", () => {
     // another IP and a request without an IP header are unaffected
     expect((await access("x".repeat(43), { "cf-connecting-ip": "203.0.113.10" })).status).toBe(404);
     expect((await access("x".repeat(43))).status).toBe(404);
+  });
+});
+
+describe("replacement references on the customer's view", () => {
+  const staffPost = async (cookie: string, path: string, body: unknown) => {
+    const res = await api("POST", path, { cookie, body });
+    expect([res.status, res.json.error]).toEqual([200, undefined]);
+    return res.json.reservation;
+  };
+  const mine = async (id: string) => (await api("GET", `/api/customer/reservations/${id}`, { cookie: pat.cookie })).json.reservation;
+
+  it("links an original and the request that would replace it, both ways, while the replacement is pending or confirmed", async () => {
+    const admin = await loginStaff("admin@example.test");
+    const id = await submit(pat, at(FRI, 10));
+    await staffPost(admin, `/api/staff/reservations/${id}/approve`, { staffId: team.a, version: 1 });
+    const first = await submit(pat, at(FRI, 11), "Printer is offline", { replacesId: id });
+    const orig = await mine(id);
+    const rep = await mine(first);
+    expect([orig.replacesRef, orig.replacedByRef]).toEqual([null, rep.ref]);
+    expect([rep.replacesRef, rep.replacedByRef]).toEqual([orig.ref, null]);
+    const listed = (await api("GET", "/api/customer/reservations", { cookie: pat.cookie })).json.reservations;
+    expect(listed.find((r: any) => r.id === id).replacedByRef).toBe(rep.ref);
+    // The emailed link shows the same.
+    const token = await mintToken(id, at(FRI, 23));
+    expect((await access(token)).json.reservation.replacedByRef).toBe(rep.ref);
+
+    // A declined replacement no longer replaces anything; the next one does.
+    await staffPost(admin, `/api/staff/reservations/${first}/decline`, { reason: "Fully booked", version: 1 });
+    expect((await mine(id)).replacedByRef).toBeNull();
+    const second = await submit(pat, at(FRI, 11, 30), "Printer is offline", { replacesId: id });
+    const secondRef = (await mine(second)).ref;
+    expect((await mine(id)).replacedByRef).toBe(secondRef);
+
+    // Approved: the original is cancelled as rescheduled and still names what replaced it (also in a cancel's stale answer).
+    await staffPost(admin, `/api/staff/reservations/${second}/approve`, { staffId: team.b, version: 1 });
+    expect(await mine(id)).toMatchObject({ status: "cancelled", closeReason: "rescheduled", replacedByRef: secondRef });
+    expect(await mine(second)).toMatchObject({ status: "confirmed", replacesRef: orig.ref, replacedByRef: null });
+    const stale = await api("POST", `/api/customer/reservations/${id}/cancel`, { cookie: pat.cookie, body: { version: orig.version } });
+    expect([stale.status, stale.json.error]).toEqual([409, "stale"]);
+    expect(stale.json.details.current).toMatchObject({ id, status: "cancelled", replacedByRef: secondRef });
   });
 });

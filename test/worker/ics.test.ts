@@ -120,14 +120,14 @@ describe("POST /api/customer/reservations/:id/ics", () => {
     expect(prop(ics, "DTSTART")).toBe(utc(at(FRI, 10)));
     expect(prop(ics, "DTEND")).toBe(utc(at(FRI, 10, 30)));
     expect(prop(ics, "DTSTAMP")).toBe(utc(clock.now()));
-    expect(prop(ics, "URL")).toBe("http://localhost:5173/r");
+    expect(prop(ics, "URL")).toBe("http://localhost:5173/my");
     expect(textProp(ics, "SUMMARY")).toBe("Remote support — Acme, Support; Desk");
     const description = textProp(ics, "DESCRIPTION")!;
     expect(description).toContain(ref);
     expect(description).toContain("A technician will call you at +81 3-1234-5678");
     expect(description).toContain("AnyDesk");
     expect(description).toContain("Close other apps.\nHave your ID ready, please.");
-    expect(description).toContain("http://localhost:5173/r");
+    expect(description).toContain("http://localhost:5173/my");
     expect(ics).not.toContain("VALARM");
     for (const name of TECH_NAMES) expect(ics).not.toContain(name);
     expect(ics).not.toMatch(/staff|tech-a@/i);
@@ -219,7 +219,7 @@ describe("POST /api/access/reservation/ics", () => {
     expect(prop(res.text, "STATUS")).toBe("CONFIRMED");
     expect(prop(res.text, "UID")).toBe(`${ref}@localhost`);
     expect(prop(res.text, "SEQUENCE")).toBe("2");
-    expect(prop(res.text, "URL")).toBe("http://localhost:5173/r");
+    expect(prop(res.text, "URL")).toBe("http://localhost:5173/my");
     expect(res.text).not.toContain(token);
     expect(res.text).not.toContain(token.slice(4, 30));
     expect(unfold(res.text)).not.toMatch(/#t=|token/i);

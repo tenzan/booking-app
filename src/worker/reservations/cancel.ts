@@ -8,7 +8,7 @@ import { enqueueEmail } from "../mail/outbox";
 import { getSettings } from "../repos/settings";
 import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
 import { cancelObsoleteMail, releaseHoldStatements } from "./holds";
-import { getReservation, toCustomerView, type CustomerReservationDTO, type ReservationDTO } from "./queries";
+import { customerView, getReservation, type CustomerReservationDTO, type ReservationDTO } from "./queries";
 
 export type CancelActor = { kind: "staff"; staff: StaffPrincipal } | { kind: "customer"; email: string };
 
@@ -113,9 +113,10 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
  */
 export async function cancelAsCustomer(env: Env, email: string, id: string, input: { reason?: string; version: number }): Promise<CustomerReservationDTO> {
   try {
-    return toCustomerView(await cancelReservation(env, { kind: "customer", email }, id, input));
+    await cancelReservation(env, { kind: "customer", email }, id, input);
+    return (await customerView(env.DB, id))!;
   } catch (e) {
-    if (e instanceof HttpError && e.code === "stale") throw new HttpError(409, "stale", { current: toCustomerView((e.details as { current: ReservationDTO }).current) });
+    if (e instanceof HttpError && e.code === "stale") throw new HttpError(409, "stale", { current: await customerView(env.DB, id) });
     throw e;
   }
 }

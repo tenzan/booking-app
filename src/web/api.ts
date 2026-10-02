@@ -233,12 +233,28 @@ export function useMe() {
  */
 export function takeFragmentToken(): string | null {
   const state = (window.history.state ?? {}) as Record<string, unknown>;
-  const fromHash = new URLSearchParams(window.location.hash.slice(1)).get("t");
+  const hash = new URLSearchParams(window.location.hash.slice(1));
+  const fromHash = hash.get("t");
   if (fromHash) {
-    window.history.replaceState({ ...state, fragmentToken: fromHash }, "", window.location.pathname + window.location.search);
+    hash.delete("t");
+    // The rest of the fragment (`action=cancel`, …) is parked with the token: see fragmentParams.
+    const fragmentParams = Object.fromEntries(hash);
+    window.history.replaceState({ ...state, fragmentToken: fromHash, fragmentParams }, "", window.location.pathname + window.location.search);
     return fromHash;
   }
   return typeof state.fragmentToken === "string" ? state.fragmentToken : null;
+}
+
+/** The other `#key=value` pairs that came with this history entry's fragment token (e.g. `action=cancel`). */
+export function fragmentParams(): Record<string, string> {
+  const p = (window.history.state as Record<string, unknown> | null)?.fragmentParams;
+  return p && typeof p === "object" ? (p as Record<string, string>) : {};
+}
+
+/** Forget the parked fragment params once they have been acted on (a reload then opens the plain page). */
+export function clearFragmentParams(): void {
+  const state = (window.history.state ?? {}) as Record<string, unknown>;
+  if (state.fragmentParams) window.history.replaceState({ ...state, fragmentParams: {} }, "", window.location.href);
 }
 
 /** The fragment token for this page; picks up a new one if another link is opened in the same tab. */

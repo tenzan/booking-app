@@ -72,7 +72,24 @@ const mailsTo = async (email: string, subjectLike = "%") =>
       .all<{ subject: string; text: string; html: string }>()
   ).results;
 
-const CUSTOMER_KEYS = ["accountName", "closeReason", "contactName", "createdAt", "customerNumber", "endAt", "id", "issue", "phone", "proposal", "ref", "startAt", "status", "version"];
+const CUSTOMER_KEYS = [
+  "accountName",
+  "closeReason",
+  "contactName",
+  "createdAt",
+  "customerNumber",
+  "endAt",
+  "id",
+  "issue",
+  "phone",
+  "proposal",
+  "ref",
+  "replacedByRef",
+  "replacesRef",
+  "startAt",
+  "status",
+  "version",
+];
 
 describe("POST /api/customer/reservations/:id/cancel", () => {
   it("cancels a pending request: customer DTO without staff data, blocks freed, team and customer mailed", async () => {
