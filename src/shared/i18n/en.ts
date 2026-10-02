@@ -1668,7 +1668,9 @@ export const en = {
       },
       /** Reservation lifecycle on the staff side: proposals, replacements, closed states, calendar export. */
       lifecycle: {
+        replacementPending: "The customer has asked to move this to another time: {ref}. Approve or decline that request instead of proposing times here.",
         propose: {
+          replacementPending: "The customer has just asked for another time themselves, so no times were proposed. Decide on their change request instead.",
           leadPending: "Offer the customer up to 3 other times. Each one is held for its technician until the customer answers or the proposal expires. The requested time stays held meanwhile.",
           leadConfirmed: "Offer the customer up to 3 other times. Each one is held for its technician until the customer answers or the proposal expires. The current appointment stays as it is until they choose.",
           openNotice: "Times proposed on {when} are waiting for the customer (expires {expires}). Sending new times replaces them.",

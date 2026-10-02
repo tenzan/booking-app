@@ -332,6 +332,56 @@ describe("POST /api/staff/reservations/:id/propose", () => {
     expect(await count("SELECT COUNT(*) AS n FROM proposals WHERE status = 'open'")).toBe(1);
   });
 
+  describe("while the customer's change request is pending", () => {
+    const requestChange = async (originalId: string, startAt: number) => {
+      const res = await api("POST", "/api/customer/reservations", {
+        cookie: pat.cookie,
+        body: {
+          customerId: pat.id,
+          startAt,
+          contactName: "Pat Example",
+          phone: "+81 3-1234-5678",
+          issue: "Printer is offline",
+          idempotencyKey: crypto.randomUUID(),
+          replacesId: originalId,
+        },
+      });
+      expect([res.status, res.json.error]).toEqual([201, undefined]);
+      return res.json.reservation as { id: string; ref: string };
+    };
+
+    it("refuses to propose on the original: 409 replacement_pending naming the request, nothing written", async () => {
+      const id = await submit(pat, at(FRI, 10));
+      await approve(id, team.a);
+      const change = await requestChange(id, at(FRI, 11));
+      const res = await propose(id, [{ startAt: at(FRI, 12), staffId: team.b }], 2);
+      expect([res.status, res.json.error]).toEqual([409, "replacement_pending"]);
+      expect(res.json.details).toEqual({ replacementId: change.id, replacementRef: change.ref });
+      expect(await count("SELECT COUNT(*) AS n FROM proposals")).toBe(0);
+      expect((await row(id)).version).toBe(2);
+
+      // Once the change request is declined, proposing works again.
+      expect((await api("POST", `/api/staff/reservations/${change.id}/decline`, { cookie: adminCookie, body: { reason: "Full", version: 1 } })).status).toBe(200);
+      expect((await propose(id, [{ startAt: at(FRI, 12), staffId: team.b }], 2)).status).toBe(200);
+    });
+
+    it("a change request made while the proposal is in flight: the retry is refused", async () => {
+      const id = await submit(pat, at(FRI, 10));
+      await approve(id, team.a);
+      let made = false;
+      const w = withBatchHook(async () => {
+        if (made) return;
+        made = true;
+        await requestChange(id, at(FRI, 11));
+      });
+      await expect(
+        proposeReservation(w.env, principal(team.admin, "Ada Admin", "admin"), id, { options: [{ startAt: at(FRI, 12), staffId: team.b }], version: 2 }),
+      ).rejects.toMatchObject({ status: 409, code: "replacement_pending" });
+      expect(await count("SELECT COUNT(*) AS n FROM proposals")).toBe(0);
+      expect(await optionBlocks()).toBe(0);
+    });
+  });
+
   describe("racing an approval", () => {
     it("approval first: the proposal is stale", async () => {
       const id = await submit(pat, at(FRI, 10));

@@ -72,6 +72,7 @@ export function closeProposalStatements(
  * meanwhile, so the options must fit together with it and with every other hold (pending requests may move, the
  * original included when pending). An open proposal is superseded in the same batch, its holds freed first so its times
  * can be offered again. The reservation's version moves on, so a racing approve/reassign/cancel is stale.
+ * Refused (409 replacement_pending) while the customer's own change request for it is pending.
  */
 export async function proposeReservation(env: Env, actor: StaffPrincipal, id: string, input: ProposeInput): Promise<ReservationDTO> {
   return withRetry(() => attempt(env, actor, id, input));
@@ -83,6 +84,11 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, input: Propo
   const current = await getReservation(db, id);
   if (!current) throw new HttpError(404, "not_found");
   if ((current.status !== "pending" && current.status !== "confirmed") || current.version !== version) throw new HttpError(409, "stale", { current });
+  // The customer already asked for another time: staff decide on that request. A proposal answered meanwhile would be
+  // overridden by its approval (and the latest one of a reservation is the pending one, since only one can be pending).
+  if (current.replacedByStatus === "pending") {
+    throw new HttpError(409, "replacement_pending", { replacementId: current.replacedById, replacementRef: current.replacedByRef });
+  }
 
   const currentTech = current.status === "confirmed" ? (current.assignedStaff?.id ?? null) : current.provisionalStaffId;
   // Customers see times only (never who would take them), so two options at one time, or an option at the current
@@ -154,6 +160,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, input: Propo
 
   await capacityBatch(db, ctx.version, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = ? AND version = ?", id, current.status, version),
+    assertSql(db, "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM reservations WHERE replaces_id = ? AND status = 'pending')", id),
     ...(open
       ? closeProposalStatements(db, id, open.id, "superseded", now)
       : [assertSql(db, "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM proposals WHERE reservation_id = ? AND status = 'open')", id)]),

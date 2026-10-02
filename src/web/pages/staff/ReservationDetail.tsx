@@ -11,7 +11,7 @@ import { Skeleton } from "../../components/Spinner";
 import { StatusBadge, statusTone } from "../../components/StatusBadge";
 import { TimezoneNote } from "../../components/TimezoneNote";
 import { fmtStamp, fmtWhen } from "../../format";
-import { t } from "../../i18n";
+import { t, tNodes } from "../../i18n";
 import { Countdown, useNow } from "./Countdown";
 import { ApprovePanel } from "./detail/ApprovePanel";
 import { CancelPanel } from "./detail/CancelPanel";
@@ -138,7 +138,9 @@ export default function ReservationDetail() {
 
   const r = q.data?.reservation;
   const ended = r !== undefined && r.status === "confirmed" && r.endAt <= now;
-  const allowed = r && !ended ? (ACTIONS_FOR[r.status] ?? []) : [];
+  // The customer's own change request is pending: staff decide on that instead of proposing times (the server refuses).
+  const pendingChange = r?.replacedByStatus === "pending" && r.replacedById && r.replacedByRef ? { id: r.replacedById, ref: r.replacedByRef } : null;
+  const allowed = r && !ended ? (ACTIONS_FOR[r.status] ?? []).filter((a) => a !== "propose" || !pendingChange) : [];
   const action = asAction(params.get("action"), allowed);
 
   if (isApiError(q.error, 404)) {
@@ -214,7 +216,24 @@ export default function ReservationDetail() {
             </div>
             <div className="min-w-0 space-y-6 lg:sticky lg:top-32 lg:col-span-2">
               {allowed.length > 0 && (
-                <ActionsCard actions={allowed} action={action} onOpen={openPanel}>
+                <ActionsCard
+                  actions={allowed}
+                  action={action}
+                  onOpen={openPanel}
+                  note={
+                    pendingChange && (
+                      <Notice tone="info">
+                        {tNodes("web.staff.lifecycle.replacementPending", {
+                          ref: (
+                            <Link to={`/staff/r/${encodeURIComponent(pendingChange.id)}`} className={`font-mono ${linkClass}`}>
+                              {pendingChange.ref}
+                            </Link>
+                          ),
+                        })}
+                      </Notice>
+                    )
+                  }
+                >
                   {action === "approve" && (
                     <ApprovePanel
                       key={q.data.reservation.version}
@@ -461,11 +480,14 @@ function ActionsCard({
   actions,
   action,
   onOpen,
+  note,
   children,
 }: {
   actions: Action[];
   action: Action | null;
   onOpen: (a: Action | null) => void;
+  /** Shown under the actions: why one that would otherwise be there is not. */
+  note?: ReactNode;
   children: ReactNode;
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -523,6 +545,7 @@ function ActionsCard({
       >
         {actions.map(tab)}
       </div>
+      {note}
       {action && (
         <div id="action-panel" className="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-800">
           <h2 ref={headingRef} tabIndex={-1} className="text-lg font-semibold outline-none">

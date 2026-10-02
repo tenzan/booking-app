@@ -128,6 +128,8 @@ export function ProposePanel({ r, tz, onDone, onStale, onWithdrawn, onChanged }:
     onError: (e, body) => {
       if (isApiError(e, 409, "stale")) return onStale((e.details as { current?: ReservationDTO } | undefined)?.current);
       if (isApiError(e, 409, "too_late")) return setProblem({ tone: "error", text: k("tooLate") });
+      // The page reloads and shows the change request instead of this panel.
+      if (isApiError(e, 409, "replacement_pending")) return onChanged(k("replacementPending"));
       const code = OPTION_ERRORS.find((c) => isApiError(e, 409, c) || isApiError(e, 400, c));
       if (code) {
         const index = (e as { details?: { index?: unknown } }).details?.index;
