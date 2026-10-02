@@ -734,6 +734,37 @@ describe("proposal expiry sweep", () => {
     expect((await proposalRow(p.id)).status).toBe("withdrawn");
   });
 
+  describe("stale proposal expiries are closed silently", () => {
+    const outcomeJobs = () => count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'proposal_outcome'");
+
+    it("every offered time already past: options released, nobody emailed, audited as silent", async () => {
+      const id = await submit(pat, at(FRI, 10));
+      await approve(id, team.a);
+      const p = await propose(id, [{ startAt: at(FRI, 11), staffId: team.b }], 2);
+      await env.DB.prepare("DELETE FROM email_jobs").run();
+      // The cron was down from before the proposal's expiry until after its only option's time.
+      setNow(at(FRI, 11, 5));
+      expect((await runSweeps(env, at(FRI, 11, 5))).counts.proposals).toBe(1);
+      expect(await proposalRow(p.id)).toMatchObject({ status: "expired", resolved_at: at(FRI, 11, 5) });
+      expect(await optionBlocks()).toBe(0);
+      expect(await outcomeJobs()).toBe(0);
+      expect((await auditOf("reservation.proposal_expired")).details).toEqual({ proposalId: p.id, silent: true });
+    });
+
+    it("more than 24 hours past its expiry: closed without email, though its times are still to come", async () => {
+      await env.DB.prepare("INSERT INTO settings(key, value) VALUES ('proposalExpiryBh', '2')").run();
+      const id = await submit(pat, at(FRI, 10));
+      const p = await propose(id, [{ startAt: at(FRI, 12), staffId: team.b }], 1);
+      await env.DB.prepare("DELETE FROM email_jobs").run();
+      await env.DB.prepare("UPDATE proposals SET expires_at = ? WHERE id = ?").bind(at(THU, 8) - 86_400_000 - 60_000, p.id).run();
+      expect((await runSweeps(env, at(THU, 8))).counts.proposals).toBe(1);
+      expect((await proposalRow(p.id)).status).toBe("expired");
+      expect((await row(id)).status).toBe("pending");
+      expect(await outcomeJobs()).toBe(0);
+      expect((await auditOf("reservation.proposal_expired")).details).toEqual({ proposalId: p.id, silent: true });
+    });
+  });
+
   it("a proposal answered while the sweep is in flight is left alone", async () => {
     await env.DB.prepare("INSERT INTO settings(key, value) VALUES ('proposalExpiryBh', '2')").run();
     const id = await submit(pat, at(FRI, 10));

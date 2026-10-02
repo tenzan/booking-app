@@ -8,14 +8,25 @@ import { notifyStaff } from "../repos/staff";
 /** Rows each sweep handles per run; the rest wait for the next minute. */
 export const SWEEP_LIMIT = 50;
 
-/** Close one pending request as expired. Returns false when it is no longer due (a racing approval, decline, cancel or sweep got there first). */
+/**
+ * How late a lapse may be handled and still be told. Past this (a cron outage, or a backlog older than the sweep), the
+ * news is stale: the sweeps close the row without emailing anyone and audit it with `silent: true`.
+ */
+export const STALE_AFTER_MS = 24 * 60 * 60_000;
+
+/**
+ * Close one pending request as expired. Returns false when it is no longer due (a racing approval, decline, cancel or
+ * sweep got there first). A request whose time has already passed, or whose deadline is more than STALE_AFTER_MS ago,
+ * is closed silently: an "expired" email then would arrive as if it were news.
+ */
 async function expireOne(env: Env, id: string, now: number): Promise<boolean> {
   const db = env.DB;
   // Schedule version first, then the reservation: a change in between fails the guard and we retry.
   const scheduleVersion = await readScheduleVersion(db);
   const current = await getReservation(db, id);
   if (!current || current.status !== "pending" || current.expiresAt === null || current.expiresAt > now) return false;
-  const team = await notifyStaff(db);
+  const silent = current.startAt <= now || now - current.expiresAt > STALE_AFTER_MS;
+  const team = silent ? [] : await notifyStaff(db);
   await capacityBatch(db, scheduleVersion, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'pending' AND version = ? AND expires_at <= ?", id, current.version, now),
     ...releaseHoldStatements(db, id, now),
@@ -27,7 +38,9 @@ async function expireOne(env: Env, id: string, now: number): Promise<boolean> {
       )
       .bind(now, now, id, current.version),
     cancelObsoleteMail(db, id),
-    enqueueEmail(db, { template: "expired", to: current.contactEmail, dedupeKey: `expired:${id}`, reservationId: id, payload: { audience: "customer" } }),
+    ...(silent
+      ? []
+      : [enqueueEmail(db, { template: "expired", to: current.contactEmail, dedupeKey: `expired:${id}`, reservationId: id, payload: { audience: "customer" } })]),
     ...team.map((s) =>
       enqueueEmail(db, { template: "expired", to: s.email, dedupeKey: `expired-team:${id}:${s.id}`, reservationId: id, payload: { audience: "team" } }),
     ),
@@ -37,7 +50,7 @@ async function expireOne(env: Env, id: string, now: number): Promise<boolean> {
       action: "reservation.expired",
       reservationId: id,
       customerId: current.customer.id,
-      details: { expiresAt: current.expiresAt },
+      details: { expiresAt: current.expiresAt, ...(silent ? { silent: true } : {}) },
     }),
   ]);
   return true;
@@ -45,7 +58,7 @@ async function expireOne(env: Env, id: string, now: number): Promise<boolean> {
 
 /**
  * Pending requests past their approval deadline become `expired`: capacity freed, proposal withdrawn, customer and team
- * told. Each row commits on its own; a row that fails is logged and left for the next run. Returns how many it expired.
+ * told (unless the news is stale: see expireOne). Each row commits on its own; a row that fails is logged and left for the next run. Returns how many it expired.
  */
 export async function expirePending(env: Env, now: number): Promise<number> {
   const { results } = await env.DB.prepare("SELECT id FROM reservations WHERE status = 'pending' AND expires_at <= ? ORDER BY expires_at, id LIMIT ?")

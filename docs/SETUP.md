@@ -132,6 +132,7 @@ A Cron Trigger runs the Worker every minute (the schedule is in the rendered `wr
 - **Reminds and escalates.** Before the deadline, the people who receive new-request emails get one reminder, and the administrators one escalation, for each request still waiting. A request with an open rescheduling proposal is not reminded: staff are already acting on it.
 - **Expires proposals** the customer has not answered (see "Rescheduling" below) and tells both sides.
 - **Completes appointments.** A confirmed appointment whose end has passed becomes completed (no email).
+- **Stays quiet about stale news.** A request whose requested time has already passed, or whose deadline is more than 24 hours ago, is still expired (and its hold released) but nobody is emailed; the same goes for a proposal whose offered times have all passed or that expired more than 24 hours ago. This only happens after the cron has not run for a while (an outage, or rows left from before this release); the activity log notes that nobody was emailed.
 - **Cleans up, once an hour.** Expired sign-in and access tokens and ended sessions after a week, rate-limit counters after a day, delivered mail after 90 days (failed mail stays until an administrator deals with it) and the development mailbox after a week.
 
 Customer reminders for a confirmed appointment (for example 24 hours and 1 hour before it) are queued when the appointment is approved and sent by the outbox at the right time; moving or cancelling the appointment withdraws the ones not yet sent.

@@ -163,6 +163,41 @@ describe("pending expiry", () => {
     expect(mails[0]!.text).toContain("original appointment stays as it is");
   });
 
+  describe("stale expiries are closed silently (a cron outage, or a backlog older than the sweep)", () => {
+    const expiredJobs = () => count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'expired'");
+    const expiredAudit = async () => JSON.parse((await env.DB.prepare("SELECT details FROM audit_log WHERE action = 'reservation.expired'").first<{ details: string }>())!.details);
+
+    it("a request whose time has already passed: expired and freed, nobody emailed, audited as silent", async () => {
+      const id = await submit(at(FRI, 10));
+      await setTimes(id, { expires: at(THU, 12) });
+      // The cron was down until after the requested time.
+      const r = await sweep(at(FRI, 10, 5));
+      expect(r.counts.expiry).toBe(1);
+      expect(await row(id)).toMatchObject({ status: "expired", closed_by_kind: "system", close_reason: "expired" });
+      expect(await blocks()).toBe(0);
+      expect(await expiredJobs()).toBe(0);
+      expect(await expiredAudit()).toEqual({ expiresAt: at(THU, 12), silent: true });
+    });
+
+    it("a request more than 24 hours past its deadline: expired without email, even though its time is still to come", async () => {
+      const id = await submit(at(FRI, 10));
+      await setTimes(id, { expires: at(THU, 8) - DAY - MIN });
+      await sweep(at(THU, 8));
+      expect((await row(id)).status).toBe("expired");
+      expect(await expiredJobs()).toBe(0);
+      expect(await expiredAudit()).toEqual({ expiresAt: at(THU, 8) - DAY - MIN, silent: true });
+    });
+
+    it("exactly 24 hours late is still told as usual", async () => {
+      const id = await submit(at(FRI, 10));
+      await setTimes(id, { expires: at(THU, 8) - DAY });
+      await sweep(at(THU, 8));
+      expect((await row(id)).status).toBe("expired");
+      expect((await jobs("expired")).map((j) => j.to_email)).toContain("pat@example.test");
+      expect(await expiredAudit()).toEqual({ expiresAt: at(THU, 8) - DAY });
+    });
+  });
+
   it("only sends the expired notice while the reservation is expired (send-time precondition)", async () => {
     const id = await submit(at(FRI, 10));
     await enqueueEmail(env.DB, { template: "expired", to: "pat@example.test", dedupeKey: "expired:x", reservationId: id, payload: { audience: "customer" } }).run();
@@ -443,16 +478,16 @@ describe("sweeps as a whole", () => {
   });
 
   it("running twice back-to-back gives the same outcome and no duplicate mail", async () => {
-    const a = await submit(at(FRI, 10));
-    const b = await submit(at(FRI, 11));
-    const c = await submit(at(FRI, 11, 30));
+    const c = await submit(at(FRI, 10));
+    const a = await submit(at(FRI, 11));
+    const b = await submit(at(FRI, 11, 30));
     expect((await approve(c, team.a)).status).toBe(200);
-    await setTimes(a, { expires: at(THU, 9) });
-    await setTimes(b, { reminder: at(THU, 9), escalation: at(THU, 9), expires: at(THU, 18) });
+    await setTimes(a, { expires: at(FRI, 9) });
+    await setTimes(b, { reminder: at(FRI, 9), escalation: at(FRI, 9), expires: at(FRI, 10) });
     const endC = (await row(c)).end_at as number;
     await setTimes(c, { expires: at(THU, 8) });
     const first = await sweep(endC);
-    // endC is on Friday, after `b`'s deadline: it expires too, then `c` completes.
+    // endC is after `b`'s deadline: it expires too (both still to come, so told as usual), then `c` completes.
     const snapshot = async () => ({
       reservations: (await env.DB.prepare("SELECT id, status, version FROM reservations ORDER BY id").all()).results,
       blocks: await blocks(),
