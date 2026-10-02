@@ -25,7 +25,7 @@ export function mailerFor(env: Env): Mailer {
   if (env.MAIL_MODE === "dev") {
     if (!devMailEnabled(env)) {
       throw new Error(
-        "Configuration error: MAIL_MODE=dev is only allowed when APP_BASE_URL is on localhost or 127.0.0.1; deployments must use MAIL_MODE=cloudflare",
+        "Configuration error: MAIL_MODE=dev is only allowed when APP_BASE_URL is on localhost, 127.0.0.1 or [::1]; deployments must use MAIL_MODE=cloudflare",
       );
     }
     return {

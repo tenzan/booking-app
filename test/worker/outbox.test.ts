@@ -292,9 +292,8 @@ describe("dev mailbox route", () => {
     },
   );
 
-  it("serves the mailbox on 127.0.0.1 too", async () => {
+  it.each(["http://127.0.0.1:5173", "http://[::1]:5173"])("serves the mailbox on %s too", async (base) => {
     const { default: worker } = await import("../../src/worker/index");
-    const base = "http://127.0.0.1:5173";
     const res = await worker.fetch!(new Request(`${base}/api/dev/mail`) as any, { ...env, APP_BASE_URL: base } as any, { waitUntil() {}, passThroughOnException() {} } as any);
     expect(res.status).toBe(200);
   });

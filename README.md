@@ -105,7 +105,7 @@ npm run dev      # renders wrangler.jsonc, applies migrations locally, starts Vi
 npm run seed     # in another terminal: sample staff, customers and a weekly schedule
 ```
 
-Open `http://localhost:5173`. With `MAIL_MODE=dev`, outgoing email is written to a local mailbox instead of being sent; read it at `http://localhost:5173/dev/mail` (this includes the magic links).
+Open `http://localhost:5173`. With `MAIL_MODE=dev`, outgoing email is written to a local mailbox instead of being sent; read it at `http://localhost:5173/dev/mail` (this includes the magic links). The mailbox and the other development routes (`/dev/mail`, `/api/dev/*`) only work on a loopback address (`localhost`, `127.0.0.1` or `[::1]`): both `APP_BASE_URL` and the address you open must be one; anything else answers 404.
 
 Other scripts: `npm test` (Vitest), `npm run test:scripts` (Node tests for the config renderer, `.env` parser, secret sync, dev seed and smoke-test helpers), `npm run smoke -- https://booking.example.com` (post-deploy checks, see [Operations](docs/SETUP.md#11-operations)), `npm run typecheck`, `npm run build`, `npm run e2e` (Playwright end-to-end tests on a desktop and a phone viewport: booking and approval, schedule change with reassignment, CSV import, staff cancellation, pausing online booking).
 
@@ -159,7 +159,7 @@ See [`docs/SETUP.md`](docs/SETUP.md) for the Cloudflare API token, the configura
 - Login and submission endpoints are rate limited, and email-entry forms can be protected with Turnstile.
 - The front end is served with a strict Content-Security-Policy from `public/_headers`: scripts, styles, fetches and images from the app's own origin only (no inline scripts or styles), Cloudflare Turnstile as the only third-party script and frame, no plugins, `frame-ancestors 'none'`. It also sends `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and a `Permissions-Policy` that turns off camera, microphone and geolocation. Only `/dev/*` (the local development mailbox, which previews emails with inline styles) allows inline styles.
 - API responses carry `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
-- The development mailbox (`MAIL_MODE=dev`) works only when `APP_BASE_URL` is `localhost` or `127.0.0.1`; anywhere else its route answers 404 and sending mail fails with a configuration error instead of writing to the local mailbox.
+- The development mailbox (`MAIL_MODE=dev`) works only when `APP_BASE_URL` is `localhost`, `127.0.0.1` or `[::1]` and the request is addressed to one of them; anywhere else its route answers 404 and sending mail fails with a configuration error instead of writing to the local mailbox.
 - Outgoing mail can only use the sender allow-listed in the `send_email` binding.
 - CI runs [gitleaks](https://github.com/gitleaks/gitleaks) on every push; keep real secrets out of the repository.
 

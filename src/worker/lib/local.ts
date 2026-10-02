@@ -1,10 +1,12 @@
 import type { Env } from "../env";
 
-/** True when the app's base URL is a loopback host, i.e. this is a developer's machine. */
+/** Loopback hostnames as `URL` spells them (IPv6 in brackets, already normalised: `[0:…:1]` becomes `[::1]`). */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** True when the URL's host is a loopback host (`localhost`, `127.0.0.1` or `[::1]`), i.e. a developer's machine. */
 export function isLocalBaseUrl(base: string): boolean {
   try {
-    const { hostname } = new URL(base);
-    return hostname === "localhost" || hostname === "127.0.0.1";
+    return LOOPBACK_HOSTS.has(new URL(base).hostname);
   } catch {
     return false;
   }

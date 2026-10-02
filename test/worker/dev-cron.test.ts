@@ -104,8 +104,7 @@ describe("dev cron route", () => {
     },
   );
 
-  it("works on 127.0.0.1 too", async () => {
-    const base = "http://127.0.0.1:5173";
+  it.each(["http://127.0.0.1:5173", "http://[::1]:5173"])("works on %s too", async (base) => {
     const res = await call({ APP_BASE_URL: base }, base, { body: JSON.stringify({}) });
     expect(res.status).toBe(200);
   });
@@ -121,6 +120,7 @@ describe("dev routes require a loopback request", () => {
     expect((await send(`${ORIGIN}/api/dev/mail`)).status).toBe(200);
     expect((await post(`${ORIGIN}/api/dev/cron`)).status).toBe(200);
     expect((await send("http://127.0.0.1:5173/api/dev/mail")).status).toBe(200);
+    expect((await send("http://[::1]:5173/api/dev/mail")).status).toBe(200);
   });
 
   it.each(["https://booking.example.com", "http://192.0.2.10:5173", "http://localhost.example.com"])(
