@@ -37,7 +37,7 @@ test("customer books, staff approves, customer sees it confirmed", async ({ page
   await page.getByRole("button", { name: "Send request" }).click();
   await expect(page).toHaveURL(/\/book\/success\//);
   await expect(page.getByRole("heading", { name: /not yet confirmed/ })).toBeVisible();
-  const ref = (await page.locator("dd.font-mono").first().textContent())!.trim();
+  const ref = (await page.getByRole("definition").filter({ hasText: /^R-[A-Z0-9]{4}-[A-Z0-9]{4}$/ }).textContent())!.trim();
   expect(ref).toMatch(/^R-/);
 
   // ---- technician signs in (independent of the customer session in the same browser)

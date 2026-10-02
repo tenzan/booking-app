@@ -1,6 +1,8 @@
 import { expect, test, type Cookie, type Download, type Locator, type Page } from "@playwright/test";
+import { fmtWhen } from "../src/web/format";
 import {
   ADMIN_STATE,
+  apiGet,
   approve,
   availableSlots,
   cancelIfOpen,
@@ -219,8 +221,12 @@ test("staff propose two times; the customer picks one from the email and it is c
   await expect(card.getByText("The customer chose a new time")).toBeVisible();
   const chosen = card.getByRole("listitem").filter({ hasText: "Chosen" });
   await expect(chosen).toHaveCount(1);
-  const newTime = (await chosen.locator("p").first().textContent())!;
-  await expect(page.getByText("When", { exact: true }).locator("xpath=following-sibling::p[1]")).toHaveText(newTime);
+  // The chosen time, as the staff pages write it (the customer's text is the same plus the zone label).
+  const { timezone } = await apiGet<{ timezone: string }>(page.request, "/api/auth/me");
+  const newTime = fmtWhen(option!.startAt, option!.endAt, timezone);
+  expect(when.startsWith(`${newTime} `)).toBe(true);
+  await expect(chosen.getByText(newTime, { exact: true })).toBeVisible();
+  await expect(page.getByRole("group", { name: "When", exact: true }).getByText(newTime, { exact: true })).toBeVisible();
 });
 
 test("customer chooses another time instead; approving it moves the appointment with one email", async ({ page }, testInfo) => {
@@ -244,7 +250,7 @@ test("customer chooses another time instead; approving it moves the appointment 
   await expect(page.getByRole("heading", { name: "Change requested — not yet confirmed" })).toBeVisible();
   const newId = decodeURIComponent(new URL(page.url()).pathname.split("/").pop()!);
   created.push(newId);
-  const newRef = (await page.locator("dd.font-mono").first().textContent())!.trim();
+  const newRef = (await page.getByRole("definition").filter({ hasText: /^R-[A-Z0-9]{4}-[A-Z0-9]{4}$/ }).textContent())!.trim();
   expect(newRef).toMatch(/^R-/);
   expect(newRef).not.toBe(ref);
 
@@ -289,6 +295,8 @@ test("a pending request expires at its deadline (dev cron); staff and customer s
   expect(pending.expiresAt).not.toBeNull();
 
   // ---- the cron runs as of one minute past the approval deadline
+  // Serial only (workers: 1 in playwright.config.ts): a run as of a future time also expires or completes every other
+  // test's rows that are due by then, so it must never overlap another test.
   const { counts, failed } = await runCron(api, pending.expiresAt! + 60_000);
   expect(failed).toEqual([]);
   expect(counts.expiry).toBeGreaterThanOrEqual(1);
@@ -324,7 +332,8 @@ test("customer downloads the appointment as a calendar file from the email link 
     expect(file.text).toMatch(/^STATUS:CONFIRMED\r?$/m);
   };
 
-  // ---- the link page (no sign-in needed: the emailed link's token)
+  // ---- the link page: it works from the emailed link's token alone (this browser also has the customer's session from
+  // arrange(), which the page does not use)
   await followEmailLink(page, email, new RegExp(`Confirmed: .*\\(${ref}\\)`), "View reservation");
   // The token is taken out of the address bar as soon as the page has read it.
   await expect(page).toHaveURL(/\/r$/);

@@ -46,6 +46,10 @@ interface DevMessage {
   text: string;
 }
 
+/**
+ * The dev mailbox's messages, newest first. The route returns only the newest 50 rows, so anything older is not seen:
+ * counts made through this (countMail, countMailAnyone) are of those 50 only.
+ */
 const devMail = async (req: APIRequestContext) => (await apiGet<{ messages: DevMessage[] }>(req, "/api/dev/mail")).messages;
 
 /** How many of the dev mailbox's (newest 50) messages are to `to` with a subject matching `subject`. */

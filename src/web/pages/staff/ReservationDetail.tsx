@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useParams, useSearchParams } from "react-router";
 import type { ReservationDTO, TechOption } from "../../../shared/types";
@@ -404,12 +404,15 @@ function IcsDownload({ r }: { r: ReservationDTO }) {
 }
 
 function Facts({ r, tz }: { r: ReservationDTO; tz: string }) {
+  const whenId = useId();
   const replacesOpen = r.replacesStatus === "pending" || r.replacesStatus === "confirmed";
   const replacedByOpen = r.replacedByStatus === "pending";
   return (
     <Card className="space-y-5">
-      <div>
-        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{t("common.when")}</p>
+      <div role="group" aria-labelledby={whenId}>
+        <p id={whenId} className="text-sm font-medium text-slate-500 dark:text-slate-400">
+          {t("common.when")}
+        </p>
         <p className="text-lg font-semibold sm:text-xl">{fmtWhen(r.startAt, r.endAt, tz)}</p>
         <TimezoneNote tz={tz} atMs={r.startAt} className="mt-1" />
         <IcsDownload r={r} />
