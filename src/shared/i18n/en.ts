@@ -94,6 +94,7 @@ export const en = {
       subject: "We couldn't confirm your request ({ref})",
       intro: "Unfortunately we couldn't confirm your requested time.",
       reason: "Reason: {reason}",
+      replacementPending: "Your change request {ref} is still being reviewed by our team. We'll email you once it's decided.",
       rebook: "Choose another time",
     },
     cancelled: {
@@ -102,6 +103,7 @@ export const en = {
       byYou: "You cancelled this appointment.",
       reason: "Reason: {reason}",
       alsoReplacement: "Your change request {ref} has been cancelled too.",
+      replacementPending: "Your change request {ref} is still being reviewed by our team. We'll email you once it's decided.",
       rebook: "Book another time",
     },
     cancelledTeam: {
@@ -654,6 +656,7 @@ export const en = {
           emailTeam: "The rest of the team is notified.",
           freesTime: "The time becomes free for other bookings.",
           alsoReplacement: "The customer's pending change request {ref} is cancelled too; the one email covers both.",
+          replacementStays: "Its change request {ref} stays pending.",
           reasonHint: "The customer sees this reason in their email.",
           required: "Please enter a reason.",
           tooLong: "Please keep the reason under {max} characters.",

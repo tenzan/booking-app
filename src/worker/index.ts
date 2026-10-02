@@ -16,5 +16,13 @@ export default {
     // The cron's own scheduled time: the minute-0 check for cleanup does not depend on how late the invocation starts.
     ctx.waitUntil(tick(env, controller.scheduledTime));
   },
-  email: (message, env, ctx) => handleInbound(message, env, ctx),
+  // Deliberate refusals use message.setReject inside the handler; anything thrown is a fault on our side, logged once and
+  // swallowed rather than surfaced to Email Routing as an exception (which would bounce or retry the sender's mail).
+  async email(message, env, ctx) {
+    try {
+      await handleInbound(message, env, ctx);
+    } catch (e) {
+      console.error("inbound mail failed", safeError(e));
+    }
+  },
 } satisfies ExportedHandler<Env>;

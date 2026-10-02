@@ -6,6 +6,11 @@ it("POST without Origin is rejected", async () => expect((await api("POST", "/ap
 it("POST with foreign Origin is rejected", async () => expect((await api("POST", "/api/auth/logout", { origin: "https://evil.example" })).status).toBe(403));
 it("POST without X-Requested-With is rejected", async () => expect((await api("POST", "/api/auth/logout", { xrw: false })).status).toBe(403));
 it("security headers", async () => { const r = await api("GET", "/api/health"); expect(r.headers.get("referrer-policy")).toBe("no-referrer"); });
+it("API responses carry HSTS (no preload), on success and on errors", async () => {
+  for (const r of [await api("GET", "/api/health"), await api("GET", "/api/nope"), await api("POST", "/api/auth/logout", { origin: null })]) {
+    expect(r.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
+  }
+});
 it("API responses forbid rendering and framing via CSP, on success and on errors", async () => {
   for (const r of [await api("GET", "/api/health"), await api("GET", "/api/nope"), await api("POST", "/api/auth/logout", { origin: null })]) {
     expect(r.headers.get("content-security-policy")).toBe("default-src 'none'; frame-ancestors 'none'");

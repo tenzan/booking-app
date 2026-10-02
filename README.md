@@ -4,7 +4,7 @@ An open-source, self-hostable appointment-request app for small service teams th
 
 ## Status
 
-Plans 1 to 3 are done: the core booking flow, administration and scheduling, and the reservation lifecycle. Deployment hardening is what remains; it is not production-ready until the steps still missing from [`docs/SETUP.md`](docs/SETUP.md) are written and tried.
+Plans 1 to 4 are done: the core booking flow, administration and scheduling, the reservation lifecycle, and deployment hardening (security headers, CI and deploy checks, a post-deploy smoke test). Deployment, logs, rollback, backups and the smoke test are covered in [`docs/SETUP.md`](docs/SETUP.md), including its [Operations](docs/SETUP.md#11-operations) section.
 
 Implemented now:
 
@@ -21,10 +21,6 @@ Implemented now:
 - Lifecycle jobs on a one-minute cron: approval reminders and escalation, expiry of unanswered requests and proposals, customer appointment reminders, completion of finished appointments and hourly cleanup of old tokens, sessions and mail.
 - `.ics` calendar export for customers and staff.
 - Customers' email replies relayed to the staff.
-
-Still to come:
-
-- Deployment hardening: the remaining deployment steps and checks, tracked in [`docs/SETUP.md`](docs/SETUP.md).
 
 ## Who it is for
 
@@ -109,9 +105,9 @@ npm run dev      # renders wrangler.jsonc, applies migrations locally, starts Vi
 npm run seed     # in another terminal: sample staff, customers and a weekly schedule
 ```
 
-Open `http://localhost:5173`. With `MAIL_MODE=dev`, outgoing email is written to a local mailbox instead of being sent; read it at `http://localhost:5173/dev/mail` (this includes the magic links).
+Open `http://localhost:5173`. With `MAIL_MODE=dev`, outgoing email is written to a local mailbox instead of being sent; read it at `http://localhost:5173/dev/mail` (this includes the magic links). The mailbox and the other development routes (`/dev/mail`, `/api/dev/*`) only work on a loopback address (`localhost`, `127.0.0.1` or `[::1]`): both `APP_BASE_URL` and the address you open must be one; anything else answers 404.
 
-Other scripts: `npm test` (Vitest), `npm run test:scripts` (Node tests for the config renderer, secret sync and dev seed), `npm run typecheck`, `npm run build`, `npm run e2e` (Playwright end-to-end tests on a desktop and a phone viewport: booking and approval, schedule change with reassignment, CSV import, staff cancellation, pausing online booking).
+Other scripts: `npm test` (Vitest), `npm run test:scripts` (Node tests for the config renderer, `.env` parser, secret sync, dev seed and smoke-test helpers), `npm run smoke -- https://booking.example.com` (post-deploy checks, see [Operations](docs/SETUP.md#11-operations)), `npm run typecheck`, `npm run build`, `npm run e2e` (Playwright end-to-end tests on a desktop and a phone viewport: booking and approval, schedule change with reassignment, CSV import, staff cancellation, pausing online booking).
 
 `npm run seed` is synthetic, idempotent and non-destructive: it adds whatever is missing of staff `admin@example.test` and `tech1@`–`tech3@example.test`, the customers in `docs/sample-customers.csv` (e.g. `frontdesk@example.test`) and — only while there are no weekly hours at all — Mon–Fri 09:00–12:00 / 13:00–17:00; it never deletes anything and never changes anything you've edited. `npm run seed -- --reset` restores that baseline: it deletes local reservations, emails, sessions, rate-limit counters, the audit log, date schedules, holidays, time off, saved settings and any other staff or customers. Staff sign in at `http://localhost:5173/staff/login`. `npm run e2e` starts (or reuses) the dev server on port 5173 and runs `npm run seed -- --reset` first.
 
@@ -151,7 +147,7 @@ Optional: `WORKER_NAME`, `D1_DATABASE_NAME` and `APP_BASE_URL` (local only) over
 
 ## Deployment
 
-See [`docs/SETUP.md`](docs/SETUP.md) for the Cloudflare API token, the configuration values and how to keep them in a secret manager. Step-by-step instructions for the remaining pieces (D1, custom domain, email sending domain, Turnstile, first administrator) are added there as deployment support lands.
+See [`docs/SETUP.md`](docs/SETUP.md) for the Cloudflare API token, the configuration values and how to keep them in a secret manager. The same guide walks through the first deployment (D1, custom domain, email sending domain, Turnstile, first administrator), continuous deployment and day-to-day operations (logs, rollback, backups, the smoke test).
 
 `npm run deploy` renders `wrangler.jsonc` with `--strict`, which refuses to continue when a required value is missing, when `MAIL_MODE` is not `cloudflare` (including a `dev` value picked up from a local `.env`), when the account or D1 ID is all zeros, or when a value is still a `REPLACE_ME…`/`SET_BY…` placeholder.
 
@@ -163,7 +159,7 @@ See [`docs/SETUP.md`](docs/SETUP.md) for the Cloudflare API token, the configura
 - Login and submission endpoints are rate limited, and email-entry forms can be protected with Turnstile.
 - The front end is served with a strict Content-Security-Policy from `public/_headers`: scripts, styles, fetches and images from the app's own origin only (no inline scripts or styles), Cloudflare Turnstile as the only third-party script and frame, no plugins, `frame-ancestors 'none'`. It also sends `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and a `Permissions-Policy` that turns off camera, microphone and geolocation. Only `/dev/*` (the local development mailbox, which previews emails with inline styles) allows inline styles.
 - API responses carry `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
-- The development mailbox (`MAIL_MODE=dev`) works only when `APP_BASE_URL` is `localhost` or `127.0.0.1`; anywhere else its route answers 404 and sending mail fails with a configuration error instead of writing to the local mailbox.
+- The development mailbox (`MAIL_MODE=dev`) works only when `APP_BASE_URL` is `localhost`, `127.0.0.1` or `[::1]` and the request is addressed to one of them; anywhere else its route answers 404 and sending mail fails with a configuration error instead of writing to the local mailbox.
 - Outgoing mail can only use the sender allow-listed in the `send_email` binding.
 - CI runs [gitleaks](https://github.com/gitleaks/gitleaks) on every push; keep real secrets out of the repository.
 

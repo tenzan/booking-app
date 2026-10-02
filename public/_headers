@@ -5,6 +5,7 @@
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
 
 # Local dev mailbox: email previews (sandboxed srcdoc frames, which inherit this policy) use inline styles.
 # The page is a not-found page unless MAIL_MODE=dev on localhost.

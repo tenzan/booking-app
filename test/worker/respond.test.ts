@@ -7,6 +7,7 @@ import { sha256Hex } from "../../src/worker/lib/crypto";
 import { processOutbox } from "../../src/worker/mail/outbox";
 import { approveReservation } from "../../src/worker/reservations/approve";
 import { cancelReservation } from "../../src/worker/reservations/cancel";
+import { declineReservation } from "../../src/worker/reservations/decline";
 import { withdrawProposal } from "../../src/worker/reservations/propose";
 import { acceptProposal, rejectProposal } from "../../src/worker/reservations/respond";
 import { submitReservation } from "../../src/worker/reservations/submit";
@@ -620,6 +621,57 @@ describe("choosing another time: replacement requests", () => {
     expect(mine[0]!.text).toContain("Your original appointment stays as it is.");
   });
 
+  it("declining a pending original: its email offers rebooking, or says the change request is still being reviewed", async () => {
+    const decline = async (id: string) =>
+      expect((await api("POST", `/api/staff/reservations/${id}/decline`, { cookie: adminCookie, body: { reason: "Fully booked", version: 1 } })).status).toBe(200);
+    const declinedMail = async (ref: string) => {
+      await processOutbox(env, 50);
+      return (await mailsTo("pat@example.test")).find((m) => m.subject === `We couldn't confirm your request (${ref})`)!;
+    };
+    // No change request: the call to action stays.
+    const plain = await submit(pat, at(FRI, 10));
+    const plainRef = (await row(plain)).ref as string;
+    await decline(plain);
+    const plainMail = await declinedMail(plainRef);
+    expect(plainMail.text).toContain("Choose another time");
+    expect(plainMail.text).not.toContain("still being reviewed");
+    expect(plainMail.html).toContain("Choose another time");
+    // A pending change request: no rebooking (it would be refused), and that request is named instead.
+    const id = await submit(pat, at(FRI, 11));
+    const ref = (await row(id)).ref as string;
+    const replacement = await submit(pat, at(FRI, 12), { replacesId: id });
+    const rRef = (await row(replacement)).ref as string;
+    await decline(id);
+    expect((await row(replacement)).status).toBe("pending");
+    const mail = await declinedMail(ref);
+    expect(mail.text).toContain(`Your change request ${rRef} is still being reviewed`);
+    expect(mail.text).not.toContain("Choose another time");
+    expect(mail.html).not.toContain("Choose another time");
+  });
+
+  it.each(["declined", "approved"] as const)(
+    "declining a pending original whose change request is %s before the email goes out: the email follows the current state and offers rebooking",
+    async (outcome) => {
+      const id = await submit(pat, at(FRI, 11));
+      const ref = (await row(id)).ref as string;
+      const replacement = await submit(pat, at(FRI, 12), { replacesId: id });
+      const rRef = (await row(replacement)).ref as string;
+      // Called directly, not through the API: nothing kicks the outbox, so the declined email waits in the queue while
+      // the change request is answered.
+      await declineReservation(env, admin(), id, "Fully booked", 1);
+      if (outcome === "declined") await declineReservation(env, admin(), replacement, "Fully booked", 1);
+      else await approveReservation(env, admin(), replacement, team.b, 1);
+      expect(await count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'declined' AND reservation_id = ? AND status = 'queued'", id)).toBe(1);
+      expect((await row(replacement)).status).toBe(outcome === "declined" ? "declined" : "confirmed");
+      await processOutbox(env, 50);
+      const mail = (await mailsTo("pat@example.test")).find((m) => m.subject === `We couldn't confirm your request (${ref})`)!;
+      expect(mail.text).not.toContain(rRef);
+      expect(mail.text).not.toContain("still being reviewed");
+      expect(mail.text).toContain("Choose another time");
+      expect(mail.html).toContain("Choose another time");
+    },
+  );
+
   it("an expired replacement whose original is gone does not claim the original stays", async () => {
     const id = await submit(pat, at(FRI, 10));
     const replacement = await submit(pat, at(FRI, 11), { replacesId: id });
@@ -716,6 +768,105 @@ describe("an original with a pending change request", () => {
     await cancelReservation(w.env, { kind: "customer", email: "pat@example.test" }, id, { version: 2 });
     expect(w.calls.batches).toBe(2);
     expect(await row(replacement)).toMatchObject({ status: "cancelled", close_reason: "original_cancelled" });
+  });
+
+  describe("staff cancelling a confirmed original", () => {
+    // The original is Friday 10:00-10:30; its change request asks for 11:00.
+    const setup = async () => {
+      const id = await submit(pat, at(FRI, 10));
+      await approve(id, team.a);
+      const replacement = await submit(pat, at(FRI, 11), { replacesId: id });
+      const rRef = (await row(replacement)).ref as string;
+      return { id, replacement, rRef };
+    };
+    const staffCancel = async (id: string) => {
+      const res = await api("POST", `/api/staff/reservations/${id}/cancel`, { cookie: await loginStaff("admin@example.test"), body: { reason: "No-show", version: 2 } });
+      expect([res.status, res.json.error]).toEqual([200, undefined]);
+    };
+    const customerPayloads = async () => (await cancelledJobs()).filter((j) => j.to_email === "pat@example.test").map((j) => JSON.parse(j.payload));
+
+    it("before its start, still takes the change request along (one minute early)", async () => {
+      const { id, replacement, rRef } = await setup();
+      await env.DB.prepare("DELETE FROM email_jobs").run();
+      setNow(at(FRI, 9, 59));
+      await staffCancel(id);
+      expect(await row(replacement)).toMatchObject({ status: "cancelled", close_reason: "original_cancelled" });
+      expect(await customerPayloads()).toEqual([{ audience: "customer", alsoCancelledRef: rRef }]);
+      await processOutbox(env, 50);
+      const mail = (await mailsTo("pat@example.test")).find((m) => m.subject.startsWith("Cancelled:"))!;
+      expect(mail.text).toContain(`Your change request ${rRef} has been cancelled too.`);
+      expect(mail.text).toContain("Book another time");
+    });
+
+    it("once it has started, its cancellation email names the change request still being reviewed instead of offering to book again", async () => {
+      const { id, rRef } = await setup();
+      const ref = (await row(id)).ref as string;
+      await env.DB.prepare("DELETE FROM email_jobs").run();
+      await env.DB.prepare("DELETE FROM dev_mailbox").run();
+      setNow(at(FRI, 10, 5));
+      await staffCancel(id);
+      await processOutbox(env, 50);
+      const mine = await mailsTo("pat@example.test");
+      expect(mine).toHaveLength(1);
+      expect(mine[0]!.subject).toContain(ref);
+      expect(mine[0]!.text).toContain(`Your change request ${rRef} is still being reviewed by our team.`);
+      expect(mine[0]!.text).not.toContain("Book another time");
+      expect(mine[0]!.html).not.toContain("Book another time");
+    });
+
+    it("once it has started, the change request stands as a request of its own", async () => {
+      const { id, replacement, rRef } = await setup();
+      const held = await blocksOf(replacement);
+      expect(held).not.toEqual([]);
+      await env.DB.prepare("DELETE FROM email_jobs").run();
+      await env.DB.prepare("DELETE FROM dev_mailbox").run();
+      setNow(at(FRI, 10, 5));
+      await staffCancel(id);
+      expect(await row(id)).toMatchObject({ status: "cancelled", closed_by_kind: "staff" });
+      expect(await row(replacement)).toMatchObject({ status: "pending", close_reason: null, version: 1 });
+      expect(await blocksOf(replacement)).toEqual(held);
+      expect(await blocksOf(id)).toEqual([]);
+      // One email, about the original alone; nothing recorded on the change request.
+      expect(await customerPayloads()).toEqual([{ audience: "customer" }]);
+      expect((await cancelledJobs()).every((j) => JSON.parse(j.payload).alsoCancelledRef === undefined)).toBe(true);
+      expect(await count("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'reservation.cancelled' AND reservation_id = ?", replacement)).toBe(0);
+      await processOutbox(env, 50);
+      const mine = await mailsTo("pat@example.test");
+      expect(mine.some((m) => m.text.includes(rRef) && m.text.includes("cancelled too"))).toBe(false);
+      // The request is then approved as the new appointment it now is.
+      const approved = await api("POST", `/api/staff/reservations/${replacement}/approve`, { cookie: await loginStaff("admin@example.test"), body: { staffId: team.b, version: 1 } });
+      expect([approved.status, approved.json.error]).toEqual([200, undefined]);
+      expect(approved.json.reservation.status).toBe("confirmed");
+    });
+
+    it("a pending original that has already started: staff cancel it and its change request stays pending", async () => {
+      // Not yet expired by the cron: still pending at 10:05, while its time runs.
+      const id = await submit(pat, at(FRI, 10));
+      const replacement = await submit(pat, at(FRI, 12), { replacesId: id });
+      const rRef = (await row(replacement)).ref as string;
+      const held = await blocksOf(replacement);
+      expect(held).not.toEqual([]);
+      await env.DB.prepare("DELETE FROM email_jobs").run();
+      await env.DB.prepare("DELETE FROM dev_mailbox").run();
+      setNow(at(FRI, 10, 5));
+      const res = await api("POST", `/api/staff/reservations/${id}/cancel`, { cookie: await loginStaff("admin@example.test"), body: { reason: "Solved by phone", version: 1 } });
+      expect([res.status, res.json.error]).toEqual([200, undefined]);
+      expect(await row(id)).toMatchObject({ status: "cancelled", closed_by_kind: "staff" });
+      expect(await row(replacement)).toMatchObject({ status: "pending", close_reason: null, version: 1 });
+      expect(await blocksOf(replacement)).toEqual(held);
+      expect(await customerPayloads()).toEqual([{ audience: "customer" }]);
+      await processOutbox(env, 50);
+      const mine = await mailsTo("pat@example.test");
+      expect(mine).toHaveLength(1);
+      expect(mine[0]!.text).toContain(`Your change request ${rRef} is still being reviewed`);
+    });
+
+    it("exactly at its start counts as started", async () => {
+      const { id, replacement } = await setup();
+      setNow(at(FRI, 10));
+      await staffCancel(id);
+      expect((await row(replacement)).status).toBe("pending");
+    });
   });
 
   it("a pending original expiring leaves the change request pending; its email offers no rebooking while that request waits", async () => {

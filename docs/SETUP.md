@@ -1,6 +1,6 @@
 # Deployment setup
 
-This guide covers what a deployment needs outside the code: a Cloudflare API token, the configuration values, and where to keep them. Full deployment steps (D1, custom domain, Email Service, Turnstile, CI) are added as the remaining parts of the project land.
+This guide covers what a deployment needs outside the code: a Cloudflare API token, the configuration values and where to keep them, the first deployment (D1, custom domain, email sending and replies), continuous deployment from GitHub Actions, the initial data, how the app's scheduling rules behave, and day-to-day operations (logs, rollback, backups and the smoke test).
 
 Throughout, `booking.example.com` stands for your app's hostname and `example.com` for the zone it lives in.
 
@@ -73,6 +73,8 @@ doppler run -- npm run deploy
 
 `npm run deploy` renders the production `wrangler.jsonc` (refusing dev mail mode and placeholder values), builds the app, applies D1 migrations to the remote database, deploys the Worker to `APP_DOMAIN` as a custom domain (Cloudflare creates the DNS record and certificate; the `*.workers.dev` URL is disabled), and finally pushes the runtime secrets (`TURNSTILE_SECRET_KEY`, `BOOTSTRAP_ADMIN_EMAILS`) with `wrangler secret bulk`.
 
+**HTTPS only:** in the Cloudflare dashboard, open the zone's **SSL/TLS → Edge Certificates** and turn on **Always Use HTTPS**, so `http://` requests are redirected to `https://` (the smoke test in section 11 checks this, and fails without it).
+
 **Email sending:** in the Cloudflare dashboard, open **Email Service → Sending → Add domain** and add your app hostname (e.g. `booking.example.com`). The records it creates live on that hostname and its own bounce subdomain; nothing on your apex domain changes. Until this is done, emails stay in the outbox and are retried; failed ones can be retried from the staff area.
 
 **Receiving replies:** customers can answer the app's emails; the Worker relays each reply to every active team member who receives new-request emails (Team → "New-request emails"), with Reply-To set to the customer so staff simply reply. In the Cloudflare dashboard:
@@ -95,7 +97,11 @@ doppler configs tokens create github-actions --project <your-project> --config p
   | gh secret set DOPPLER_TOKEN --repo <owner>/<repo>
 ```
 
-Without that secret the deploy job is skipped, so forks of this repository stay green.
+Without that secret both jobs (`deploy` and `smoke`) are skipped, so forks of this repository stay green.
+
+After the `deploy` job, a separate `smoke` job runs the smoke test (`node scripts/smoke.mjs "https://$APP_DOMAIN" --wait 60`, with `APP_DOMAIN` from Doppler; see section 11) and fails if a check fails. It is limited to 8 minutes. **The new version is already live when the smoke test runs, and a failure does not roll it back:** check the table in the job's log, and if the site is broken use the rollback in section 11.
+
+On the very first deployment the custom domain's DNS record and certificate can take a few minutes: `--wait 60` makes the script poll `/api/health` (6 tries, 10 seconds apart) before checking. If the site is still not up after that, the smoke job fails. Once the site loads, either choose **Re-run failed jobs** on that run (this repeats only the `smoke` job, not the deployment) or run `npm run smoke -- https://<APP_DOMAIN>` from your own machine. Never re-run an older deploy run, or its `deploy` job: that deploys the older commit again over whatever is live now.
 
 ## 6. Importing customers
 
@@ -156,6 +162,59 @@ Settings changes apply to requests made afterwards: a request keeps the deadline
 
 **Expiry.** An unanswered proposal expires at the earlier of: the proposal-expiry setting (**Settings → Rescheduling**, default 24 business hours) after it was made, and a set time before the current appointment starts (default 120 minutes). It also lapses an hour before the earliest time it offers. No new proposal can be made once the appointment is closer than that second value. When a proposal expires its held times are released, the customer and the team are told, and the original time stands. A pending request's approval deadline was moved out to the proposal's expiry while the proposal was open (so it cannot expire while the customer is deciding), and it is not moved back: the normal expiry then handles the request.
 
-**Replacement requests ("choose another time").** A customer who wants a different time than the ones offered, or for an appointment they already have, chooses another time themselves. That creates a new pending request that replaces the original; the original keeps its time and technician until staff approve the replacement. Approving it (or the customer accepting a proposal on it) cancels the original in the same step, frees its time and sends one "rescheduled" email instead of a cancellation. If staff decline the replacement or it expires, the original is unaffected. A customer has at most one pending replacement per appointment, and an open proposal on the original is closed when the replacement is made. While a replacement is pending, staff can't propose times on the original: they approve or decline the replacement instead. Cancelling the original (by the customer or staff) cancels its pending replacement too, with one cancellation email; if a pending original expires, its replacement stays pending as a request of its own.
+**Replacement requests ("choose another time").** A customer who wants a different time than the ones offered, or for an appointment they already have, chooses another time themselves. That creates a new pending request that replaces the original; the original keeps its time and technician until staff approve the replacement. Approving it (or the customer accepting a proposal on it) cancels the original in the same step, frees its time and sends one "rescheduled" email instead of a cancellation. If staff decline the replacement or it expires, the original is unaffected. A customer has at most one pending replacement per appointment, and an open proposal on the original is closed when the replacement is made. While a replacement is pending, staff can't propose times on the original: they approve or decline the replacement instead. Cancelling the original (by the customer or staff) cancels its pending replacement too, with one cancellation email, unless the original's time has already started: then the replacement stays pending, for staff to approve or decline. If a pending original expires, its replacement stays pending as a request of its own.
 
 Customers can also add a confirmed appointment to their calendar (`.ics` download) from their reservation page, and staff from the request page.
+
+## 11. Operations
+
+### Logs
+
+Observability is enabled in the rendered `wrangler.jsonc`, so the Worker's logs and invocations are kept by Cloudflare. To see them:
+
+- Live: `npx wrangler tail <worker-name>` (the `WORKER_NAME` value, default `remote-support-booking`) streams requests, exceptions and `console` output as they happen. `--status error` shows only failures.
+- History: in the Cloudflare dashboard, open **Workers & Pages**, choose the Worker and open **Observability** (Workers Observability) to search and filter past logs and invocations.
+
+The staff **Activity** page shows the application's own audit log.
+
+### Rollback
+
+Every `npm run deploy` creates a Worker version. To go back to a previous one:
+
+```bash
+npx wrangler deployments list           # recent deployments with their version ids
+npx wrangler rollback [version-id]      # without an id, rolls back to the previous deployment
+```
+
+A rollback restores that version's code and configuration; it does not undo D1 migrations or data. **D1 migrations are forward-only**, so the older code must run against the newer schema. This is why every migration has to stay backward compatible with the previous release (section 8): after a rollback the previous release runs against the current schema. If a bad migration or bad data is the problem, restore the database instead (next section). Run the smoke test after a rollback too.
+
+The next push to `main` deploys `main` again and so undoes the rollback. Revert the bad commit on `main` (which deploys the fix through the workflow), or hold merges to `main` until it is fixed.
+
+### D1 backups (Time Travel)
+
+D1 keeps a continuous history of the database (Time Travel), so it can be restored to any minute in the last 30 days on the Workers Paid plan (7 days on Workers Free) without having set anything up:
+
+```bash
+npx wrangler d1 time-travel info <database-name>                          # current bookmark and the restorable window
+npx wrangler d1 time-travel restore <database-name> --timestamp=<unix-or-ISO-time>
+npx wrangler d1 time-travel restore <database-name> --bookmark=<bookmark>
+```
+
+`info` also accepts `--timestamp` to show the bookmark for a point in time. A restore **replaces the whole database in place**: everything written after that moment (reservations, emails, sessions) is lost, and the command prints a bookmark for the state just before the restore, so a restore can itself be undone. Note the current bookmark (`info`) before restoring, and consider pausing online booking (Settings) while you do it. Restoring is a database operation only: it does not change the deployed Worker, and the Worker's migrations are tracked in the database itself, so restoring to before a migration makes the next deploy apply it again.
+
+For an extra copy outside Cloudflare, `npx wrangler d1 export <database-name> --remote --output backup.sql` writes the schema and data to a file (store it as carefully as the customer data it contains).
+
+### Smoke test
+
+After a deployment, check the live site from outside:
+
+```bash
+npm run smoke -- https://booking.example.com
+npm run smoke -- https://booking.example.com --wait 60   # first poll /api/health for up to 60 seconds
+```
+
+It prints a pass/fail table and exits non-zero if anything fails: the health endpoint; the redirect from `http://` to `https://`; that `/staff/login`, a route the single-page app answers through its fallback, also returns 200 HTML; the security headers on the page, the fallback page and the API (`Content-Security-Policy` with `frame-ancestors 'none'`, `Referrer-Policy`, `X-Content-Type-Options`, and `Strict-Transport-Security` with a max-age of at least a day); that the development routes (`/api/dev/*`) are not reachable (404 `not_found`); that a state-changing API call without the `X-Requested-With: fetch` header is refused (403 `csrf`, the CSRF guard); and that `/api/auth/me` answers, reporting whether online booking is currently enabled (informational). Each request times out after 15 seconds and shows as a failed check. If a security-header check fails, the script waits 15 seconds and repeats the header checks once before reporting (right after a deployment, an edge location can briefly still serve the previous version). The HTTPS redirect comes from the Cloudflare zone's **Always Use HTTPS** setting (**SSL/TLS → Edge Certificates**; section 4); the HSTS header comes from the app's own responses (the Worker for the API and `public/_headers` for the pages). The deploy workflow runs the script automatically after every deployment (with `--wait 60`, as its own `smoke` job; section 5). It sends no credentials and changes no data, so it is safe to run against production. Against the local dev server (`http://localhost:5173`) the HTTPS redirect is skipped and several checks fail after the 15-second retry, which is expected: `Strict-Transport-Security` everywhere, the page and fallback-page headers (Vite does not apply `public/_headers`), and the development-route check (dev routes are on locally, so that request runs the local cron).
+
+### What the cron does on the first deployment
+
+The Cron Trigger starts running every minute as soon as the Worker is deployed (section 9). On a database that is new, nothing is due and it does nothing visible. On a database that already holds old rows, for example when upgrading, the first runs close every pending request and proposal that is already past its deadline and complete every confirmed appointment that has ended. They do this **silently for stale items**: a request whose requested time has passed, or whose deadline was more than 24 hours ago, is expired and its technician hold released without emailing anyone (the activity log records that nobody was emailed), so customers and staff are not sent a flood of old news. Backlogs are processed in bounded batches (50 rows per kind per run), so a large one drains over the next few minutes. Nothing needs to be done; watch the staff Activity page or `wrangler tail` if you want to see it happen.

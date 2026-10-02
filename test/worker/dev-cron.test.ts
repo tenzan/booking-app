@@ -104,9 +104,35 @@ describe("dev cron route", () => {
     },
   );
 
-  it("works on 127.0.0.1 too", async () => {
-    const base = "http://127.0.0.1:5173";
+  it.each(["http://127.0.0.1:5173", "http://[::1]:5173"])("works on %s too", async (base) => {
     const res = await call({ APP_BASE_URL: base }, base, { body: JSON.stringify({}) });
     expect(res.status).toBe(200);
   });
+});
+
+describe("dev routes require a loopback request", () => {
+  const send = (url: string, init: RequestInit = {}) =>
+    worker.fetch!(new Request(url, init) as any, env as any, { waitUntil() {}, passThroughOnException() {} } as any);
+  const post = (url: string) =>
+    send(url, { method: "POST", headers: { origin: ORIGIN, "x-requested-with": "fetch", "content-type": "application/json" }, body: "{}" });
+
+  it("dev mode with a loopback request: 200", async () => {
+    expect((await send(`${ORIGIN}/api/dev/mail`)).status).toBe(200);
+    expect((await post(`${ORIGIN}/api/dev/cron`)).status).toBe(200);
+    expect((await send("http://127.0.0.1:5173/api/dev/mail")).status).toBe(200);
+    expect((await send("http://[::1]:5173/api/dev/mail")).status).toBe(200);
+  });
+
+  it.each(["https://booking.example.com", "http://192.0.2.10:5173", "http://localhost.example.com"])(
+    "dev mode (localhost APP_BASE_URL) but a request to %s: the same 404",
+    async (base) => {
+      const id = await pendingDueAtNoon();
+      setNow(at(THU, 13));
+      for (const res of [await send(`${base}/api/dev/mail`), await post(`${base}/api/dev/cron`)]) {
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: "not_found" });
+      }
+      expect(await status(id)).toBe("pending");
+    },
+  );
 });

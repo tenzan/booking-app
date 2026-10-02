@@ -240,7 +240,7 @@ export async function listReservations(
  */
 const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
     r.contact_name, r.phone, r.issue, r.created_at, r.close_reason, orig.ref AS replaces_ref,
-    orig.status AS replaces_status, orig.start_at AS replaces_start_at,
+    orig.status AS replaces_status, orig.start_at AS replaces_start_at, orig.end_at AS replaces_end_at,
     (SELECT n.ref FROM reservations n WHERE n.replaces_id = r.id AND n.status IN ('pending','confirmed','completed')
       ORDER BY n.created_at DESC, n.id DESC LIMIT 1) AS replaced_by_ref
   FROM reservations r JOIN customers c ON c.id = r.customer_id LEFT JOIN reservations orig ON orig.id = r.replaces_id`;
@@ -262,6 +262,7 @@ interface CustomerRow {
   replaces_ref: string | null;
   replaces_status: ReservationStatus | null;
   replaces_start_at: number | null;
+  replaces_end_at: number | null;
   replaced_by_ref: string | null;
 }
 
@@ -283,6 +284,8 @@ const toCustomerDTO = (r: CustomerRow, proposal: CustomerProposalDTO | null, now
   replacesRef: r.replaces_ref,
   // The same notion of "still active" submit and approve use for the original.
   replacesActive: (r.replaces_status === "pending" || r.replaces_status === "confirmed") && r.replaces_start_at !== null && r.replaces_start_at > now,
+  replacesStartAt: r.replaces_start_at,
+  replacesEndAt: r.replaces_end_at,
   replacedByRef: r.replaced_by_ref,
 });
 

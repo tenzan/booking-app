@@ -80,6 +80,8 @@ describe("GET /api/customer/reservations", () => {
       proposal: null,
       replacesRef: null,
       replacesActive: false,
+      replacesStartAt: null,
+      replacesEndAt: null,
       replacedByRef: null,
     });
   });
@@ -178,7 +180,9 @@ describe("GET /api/customer/reservations/:id", () => {
         "ref",
         "replacedByRef",
         "replacesActive",
+        "replacesEndAt",
         "replacesRef",
+        "replacesStartAt",
         "startAt",
         "status",
         "version",
@@ -312,5 +316,20 @@ describe("replacement references on the customer's view", () => {
     const stale = await api("POST", `/api/customer/reservations/${id}/cancel`, { cookie: pat.cookie, body: { version: orig.version } });
     expect([stale.status, stale.json.error]).toEqual([409, "stale"]);
     expect(stale.json.details.current).toMatchObject({ id, status: "cancelled", replacedByRef: secondRef });
+  });
+
+  it("replacesStartAt / replacesEndAt: the replaced reservation's own times, in every view, and null without one", async () => {
+    const id = await submit(pat, at(FRI, 10));
+    const replacement = await submit(pat, at(FRI, 11), "Printer is offline", { replacesId: id });
+    const times = { replacesStartAt: at(FRI, 10), replacesEndAt: at(FRI, 10, 30) };
+    expect(await mine(replacement)).toMatchObject(times);
+    expect(await mine(id)).toMatchObject({ replacesStartAt: null, replacesEndAt: null });
+    const listed = (await api("GET", "/api/customer/reservations", { cookie: pat.cookie })).json.reservations as any[];
+    expect(listed.find((r) => r.id === replacement)).toMatchObject(times);
+    expect(listed.find((r) => r.id === id)).toMatchObject({ replacesStartAt: null, replacesEndAt: null });
+    const token = await mintToken(replacement, at(FRI, 23));
+    expect((await access(token)).json.reservation).toMatchObject(times);
+    // Times only: the replaced reservation's other fields stay out.
+    expect(Object.keys(await mine(replacement)).filter((k) => k.startsWith("replaces")).sort()).toEqual(["replacesActive", "replacesEndAt", "replacesRef", "replacesStartAt"]);
   });
 });
