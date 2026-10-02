@@ -46,14 +46,21 @@ export async function accountIdsForContact(db: D1Database, email: string): Promi
   return results.map((r) => r.customer_id);
 }
 
-/** Most recent reservation phone per account for bookings made by `email`. */
+/** Reservations examined for {@link lastPhonesForEmail}: bounded work however many bookings an email has made. */
+const LAST_PHONES_SCAN = 20;
+const LAST_PHONES_MAX = 5;
+
+/** Most recent reservation phone per account for bookings made by `email`: from its 20 newest bookings, at most 5 accounts. */
 export async function lastPhonesForEmail(db: D1Database, email: string): Promise<Map<number, string>> {
   const { results } = await db
-    .prepare("SELECT customer_id AS customerId, phone FROM reservations WHERE contact_email = ? ORDER BY created_at DESC, rowid DESC")
-    .bind(email)
+    .prepare("SELECT customer_id AS customerId, phone FROM reservations WHERE contact_email = ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
+    .bind(email, LAST_PHONES_SCAN)
     .all<{ customerId: number; phone: string }>();
   const out = new Map<number, string>();
-  for (const r of results) if (!out.has(r.customerId)) out.set(r.customerId, r.phone);
+  for (const r of results) {
+    if (out.size >= LAST_PHONES_MAX) break;
+    if (!out.has(r.customerId)) out.set(r.customerId, r.phone);
+  }
   return out;
 }
 
