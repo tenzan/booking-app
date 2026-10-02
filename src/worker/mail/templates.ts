@@ -637,6 +637,8 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
             intro,
             t("email.confirmed.call", { phone: r.phone, tool: s.remoteToolName }),
             ...(s.customerInstructions ? [s.customerInstructions] : []),
+            // A replacement is a new reservation (a new calendar event): an entry for the old one stays unless removed.
+            ...(payload.via === "replacement" ? [t("email.rescheduled.removeOldCalendar")] : []),
           ],
           facts: [
             [t("common.account"), r.account_name],

@@ -165,6 +165,7 @@ export const en = {
       introMoved: "Your remote support appointment has been moved to the new time you chose.",
       introConfirmed: "Your remote support appointment is confirmed for the new time you chose.",
       introReplacement: "Your new time is confirmed. Your earlier reservation {previous} has been cancelled.",
+      removeOldCalendar: "If you added your earlier time to your calendar, please remove it: it isn't updated automatically.",
       newTime: "New time",
       previousTime: "Previous time",
     },
