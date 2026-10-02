@@ -6,6 +6,7 @@ import { setNow } from "../../src/worker/lib/clock";
 import { MIN, wallToUtc } from "../../src/domain/time";
 import { blockMinutes, rangeBlocks } from "../../src/domain/slots";
 import { loadScheduleCtx } from "../../src/worker/scheduling/context";
+import { bookableSlots } from "../../src/worker/scheduling/availability";
 
 afterEach(() => setNow(null));
 
@@ -40,10 +41,8 @@ const setSetting = (key: string, value: unknown) =>
 const rangeOf = (id: string) => env.DB.prepare("SELECT occ_start AS s, occ_end AS e FROM reservations WHERE id = ?").bind(id).first<{ s: number; e: number }>();
 const blocksOf = async (id: string) =>
   (await env.DB.prepare("SELECT staff_id, block_start FROM tech_blocks WHERE owner_id = ? ORDER BY block_start").bind(id).all<{ staff_id: number; block_start: number }>()).results;
-const spots = async (startAt: number) => {
-  const res = await api("GET", `/api/customer/availability?from=${FRI}&to=${FRI}`, { cookie: sam.cookie });
-  return res.json.days.find((d: any) => d.date === FRI).slots.find((s: any) => s.startAt === startAt)?.spots;
-};
+/** How many more bookings fit at `startAt` (the capacity behind the customer's list of times). */
+const spots = async (startAt: number) => (await bookableSlots(env, FRI, FRI)).days[0]!.slots.find((s) => s.startAt === startAt)?.spots;
 
 describe("stored occupied ranges", () => {
   it("submit stores the range with the buffers in force", async () => {

@@ -95,7 +95,6 @@ export interface Account {
 export interface Slot {
   startAt: number;
   endAt: number;
-  spots: number;
 }
 
 export interface Availability {

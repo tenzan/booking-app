@@ -6,6 +6,7 @@ import { setNow } from "../../src/worker/lib/clock";
 import { approveReservation } from "../../src/worker/reservations/approve";
 import { MIN, wallToUtc } from "../../src/domain/time";
 import type { StaffPrincipal } from "../../src/worker/env";
+import { bookableSlots } from "../../src/worker/scheduling/availability";
 
 afterEach(() => setNow(null));
 
@@ -241,8 +242,8 @@ describe("with two eligible technicians plus the admin", () => {
       const a = await env.DB.prepare("SELECT * FROM audit_log WHERE action = 'reservation.declined'").first<any>();
       expect(a).toMatchObject({ actor_kind: "staff", actor: String(team.a), reservation_id: id });
 
-      const av = await api("GET", `/api/customer/availability?from=${FRI}&to=${FRI}`, { cookie: sam.cookie });
-      expect(av.json.days[0].slots.find((s: any) => s.startAt === at(FRI, 10)).spots).toBe(3);
+      const av = await bookableSlots(env, FRI, FRI);
+      expect(av.days[0]!.slots.find((s) => s.startAt === at(FRI, 10))!.spots).toBe(3);
       // The customer can book again.
       expect((await submit(pat, at(FRI, 10))).length).toBeGreaterThan(0);
     });

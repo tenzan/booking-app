@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { api } from "../helpers";
 import { loginCustomer, loginStaff, seedCustomer, seedTeam, seedWeekly, TZ } from "../fixtures";
 import { loadScheduleCtx } from "../../src/worker/scheduling/context";
+import { bookableSlots } from "../../src/worker/scheduling/availability";
 import { setNow } from "../../src/worker/lib/clock";
 import { wallToUtc, MIN } from "../../src/domain/time";
 
@@ -28,17 +29,24 @@ beforeEach(async () => {
 const availability = (from: string, to: string, c: string | null = cookie) =>
   api("GET", `/api/customer/availability?from=${from}&to=${to}`, { cookie: c ?? undefined });
 const day = (json: any, date: string) => json.days.find((d: any) => d.date === date);
+/** [startAt, spots] of a date's bookable slots: the capacity behind the customer's list (which never shows it). */
+const spotsOn = async (date: string) => (await bookableSlots(env, date, date)).days[0]!.slots.map((s) => [s.startAt, s.spots]);
 
 describe("GET /api/customer/availability", () => {
-  it("hides slots inside the minimum notice and shows spots for later days", async () => {
+  it("hides slots inside the minimum notice and lists the times of later days, never how many are free", async () => {
     const res = await availability(THU, FRI);
     expect(res.status).toBe(200);
     expect(res.json.timezone).toBe(TZ);
     // earliest = 08:00 + 3 business hours = 12:00 Thursday, so the 10:00 Thursday slots are gone
     expect(day(res.json, THU)).toEqual({ date: THU, slots: [] });
+    // Times only: a count would tell customers how many technicians are free (and "last spot" is false urgency).
     expect(day(res.json, FRI).slots).toEqual([
-      { startAt: at(FRI, 10), endAt: at(FRI, 10, 30), spots: 2 },
-      { startAt: at(FRI, 10, 30), endAt: at(FRI, 11), spots: 2 },
+      { startAt: at(FRI, 10), endAt: at(FRI, 10, 30) },
+      { startAt: at(FRI, 10, 30), endAt: at(FRI, 11) },
+    ]);
+    expect(await spotsOn(FRI)).toEqual([
+      [at(FRI, 10), 2],
+      [at(FRI, 10, 30), 2],
     ]);
   });
 
@@ -67,8 +75,7 @@ describe("GET /api/customer/availability", () => {
         .bind(team.a, ms / MIN)
         .run();
     }
-    const res = await availability(FRI, FRI);
-    expect(day(res.json, FRI).slots.map((s: any) => [s.startAt, s.spots])).toEqual([
+    expect(await spotsOn(FRI)).toEqual([
       [at(FRI, 10), 1],
       [at(FRI, 10, 30), 1], // the 10:00 hold plus its 10-minute buffer occupies a until 10:40
     ]);
@@ -180,8 +187,7 @@ describe("loadScheduleCtx holds", () => {
     const option = ctx.holds.find((h) => h.id === "o1");
     expect(option).toMatchObject({ start: at(FRI, 10), end: at(FRI, 10, 40), fixed: team.a, eligible: [team.a] });
     expect(ctx.holdOwners.get("o1")).toEqual({ kind: "option", id: "o1", status: "open", staffId: team.a, ref: "RS-r1" });
-    const res = await availability(FRI, FRI);
-    expect(day(res.json, FRI).slots.map((s: any) => [s.startAt, s.spots])).toEqual([
+    expect(await spotsOn(FRI)).toEqual([
       [at(FRI, 10), 1],
       [at(FRI, 10, 30), 1],
     ]);
@@ -192,8 +198,7 @@ describe("loadScheduleCtx holds", () => {
     const ctx = await loadScheduleCtx(env, at(FRI, 0), at(FRI, 23));
     expect(ctx.holds.map((h) => h.id)).toEqual(["r1"]);
     expect(ctx.holdOwners.has("o1")).toBe(false);
-    const res = await availability(FRI, FRI);
-    expect(day(res.json, FRI).slots[0].spots).toBe(2);
+    expect((await spotsOn(FRI))[0]).toEqual([at(FRI, 10), 2]);
   });
 
   it("reads the schedule version", async () => {

@@ -7,9 +7,22 @@ import { clock } from "../lib/clock";
 import { bhCtx, getSettings } from "../repos/settings";
 import { loadScheduleCtx } from "./context";
 
+/** What customers see: the bookable times only, never how many are free (that would reveal how many technicians are). */
 export interface AvailabilityResponse {
   timezone: string;
+  days: Array<{ date: string; slots: Array<{ startAt: number; endAt: number }> }>;
+}
+
+/** Bookable slots with how many more bookings fit in each (`spots`, always at least 1). */
+export interface BookableSlots {
+  timezone: string;
   days: Array<{ date: string; slots: Array<{ startAt: number; endAt: number; spots: number }> }>;
+}
+
+/** The customer's availability: bookableSlots without the counts. */
+export async function customerAvailability(env: Env, fromDate: string, toDate: string): Promise<AvailabilityResponse> {
+  const { timezone, days } = await bookableSlots(env, fromDate, toDate);
+  return { timezone, days: days.map((d) => ({ date: d.date, slots: d.slots.map(({ startAt, endAt }) => ({ startAt, endAt })) })) };
 }
 
 /**
@@ -17,7 +30,7 @@ export interface AvailabilityResponse {
  * today + bookingHorizonDays. A slot is listed when it starts at or after the minimum-notice instant
  * and at least one more booking fits (`spots`).
  */
-export async function customerAvailability(env: Env, fromDate: string, toDate: string): Promise<AvailabilityResponse> {
+export async function bookableSlots(env: Env, fromDate: string, toDate: string): Promise<BookableSlots> {
   const tz = env.APP_TIMEZONE;
   const now = clock.now();
   const today = utcToWall(now, tz).date;
@@ -30,7 +43,7 @@ export async function customerAvailability(env: Env, fromDate: string, toDate: s
   if (first > last) return { timezone: tz, days: [] };
 
   const ctx = await loadScheduleCtx(env, wallToUtc(first, 0, tz), wallToUtc(addDays(last, 1), 0, tz));
-  const days = eachDate(first, last).map((date) => ({ date, slots: [] as AvailabilityResponse["days"][number]["slots"] }));
+  const days = eachDate(first, last).map((date) => ({ date, slots: [] as BookableSlots["days"][number]["slots"] }));
   const byDate = new Map(days.map((d) => [d.date, d]));
 
   for (const slot of ctx.slots) {

@@ -328,8 +328,6 @@ export const en = {
       slot: {
         heading: "Choose a time",
         listLabel: "Available times on {date}",
-        spotsLeft: "{n} spots left",
-        lastSpot: "Last spot",
       },
       details: {
         heading: "Your details",

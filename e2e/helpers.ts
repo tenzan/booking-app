@@ -83,7 +83,6 @@ export async function signIn(req: APIRequestContext, kind: "customer" | "staff",
 interface Slot {
   startAt: number;
   endAt: number;
-  spots: number;
 }
 
 /** The bookable slots of the next two weeks, earliest first, as the signed-in customer sees them. */

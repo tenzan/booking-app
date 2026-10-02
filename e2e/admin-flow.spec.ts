@@ -56,10 +56,11 @@ test("admin takes a technician off weekly hours and reassigns their confirmed ap
   await createCustomer(api, `E2E-REASSIGN-${tag.toUpperCase()}`, `Reassign Clinic ${tag}`, customerEmail, "Robin Roe");
   await signIn(api, "customer", customerEmail);
 
-  // The first time with two technicians free, so someone else is still free once the new technician takes it.
+  // The first bookable time: someone is free then, so once this test's technician joins its hours and takes it, someone
+  // else is still free for the reassignment below.
   const { timezone, slots } = await availableSlots(api);
-  const slot = slots.find((s) => s.spots >= 2);
-  expect(slot, "a bookable time with two free technicians").toBeTruthy();
+  const slot = slots[0];
+  expect(slot, "a bookable time").toBeTruthy();
   const { weekday, minute } = wallTime(slot!.startAt, timezone);
   const { weekly } = await apiGet<{ weekly: Window[] }>(api, "/api/staff/schedule/windows");
   const win = weekly.find((w) => w.weekday === weekday && w.startMin <= minute && minute < w.endMin)!;

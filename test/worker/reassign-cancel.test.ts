@@ -9,6 +9,7 @@ import { cancelReservation } from "../../src/worker/reservations/cancel";
 import { processOutbox } from "../../src/worker/mail/outbox";
 import { MIN, wallToUtc } from "../../src/domain/time";
 import type { StaffPrincipal } from "../../src/worker/env";
+import { bookableSlots } from "../../src/worker/scheduling/availability";
 
 afterEach(() => setNow(null));
 
@@ -292,8 +293,8 @@ describe("staff cancellation", () => {
     expect(JSON.parse(a.details)).toEqual({ reason: "Duplicate request", from: "pending" });
 
     // Capacity is back.
-    const av = await api("GET", `/api/customer/availability?from=${FRI}&to=${FRI}`, { cookie: sam.cookie });
-    expect(av.json.days[0].slots.find((s: any) => s.startAt === at(FRI, 10)).spots).toBe(3);
+    const av = await bookableSlots(env, FRI, FRI);
+    expect(av.days[0]!.slots.find((s) => s.startAt === at(FRI, 10))!.spots).toBe(3);
   });
 
   it("cancels a confirmed appointment and cancels its unsent reminder and confirmation mails", async () => {
