@@ -1668,6 +1668,8 @@ export const en = {
       },
       /** Reservation lifecycle on the staff side: proposals, replacements, closed states, calendar export. */
       lifecycle: {
+        customer: "the customer",
+        staleAccepted: "Already handled: confirmed when the customer accepted a proposed time at {time}.",
         replacementPending: "The customer has asked to move this to another time: {ref}. Approve or decline that request instead of proposing times here.",
         propose: {
           replacementPending: "The customer has just asked for another time themselves, so no times were proposed. Decide on their change request instead.",
@@ -1755,6 +1757,7 @@ export const en = {
           replacedByDoneNote: "Moved to a new time: {ref}.",
         },
         banner: {
+          confirmedByAccept: "Confirmed when the customer accepted a proposed time on {when}. Technician: {tech}.",
           cancelledByStaff: "Cancelled by {name} on {when}.",
           cancelledByCustomer: "Cancelled by the customer ({name}) on {when}.",
           cancelledRescheduled: "Moved to a new time on {when}: the customer's change request {ref} was approved.",

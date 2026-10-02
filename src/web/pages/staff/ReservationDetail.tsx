@@ -31,9 +31,14 @@ const asAction = (s: string | null, allowed: Action[]): Action | null => (allowe
 
 type PageNotice = { tone: "success" | "warning"; text: string };
 
-/** Who closed or confirmed it, and when; null when the record doesn't say. */
-function handledBy(r: ReservationDTO): { name: string; at: number } | null {
-  if (r.status === "confirmed" && r.confirmedBy && r.confirmedAt !== null) return { name: r.confirmedBy.name, at: r.confirmedAt };
+/**
+ * Who closed or confirmed it, and when; null when the record doesn't say. `accepted`: confirmed by the customer choosing
+ * a time staff proposed (no staff member confirmed it).
+ */
+function handledBy(r: ReservationDTO): { name: string; at: number; accepted?: true } | null {
+  if (r.status === "confirmed" && r.confirmedAt !== null) {
+    return r.confirmedBy ? { name: r.confirmedBy.name, at: r.confirmedAt } : { name: t("web.staff.lifecycle.customer"), at: r.confirmedAt, accepted: true };
+  }
   if (r.closedAt !== null) return { name: r.closedBy ?? t("web.staff.detail.system"), at: r.closedAt };
   return null;
 }
@@ -95,9 +100,11 @@ export default function ReservationDetail() {
     const who = moved ? handledBy(current) : null;
     setNotice({
       tone: "warning",
-      text: who
-        ? t("web.staff.detail.stale", { status: t(`web.statusShort.${current!.status}`), name: who.name, time: fmtStamp(who.at, tz) })
-        : t("web.staff.detail.changed"),
+      text: who?.accepted
+        ? t("web.staff.lifecycle.staleAccepted", { time: fmtStamp(who.at, tz) })
+        : who
+          ? t("web.staff.detail.stale", { status: t(`web.statusShort.${current!.status}`), name: who.name, time: fmtStamp(who.at, tz) })
+          : t("web.staff.detail.changed"),
     });
     if (moved) openPanel(null);
     refresh();
@@ -312,7 +319,7 @@ function StatusBanner({ r, tz }: { r: ReservationDTO; tz: string }) {
     r.status === "pending"
       ? t("web.staff.detail.banner.pending")
       : r.status === "confirmed"
-        ? t("web.staff.detail.banner.confirmed", {
+        ? t(who?.accepted ? "web.staff.lifecycle.banner.confirmedByAccept" : "web.staff.detail.banner.confirmed", {
             name: who?.name ?? "—",
             when: who ? fmtStamp(who.at, tz) : "—",
             tech: r.assignedStaff?.name ?? t("web.staff.dashboard.unassigned"),
