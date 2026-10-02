@@ -94,6 +94,7 @@ function fakeFetch(over = {}, calls = []) {
     "GET http://booking.example.com/": { status: 301, headers: { location: "https://booking.example.com/" }, body: "" },
     "GET https://booking.example.com/api/health": json(200, { ok: true }),
     "GET https://booking.example.com/": { status: 200, headers: { ...GOOD, "content-type": "text/html; charset=utf-8" }, body: "<html></html>" },
+    "GET https://booking.example.com/staff/login": { status: 200, headers: { ...GOOD, "content-type": "text/html; charset=utf-8" }, body: "<html></html>" },
     "POST https://booking.example.com/api/dev/cron": json(404, { error: "not_found" }),
     "POST https://booking.example.com/api/auth/customer/request": json(403, { error: "csrf" }),
     "GET https://booking.example.com/api/auth/me": json(200, { bookingEnabled: true }),
@@ -137,6 +138,7 @@ test("runSmoke fails when dev routes are reachable, CSRF is not enforced or HSTS
       "POST https://booking.example.com/api/auth/customer/request": { status: 200, headers: {}, body: "{}" },
       "GET https://booking.example.com/": { status: 200, headers: { ...noHsts, "content-type": "text/html" }, body: "" },
     }),
+    { sleep: async () => {} },
   );
   const failed = results.filter((r) => r.ok === false).map((r) => r.name);
   assert.equal(failed.length, 3);
@@ -149,7 +151,9 @@ test("runSmoke fails when dev routes are reachable, CSRF is not enforced or HSTS
 test("runSmoke fails the health check on a non-200 or a body without ok:true", async () => {
   const bad = await runSmoke("https://booking.example.com", fakeFetch({ "GET https://booking.example.com/api/health": { status: 200, headers: GOOD, body: '{"ok":false}' } }));
   assert.equal(bad.find((r) => r.name.startsWith("GET /api/health")).ok, false);
-  const down = await runSmoke("https://booking.example.com", fakeFetch({ "GET https://booking.example.com/api/health": { status: 503, headers: {}, body: "down" } }));
+  const down = await runSmoke("https://booking.example.com", fakeFetch({ "GET https://booking.example.com/api/health": { status: 503, headers: {}, body: "down" } }), {
+    sleep: async () => {},
+  });
   assert.equal(down.find((r) => r.name.startsWith("GET /api/health")).ok, false);
 });
 
@@ -172,7 +176,7 @@ test("runSmoke skips the redirect check, with a note, for an http base URL", asy
     calls.push(`${init.method ?? "GET"} ${url.href}`);
     if (url.pathname === "/api/dev/cron") return new Response('{"error":"not_found"}', { status: 404 });
     if (url.pathname === "/api/auth/customer/request") return new Response('{"error":"csrf"}', { status: 403 });
-    if (url.pathname === "/") return new Response("<html>", { status: 200, headers: { ...GOOD, "content-type": "text/html" } });
+    if (url.pathname === "/" || url.pathname === "/staff/login") return new Response("<html>", { status: 200, headers: { ...GOOD, "content-type": "text/html" } });
     return new Response('{"ok":true,"bookingEnabled":false}', { status: 200, headers: GOOD });
   };
   const results = await runSmoke("http://localhost:5181", fetchImpl);
@@ -208,7 +212,7 @@ test("runSmoke times out a body that never finishes", async () => {
 test("runSmoke passes an abort signal to every request", async () => {
   const calls = [];
   await runSmoke(HOST, fakeFetch({}, calls));
-  assert.ok(calls.length >= 6 && calls.every((c) => c.init.signal instanceof AbortSignal));
+  assert.ok(calls.length >= 7 && calls.every((c) => c.init.signal instanceof AbortSignal));
 });
 
 test("wait: polls /api/health until the first 200, then runs the checks", async () => {
@@ -224,7 +228,7 @@ test("wait: polls /api/health until the first 200, then runs the checks", async 
 test("wait: stops after 6 attempts and the health row fails", async () => {
   const sleeps = [];
   let health = 0;
-  const down = () => { health++; return new Response("down", { status: 503 }); };
+  const down = () => { health++; return new Response("down", { status: 503, headers: GOOD }); };
   const results = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/health`]: down }), { wait: 60, sleep: async (ms) => sleeps.push(ms) });
   assert.equal(sleeps.length, 5);
   assert.equal(health, 7, "six polls plus the health check itself");
@@ -245,7 +249,7 @@ test("wait: treats a network error as not ready yet", async () => {
 
 test("no wait by default: a down health endpoint is checked once without sleeping", async () => {
   let health = 0;
-  const down = () => { health++; return new Response("down", { status: 503 }); };
+  const down = () => { health++; return new Response("down", { status: 503, headers: GOOD }); };
   const sleeps = [];
   await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/health`]: down }), { sleep: async (ms) => sleeps.push(ms) });
   assert.equal(health, 1);
@@ -291,4 +295,66 @@ test("runSmoke fails when /api/auth/me is not 200", async () => {
   const me = results.find((r) => r.name.startsWith("GET /api/auth/me"));
   assert.equal(me.ok, false);
   assert.match(me.detail, /500/);
+});
+
+test("runSmoke checks the SPA fallback page (/staff/login): 200 HTML with the page security headers", async () => {
+  const calls = [];
+  const good = await runSmoke(HOST, fakeFetch({}, calls));
+  assert.ok(calls.some((c) => c.key === `GET ${HOST}/staff/login`));
+  const names = good.map((r) => r.name);
+  assert.ok(names.includes("GET /staff/login: 200 HTML (SPA fallback)"), names.join("\n"));
+  assert.equal(names.filter((n) => n.startsWith("Fallback page: ")).length, 4);
+  assert.equal(allPassed(good), true, formatTable(good));
+
+  const notFound = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/staff/login`]: { status: 404, headers: { ...GOOD, "content-type": "text/html" }, body: "nope" } }));
+  assert.deepEqual(failedNames(notFound), ["GET /staff/login: 200 HTML (SPA fallback)"]);
+
+  const noCsp = { ...GOOD };
+  delete noCsp["content-security-policy"];
+  const bare = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/staff/login`]: { status: 200, headers: { ...noCsp, "content-type": "text/html" }, body: "<html>" } }), { sleep: async () => {} });
+  assert.deepEqual(failedNames(bare), ["Fallback page: CSP frame-ancestors 'none'"]);
+});
+
+test("header retry: a header check that fails once is re-run after 15 s, and the retry's result is reported", async () => {
+  const sleeps = [];
+  let pages = 0;
+  // The first answer still comes from the previous version (no HSTS); the second from the new one.
+  const propagating = () => {
+    const h = ++pages === 1 ? { ...GOOD, "strict-transport-security": "" } : GOOD;
+    return new Response("<html>", { status: 200, headers: { ...h, "content-type": "text/html" } });
+  };
+  const calls = [];
+  const results = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/`]: propagating }, calls), { sleep: async (ms) => sleeps.push(ms) });
+  assert.deepEqual(sleeps, [15000]);
+  assert.equal(pages, 2);
+  assert.equal(allPassed(results), true, formatTable(results));
+  // Only the header-bearing requests are repeated, and each check is reported once.
+  const count = (key) => calls.filter((c) => c.key === key).length;
+  assert.equal(count(`GET ${HOST}/api/health`), 2);
+  assert.equal(count(`GET ${HOST}/staff/login`), 2);
+  assert.equal(count(`POST ${HOST}/api/dev/cron`), 1);
+  assert.equal(count(`POST ${HOST}/api/auth/customer/request`), 1);
+  assert.equal(count(`GET ${HOST}/api/auth/me`), 1);
+  assert.equal(count("GET http://booking.example.com/"), 1);
+  assert.equal(results.filter((r) => r.name === "Page: Strict-Transport-Security (max-age >= 86400)").length, 1);
+  assert.match(results.find((r) => r.name.startsWith("Page: Strict-Transport-Security")).detail, /retried after 15 s/);
+});
+
+test("header retry: a header check that still fails after the retry is reported as failed", async () => {
+  const sleeps = [];
+  const noHsts = { ...GOOD };
+  delete noHsts["strict-transport-security"];
+  const results = await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/health`]: { status: 200, headers: noHsts, body: '{"ok":true}' } }), {
+    sleep: async (ms) => sleeps.push(ms),
+  });
+  assert.deepEqual(sleeps, [15000]);
+  assert.deepEqual(failedNames(results), ["API: Strict-Transport-Security (max-age >= 86400)"]);
+});
+
+test("header retry: no retry (and no sleep) when every header check passes, or when only a non-header check fails", async () => {
+  const sleeps = [];
+  await runSmoke(HOST, fakeFetch(), { sleep: async (ms) => sleeps.push(ms) });
+  await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/api/auth/me`]: { status: 500, headers: {}, body: "oops" } }), { sleep: async (ms) => sleeps.push(ms) });
+  await runSmoke(HOST, fakeFetch({ [`GET ${HOST}/`]: { status: 404, headers: { ...GOOD, "content-type": "text/html" }, body: "nope" } }), { sleep: async (ms) => sleeps.push(ms) });
+  assert.deepEqual(sleeps, []);
 });

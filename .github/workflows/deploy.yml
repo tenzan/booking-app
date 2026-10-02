@@ -2,7 +2,7 @@ name: Deploy
 # Deploys main to Cloudflare after the same checks CI runs.
 # Configuration and secrets come from a secret manager at run time; this repository holds none.
 # The reference setup uses Doppler: set a read-only service token for the production config as the
-# `DOPPLER_TOKEN` Actions secret. Without that secret the job is skipped (forks stay green).
+# `DOPPLER_TOKEN` Actions secret. Without that secret both jobs are skipped (forks stay green).
 on:
   push:
     branches: [main]
@@ -43,9 +43,31 @@ jobs:
       - name: Deploy
         if: env.DOPPLER_TOKEN != ''
         run: doppler run -- npm run deploy
+
+  # A separate job so that "Re-run failed jobs" after a failed check repeats only the checks, never the deployment.
+  # The new version is already live when this runs; a failure here does not roll anything back.
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 5
+    env:
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+    steps:
+      - name: Skip when no deployment credentials are configured
+        if: env.DOPPLER_TOKEN == ''
+        run: echo "DOPPLER_TOKEN is not set; skipping smoke test." && exit 0
+      - uses: actions/checkout@v4
+        if: env.DOPPLER_TOKEN != ''
+      - uses: actions/setup-node@v4
+        if: env.DOPPLER_TOKEN != ''
+        with:
+          node-version: 22
+      - name: Install Doppler CLI
+        if: env.DOPPLER_TOKEN != ''
+        uses: dopplerhq/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3 (pinned)
       - name: Smoke test
         if: env.DOPPLER_TOKEN != ''
-        timeout-minutes: 5
         # Single quotes: the inner shell, which has the Doppler variables, expands $APP_DOMAIN.
         # --wait 60: a first deployment's DNS record and certificate can take a moment.
         run: doppler run -- sh -c 'node scripts/smoke.mjs "https://$APP_DOMAIN" --wait 60'
