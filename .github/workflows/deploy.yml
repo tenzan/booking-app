@@ -43,3 +43,7 @@ jobs:
       - name: Deploy
         if: env.DOPPLER_TOKEN != ''
         run: doppler run -- npm run deploy
+      - name: Smoke test
+        if: env.DOPPLER_TOKEN != ''
+        # Single quotes: the inner shell, which has the Doppler variables, expands $APP_DOMAIN.
+        run: doppler run -- sh -c 'node scripts/smoke.mjs "https://$APP_DOMAIN"'

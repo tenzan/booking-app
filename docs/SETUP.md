@@ -97,6 +97,8 @@ doppler configs tokens create github-actions --project <your-project> --config p
 
 Without that secret the deploy job is skipped, so forks of this repository stay green.
 
+After deploying, the workflow runs the smoke test (`node scripts/smoke.mjs "https://$APP_DOMAIN"`, with `APP_DOMAIN` from Doppler; see section 11), and the job fails if a check fails. On the very first deployment the custom domain's DNS record and certificate can take a few minutes, so the smoke test may fail then: re-run the workflow once the site loads.
+
 ## 6. Importing customers
 
 Administrators can import customers from a CSV file in the staff area (Customers → Import CSV; columns `customer_number,name,phone,contact_email,contact_name,active`; see `docs/sample-customers.csv`). Each row is one contact; rows with the same `customer_number` form one customer. The import only creates and updates: it never deletes customers or contacts, and a blank `phone`, `contact_name` or `active` leaves the stored value as it is. A file may have up to 5000 rows and 1 MB.
@@ -159,3 +161,53 @@ Settings changes apply to requests made afterwards: a request keeps the deadline
 **Replacement requests ("choose another time").** A customer who wants a different time than the ones offered, or for an appointment they already have, chooses another time themselves. That creates a new pending request that replaces the original; the original keeps its time and technician until staff approve the replacement. Approving it (or the customer accepting a proposal on it) cancels the original in the same step, frees its time and sends one "rescheduled" email instead of a cancellation. If staff decline the replacement or it expires, the original is unaffected. A customer has at most one pending replacement per appointment, and an open proposal on the original is closed when the replacement is made. While a replacement is pending, staff can't propose times on the original: they approve or decline the replacement instead. Cancelling the original (by the customer or staff) cancels its pending replacement too, with one cancellation email; if a pending original expires, its replacement stays pending as a request of its own.
 
 Customers can also add a confirmed appointment to their calendar (`.ics` download) from their reservation page, and staff from the request page.
+
+## 11. Operations
+
+### Logs
+
+Observability is enabled in the rendered `wrangler.jsonc`, so the Worker's logs and invocations are kept by Cloudflare. To see them:
+
+- Live: `npx wrangler tail <worker-name>` (the `WORKER_NAME` value, default `remote-support-booking`) streams requests, exceptions and `console` output as they happen. `--status error` shows only failures.
+- History: in the Cloudflare dashboard, open **Workers & Pages**, choose the Worker and open **Observability** (Workers Observability) to search and filter past logs and invocations.
+
+The staff **Activity** page shows the application's own audit log.
+
+### Rollback
+
+Every `npm run deploy` creates a Worker version. To go back to a previous one:
+
+```bash
+npx wrangler deployments list           # recent deployments with their version ids
+npx wrangler rollback [version-id]      # without an id, rolls back to the previous deployment
+```
+
+A rollback changes the code only. **D1 migrations are forward-only and are not undone**, so the older code must run against the newer schema. This is why every migration has to stay backward compatible with the previous release (section 8): after a rollback the previous release runs against the current schema. If a bad migration or bad data is the problem, restore the database instead (next section). Run the smoke test after a rollback too.
+
+### D1 backups (Time Travel)
+
+D1 keeps a continuous history of the database (Time Travel), so it can be restored to any minute in the last 30 days without having set anything up:
+
+```bash
+npx wrangler d1 time-travel info <database-name>                          # current bookmark and the restorable window
+npx wrangler d1 time-travel restore <database-name> --timestamp=<unix-or-ISO-time>
+npx wrangler d1 time-travel restore <database-name> --bookmark=<bookmark>
+```
+
+`info` also accepts `--timestamp` to show the bookmark for a point in time. A restore **replaces the whole database in place**: everything written after that moment (reservations, emails, sessions) is lost, and the command prints a bookmark for the state just before the restore, so a restore can itself be undone. Note the current bookmark (`info`) before restoring, and consider pausing online booking (Settings) while you do it. Restoring is a database operation only: it does not change the deployed Worker, and the Worker's migrations are tracked in the database itself, so restoring to before a migration makes the next deploy apply it again.
+
+For an extra copy outside Cloudflare, `npx wrangler d1 export <database-name> --remote --output backup.sql` writes the schema and data to a file (store it as carefully as the customer data it contains).
+
+### Smoke test
+
+After a deployment, check the live site from outside:
+
+```bash
+npm run smoke -- https://booking.example.com
+```
+
+It prints a pass/fail table and exits non-zero if anything fails: the health endpoint; the redirect from `http://` to `https://`; the security headers on the page and the API (`Content-Security-Policy` with `frame-ancestors 'none'`, `Referrer-Policy`, `X-Content-Type-Options`, `Strict-Transport-Security`); that the development routes (`/api/dev/*`) are not reachable; that a state-changing API call without the `X-Requested-With: fetch` header is refused (the CSRF guard); and that `/api/auth/me` answers, reporting whether online booking is currently enabled (informational). The deploy workflow runs it automatically after every deployment. It sends no credentials and changes no data, so it is safe to run against production. Against a local server (`http://localhost:5173`) the HTTPS redirect is skipped and the `Strict-Transport-Security` checks fail, which is expected.
+
+### What the cron does on the first deployment
+
+The Cron Trigger starts running every minute as soon as the Worker is deployed (section 9). On a database that is new, nothing is due and it does nothing visible. On a database that already holds old rows, for example when upgrading, the first runs close every pending request and proposal that is already past its deadline and complete every confirmed appointment that has ended. They do this **silently for stale items**: a request whose requested time has passed, or whose deadline was more than 24 hours ago, is expired and its technician hold released without emailing anyone (the activity log records that nobody was emailed), so customers and staff are not sent a flood of old news. Backlogs are processed in bounded batches (50 rows per kind per run), so a large one drains over the next few minutes. Nothing needs to be done; watch the staff Activity page or `wrangler tail` if you want to see it happen.
