@@ -9,7 +9,7 @@ if (existsSync(".env")) {
 }
 const strict = process.argv.includes("--strict");
 const REQUIRED = ["APP_DOMAIN", "MAIL_FROM", "MAIL_FROM_NAME", "ORG_NAME", "APP_TIMEZONE", "CLOUDFLARE_ACCOUNT_ID", "D1_DATABASE_ID"];
-const OPTIONAL = ["MAIL_REPLY_FORWARD_TO", "TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "BOOTSTRAP_ADMIN_EMAILS", "WORKER_NAME", "D1_DATABASE_NAME", "APP_LOCALE"];
+const OPTIONAL = ["TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "BOOTSTRAP_ADMIN_EMAILS", "WORKER_NAME", "D1_DATABASE_NAME", "APP_LOCALE"];
 const env = process.env;
 if (strict) {
   const missing = REQUIRED.filter((k) => !env[k]);
@@ -58,7 +58,6 @@ const config = {
     MAIL_FROM: env.MAIL_FROM || "no-reply@example.com",
     MAIL_FROM_NAME: env.MAIL_FROM_NAME || "Example Support",
     MAIL_MODE: strict ? "cloudflare" : (env.MAIL_MODE || "dev"),
-    MAIL_REPLY_FORWARD_TO: env.MAIL_REPLY_FORWARD_TO || "",
     TURNSTILE_SITE_KEY: env.TURNSTILE_SITE_KEY || "",
   },
   // Deployments are reachable only on the custom domain: no *.workers.dev URL or preview URLs

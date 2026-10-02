@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router";
+import type { CustomerReservationDTO } from "../../../shared/types";
 import { apiFetch, isApiError, queryKeys, useMe, type Account, type Availability, type Slot, type SubmittedReservation } from "../../api";
 import { BookingPaused } from "../../components/BookingPaused";
-import { Button } from "../../components/Button";
+import { Button, ButtonLink } from "../../components/Button";
 import { Notice } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
 import { PageHeading, usePageTitle } from "../../components/Layout";
 import { Skeleton } from "../../components/Spinner";
 import { TimezoneNote } from "../../components/TimezoneNote";
-import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtTimeRange, fmtTz, todayIn } from "../../format";
+import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtTimeRange, fmtTz, fmtWhenTz, todayIn } from "../../format";
 import { t } from "../../i18n";
 import { AccountPicker } from "./book/AccountPicker";
 import { DateStrip } from "./book/DateStrip";
@@ -22,34 +23,93 @@ import { Steps, stepFromName, stepName, type Step } from "./book/Steps";
 const PAGE_DAYS = 14;
 
 export default function Book() {
-  usePageTitle(t("web.book.heading"));
+  const [params] = useSearchParams();
+  /** "Choose another time": the reservation this booking asks to replace. */
+  const replacesId = params.get("replaces");
+  const heading = t(replacesId ? "web.customer.replace.heading" : "web.book.heading");
+  usePageTitle(heading);
   const me = useMe();
   const accounts = useQuery({
     queryKey: queryKeys.accounts,
     queryFn: () => apiFetch<{ accounts: Account[] }>("/api/customer/accounts").then((r) => r.accounts),
   });
+  const original = useQuery({
+    queryKey: queryKeys.reservation(replacesId ?? ""),
+    queryFn: () => apiFetch<{ reservation: CustomerReservationDTO }>(`/api/customer/reservations/${encodeURIComponent(replacesId!)}`).then((r) => r.reservation),
+    enabled: replacesId !== null,
+  });
+
+  const retry = (onRetry: () => void) => (
+    <Notice tone="error" className="flex flex-wrap items-center justify-between gap-3">
+      {t("web.errors.generic")}
+      <Button variant="secondary" onClick={onRetry}>
+        {t("web.common.retry")}
+      </Button>
+    </Notice>
+  );
 
   let body: ReactNode;
   if (me.data?.bookingEnabled === false) body = <BookingPaused supportPhone={me.data.supportPhone} autoFocus />;
-  else if (accounts.isPending || !me.data?.customer) body = <BookSkeleton />;
-  else if (accounts.isError)
-    body = (
-      <Notice tone="error" className="flex flex-wrap items-center justify-between gap-3">
-        {t("web.errors.generic")}
-        <Button variant="secondary" onClick={() => void accounts.refetch()}>
-          {t("web.common.retry")}
-        </Button>
-      </Notice>
-    );
-  else if (accounts.data.length === 0)
+  else if (accounts.isPending || !me.data?.customer || (replacesId !== null && original.isPending)) body = <BookSkeleton />;
+  else if (accounts.isError) body = retry(() => void accounts.refetch());
+  else if (replacesId !== null && original.isError)
+    body = isApiError(original.error, 404) ? <ReplaceProblem text={t("web.customer.replace.notFound")} /> : retry(() => void original.refetch());
+  else if (replacesId !== null && original.data) {
+    const o = original.data;
+    // Only the original's own account can replace it, and only while the original is still to come.
+    const account = accounts.data.find((a) => a.customerNumber === o.customerNumber);
+    if ((o.status !== "pending" && o.status !== "confirmed") || o.startAt <= Date.now()) body = <ReplaceProblem text={t("web.customer.replace.notActive", { ref: o.ref })} />;
+    else if (o.replacedByRef) body = <ReplaceProblem text={t("web.customer.replace.pendingChange", { ref: o.ref, pending: o.replacedByRef })} />;
+    else if (!account) body = <ReplaceProblem text={t("web.book.errors.notEligible")} />;
+    else body = <BookFlow accounts={[account]} original={o} tz={me.data.timezone} email={me.data.customer.email} supportPhone={me.data.supportPhone} />;
+  } else if (accounts.data.length === 0)
     body = <EmptyState title={t("web.book.noAccounts.heading")} body={t("web.book.noAccounts.body")} />;
   else body = <BookFlow accounts={accounts.data} tz={me.data.timezone} email={me.data.customer.email} supportPhone={me.data.supportPhone} />;
 
   return (
     <div className="space-y-6">
-      <PageHeading>{t("web.book.heading")}</PageHeading>
+      <PageHeading>{heading}</PageHeading>
       {body}
     </div>
+  );
+}
+
+/** The reservation to replace can't be changed from here: say why, and offer the list or a plain booking. */
+function ReplaceProblem({ text }: { text: string }) {
+  return (
+    <div className="space-y-4">
+      <Notice tone="warning">{text}</Notice>
+      <div className="flex flex-col gap-3 sm:flex-row">
+        <ButtonLink to="/my" size="lg" className="sm:flex-1">
+          {t("web.nav.myReservations")}
+        </ButtonLink>
+        <ButtonLink to="/book" variant="secondary" size="lg" className="sm:flex-1">
+          {t("web.customer.replace.bookNew")}
+        </ButtonLink>
+      </div>
+    </div>
+  );
+}
+
+/** Replacement mode: which reservation is being changed, its current time, and that it stays until the new one is confirmed. */
+function ReplaceBanner({ original, tz }: { original: CustomerReservationDTO; tz: string }) {
+  // A change of a change: when `original` is itself a pending change request whose own original is still to come, the
+  // server replaces that root original instead, and the new request supersedes `original`.
+  if (original.status === "pending" && original.replacesRef !== null && original.replacesActive) {
+    return (
+      <Notice tone="info" className="space-y-1">
+        <p className="font-semibold">{t("web.customer.replace.bannerHeading", { ref: original.replacesRef })}</p>
+        <p>{t("web.customer.replace.chainRequest", { pending: original.ref, when: fmtWhenTz(original.startAt, original.endAt, tz) })}</p>
+        <p>{t("web.customer.replace.chainKeeps", { ref: original.replacesRef })}</p>
+      </Notice>
+    );
+  }
+  return (
+    <Notice tone="info" className="space-y-1">
+      <p className="font-semibold">{t("web.customer.replace.bannerHeading", { ref: original.ref })}</p>
+      <p>{t("web.customer.replace.current", { when: fmtWhenTz(original.startAt, original.endAt, tz) })}</p>
+      <p>{t(original.status === "confirmed" ? "web.customer.replace.keepsConfirmed" : "web.customer.replace.keepsPending")}</p>
+    </Notice>
   );
 }
 
@@ -65,7 +125,20 @@ const prefill = (a: Account): Details => ({
   issue: "",
 });
 
-function BookFlow({ accounts, tz, email, supportPhone }: { accounts: Account[]; tz: string; email: string; supportPhone: string }) {
+function BookFlow({
+  accounts,
+  original,
+  tz,
+  email,
+  supportPhone,
+}: {
+  accounts: Account[];
+  /** Replacement mode: the reservation this request asks to replace (its account is the only one offered). */
+  original?: CustomerReservationDTO;
+  tz: string;
+  email: string;
+  supportPhone: string;
+}) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -74,7 +147,13 @@ function BookFlow({ accounts, tz, email, supportPhone }: { accounts: Account[]; 
   const [accountId, setAccountId] = useState<number | null>(single?.id ?? null);
   const [date, setDate] = useState<string | null>(null);
   const [slot, setSlot] = useState<Slot | null>(null);
-  const [details, setDetails] = useState<Details>(() => (single ? prefill(single) : { contactName: "", phone: "", issue: "" }));
+  const [details, setDetails] = useState<Details>(() =>
+    original
+      ? { contactName: original.contactName, phone: original.phone, issue: original.issue }
+      : single
+        ? prefill(single)
+        : { contactName: "", phone: "", issue: "" },
+  );
   const edited = useRef(new Set<keyof Details>());
   const [errors, setErrors] = useState<DetailsErrors>({});
   const [banner, setBanner] = useState<Banner | null>(null);
@@ -110,7 +189,8 @@ function BookFlow({ accounts, tz, email, supportPhone }: { accounts: Account[]; 
   const detailsOk = Object.keys(validateDetails(details)).length === 0;
   const step: Step = account && slot ? (requested === 3 && !detailsOk ? 2 : requested) : 1;
 
-  const goTo = (s: Step, replace = false) => setParams(s === 1 ? {} : { step: stepName(s) }, { replace });
+  const goTo = (s: Step, replace = false) =>
+    setParams({ ...(original ? { replaces: original.id } : {}), ...(s === 1 ? {} : { step: stepName(s) }) }, { replace });
 
   // A reload or history jump can leave the URL ahead of what has been filled in; pull it back.
   useEffect(() => {
@@ -163,6 +243,7 @@ function BookFlow({ accounts, tz, email, supportPhone }: { accounts: Account[]; 
         contactName: details.contactName.trim(),
         phone: details.phone,
         issue: details.issue.trim(),
+        ...(original ? { replacesId: original.id } : {}),
       };
       // One key per exact request: a retry of the same request reuses it, any changed fact gets a new one.
       const fingerprint = JSON.stringify(body);
@@ -188,6 +269,15 @@ function BookFlow({ accounts, tz, email, supportPhone }: { accounts: Account[]; 
         setBanner({ step: 1, tone: "warning", text: t(e.code === "too_soon" ? "web.book.errors.tooSoon" : "web.book.errors.slotTaken") });
         void qc.invalidateQueries({ queryKey: queryKeys.availability });
         goTo(1, true);
+      } else if (isApiError(e, 409, "replacement_exists")) {
+        setBanner({ step: 3, tone: "warning", text: t("web.customer.replace.exists"), action: "my" });
+      } else if (isApiError(e, 409, "original_not_active") || (original && isApiError(e, 404, "not_found"))) {
+        setBanner({
+          step: 3,
+          tone: "warning",
+          text: e.code === "not_found" ? t("web.customer.replace.notFound") : t("web.customer.replace.notActive", { ref: original?.ref ?? "" }),
+          action: "my",
+        });
       } else if (isApiError(e, 409, "limit_reached")) {
         setBanner({ step: 3, tone: "warning", text: t("web.book.errors.limitReached"), action: "my" });
       } else if (isApiError(e, 403, "not_eligible")) {
@@ -268,6 +358,7 @@ function BookFlow({ accounts, tz, email, supportPhone }: { accounts: Account[]; 
 
   return (
     <div className="space-y-6 pb-28 sm:pb-0">
+      {original && <ReplaceBanner original={original} tz={tz} />}
       <Steps current={step} onGo={(s) => goTo(s)} />
 
       <div aria-live="polite" className="empty:mb-0">

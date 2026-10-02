@@ -5,6 +5,7 @@ import {
   apiPost,
   approve,
   availableSlots,
+  cancelIfOpen,
   createCustomer,
   devMailMessages,
   followEmailLink,
@@ -55,10 +56,11 @@ test("admin takes a technician off weekly hours and reassigns their confirmed ap
   await createCustomer(api, `E2E-REASSIGN-${tag.toUpperCase()}`, `Reassign Clinic ${tag}`, customerEmail, "Robin Roe");
   await signIn(api, "customer", customerEmail);
 
-  // The first time with two technicians free, so someone else is still free once the new technician takes it.
+  // The first bookable time: someone is free then, so once this test's technician joins its hours and takes it, someone
+  // else is still free for the reassignment below.
   const { timezone, slots } = await availableSlots(api);
-  const slot = slots.find((s) => s.spots >= 2);
-  expect(slot, "a bookable time with two free technicians").toBeTruthy();
+  const slot = slots[0];
+  expect(slot, "a bookable time").toBeTruthy();
   const { weekday, minute } = wallTime(slot!.startAt, timezone);
   const { weekly } = await apiGet<{ weekly: Window[] }>(api, "/api/staff/schedule/windows");
   const win = weekly.find((w) => w.weekday === weekday && w.startMin <= minute && minute < w.endMin)!;
@@ -75,52 +77,57 @@ test("admin takes a technician off weekly hours and reassigns their confirmed ap
   const reservation = await requestSlot(api, slot!.startAt, "Robin Roe");
   await approve(api, reservation.id, tech.id);
 
-  // ---- act: remove the technician from those hours in the schedule editor
-  const day = weekdayName(weekday);
-  const range = `${hhmm(win.startMin)} – ${hhmm(win.endMin)}`;
-  await page.goto("/staff/schedule");
-  await expect(page.getByRole("heading", { name: "Schedule", level: 1 })).toBeVisible();
-  await page.getByRole("button", { name: `Edit ${day} ${range}` }).click();
-  const form = page.getByRole("form", { name: `Hours on ${day}` });
-  // The checkbox is visually hidden inside its chip: click the chip, as a person would.
-  await form.locator("label").filter({ hasText: techName }).click();
-  await expect(form.getByRole("checkbox", { name: techName })).not.toBeChecked();
-  await form.getByRole("button", { name: "Save", exact: true }).click();
+  try {
+    // ---- act: remove the technician from those hours in the schedule editor
+    const day = weekdayName(weekday);
+    const range = `${hhmm(win.startMin)} – ${hhmm(win.endMin)}`;
+    await page.goto("/staff/schedule");
+    await expect(page.getByRole("heading", { name: "Schedule", level: 1 })).toBeVisible();
+    await page.getByRole("button", { name: `Edit ${day} ${range}` }).click();
+    const form = page.getByRole("form", { name: `Hours on ${day}` });
+    // The checkbox is visually hidden inside its chip: click the chip, as a person would.
+    await form.locator("label").filter({ hasText: techName }).click();
+    await expect(form.getByRole("checkbox", { name: techName })).not.toBeChecked();
+    await form.getByRole("button", { name: "Save", exact: true }).click();
 
-  // ---- the impact review names the confirmed appointment that would lose its technician
-  const dialog = page.getByRole("dialog", { name: "Check the impact before saving" });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "Needs a decision (1)" })).toBeVisible();
-  const conflict = dialog.getByRole("article").filter({ hasText: reservation.ref });
-  await expect(conflict.getByText(`${techName} would no longer be available at this time.`)).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Save change" })).toBeDisabled();
+    // ---- the impact review names the confirmed appointment that would lose its technician
+    const dialog = page.getByRole("dialog", { name: "Check the impact before saving" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "Needs a decision (1)" })).toBeVisible();
+    const conflict = dialog.getByRole("article").filter({ hasText: reservation.ref });
+    await expect(conflict.getByText(`${techName} would no longer be available at this time.`)).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Save change" })).toBeDisabled();
 
-  const reassign = conflict.getByRole("button", { name: /^Reassign to / }).first();
-  const newTech = (await reassign.textContent())!.replace("Reassign to", "").trim();
-  await reassign.click();
-  // If that technician only becomes free by moving a pending request, the card asks first. Either way the
-  // reassignment is only staged: it is saved together with the change.
-  const done = dialog.getByText(`${reservation.ref} will be reassigned to ${newTech} when you save. The impact is updated.`);
-  const ask = conflict.getByRole("group");
-  await expect(done.or(ask)).toBeVisible();
-  if (await ask.isVisible()) await ask.getByRole("button", { name: `Reassign to ${newTech}` }).click();
-  await expect(done).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: /^Needs a decision/ })).toHaveCount(0);
-  await expect(dialog.getByRole("heading", { name: "Reassigned when you save (1)" })).toBeVisible();
-  await expect(conflict.getByText(`Will be reassigned to ${newTech} when you save`)).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Save change" })).toBeEnabled();
+    const reassign = conflict.getByRole("button", { name: /^Reassign to / }).first();
+    const newTech = (await reassign.textContent())!.replace("Reassign to", "").trim();
+    await reassign.click();
+    // If that technician only becomes free by moving a pending request, the card asks first. Either way the
+    // reassignment is only staged: it is saved together with the change.
+    const done = dialog.getByText(`${reservation.ref} will be reassigned to ${newTech} when you save. The impact is updated.`);
+    const ask = conflict.getByRole("group");
+    await expect(done.or(ask)).toBeVisible();
+    if (await ask.isVisible()) await ask.getByRole("button", { name: `Reassign to ${newTech}` }).click();
+    await expect(done).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: /^Needs a decision/ })).toHaveCount(0);
+    await expect(dialog.getByRole("heading", { name: "Reassigned when you save (1)" })).toBeVisible();
+    await expect(conflict.getByText(`Will be reassigned to ${newTech} when you save`)).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Save change" })).toBeEnabled();
 
-  await dialog.getByRole("button", { name: "Save change" }).click();
-  await expect(dialog).toBeHidden();
-  await expect(page.getByRole("status").filter({ hasText: `Saved ${day} ${range}.` })).toBeVisible();
+    await dialog.getByRole("button", { name: "Save change" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole("status").filter({ hasText: `Saved ${day} ${range}.` })).toBeVisible();
 
-  // ---- the hours no longer list the technician, and the appointment has the new one
-  const card = page.getByRole("button", { name: `Edit ${day} ${range}` }).locator("..");
-  await expect(card.getByRole("list", { name: "Technicians" })).not.toContainText(techName);
+    // ---- the hours no longer list the technician, and the appointment has the new one
+    const card = page.getByRole("button", { name: `Edit ${day} ${range}` }).locator("..");
+    await expect(card.getByRole("list", { name: "Technicians" })).not.toContainText(techName);
 
-  await page.goto(`/staff/r/${reservation.id}`);
-  await expect(page.getByRole("heading", { name: `Request ${reservation.ref}` })).toBeVisible();
-  await expect(page.getByText(`Technician: ${newTech}.`, { exact: false })).toBeVisible();
+    await page.goto(`/staff/r/${reservation.id}`);
+    await expect(page.getByRole("heading", { name: `Request ${reservation.ref}` })).toBeVisible();
+    await expect(page.getByText(`Technician: ${newTech}.`, { exact: false })).toBeVisible();
+  } finally {
+    // The appointment holds the first bookable time; its new technician must be free there for the tests that follow.
+    await cancelIfOpen(api, reservation.id);
+  }
 });
 
 test("admin swaps the only technician of an appointment's hours for another; the appointment moves with the save", async ({ page }, testInfo) => {
@@ -201,8 +208,7 @@ test("admin swaps the only technician of an appointment's hours for another; the
     await expect(page.getByText(`Technician: ${toName}.`, { exact: false })).toBeVisible();
   } finally {
     // Leave no weekend hours behind for the other tests' "first bookable time".
-    const { reservation: r } = await apiGet<{ reservation: { version: number; status: string } }>(api, `/api/staff/reservations/${reservation.id}`);
-    if (r.status === "confirmed") await apiPost(api, `/api/staff/reservations/${reservation.id}/cancel`, { reason: "End-to-end test clean-up.", version: r.version });
+    await cancelIfOpen(api, reservation.id);
     const del = { type: "window.delete", id: win.id };
     await apiPost(api, "/api/staff/schedule/apply", { change: del, version: (await apiPost<{ version: number }>(api, "/api/staff/schedule/preview", { change: del })).version });
   }
@@ -241,6 +247,50 @@ test("admin imports a new customer from pasted CSV, and its contact can get a bo
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page).toHaveURL(/\/book$/);
   await expect(page.getByText(`Signed in as ${email}`)).toBeVisible();
+});
+
+test("admin adds a customer with the form; the first contact's email is asked for up front", async ({ page }, testInfo) => {
+  const request = page.request;
+  const tag = projectTag(testInfo.project.name);
+  const number = `E2E-FORM-${tag.toUpperCase()}`;
+  const email = `form-${testInfo.project.name}@example.test`;
+
+  await page.goto("/staff/customers/new");
+  await expect(page.getByRole("heading", { name: "New customer", level: 1 })).toBeVisible();
+  const form = page.getByRole("form", { name: "New customer" });
+  await form.getByLabel("Customer number").fill(number);
+  await form.getByLabel("Name", { exact: true }).first().fill(`Form Clinic ${tag}`);
+  // No "Add a contact" click: the first contact's email field is already there.
+  const contact = form.getByRole("group", { name: "Contact 1" });
+  await expect(contact.getByLabel("Email")).toBeVisible();
+  await contact.getByLabel("Email").fill(email);
+  await contact.getByLabel(/^Name/).fill("Robin Example");
+  await form.getByRole("button", { name: "Create customer" }).click();
+  await expect(page.getByText(`Created Form Clinic ${tag} (${number}).`)).toBeVisible();
+
+  const list = await apiGet<{ customers: { id: number; customerNumber: string }[] }>(request, `/api/staff/customers?query=${number}`);
+  const created = list.customers.find((c) => c.customerNumber === number);
+  expect(created).toBeDefined();
+  const detail = await apiGet<{ contacts: { email: string }[] }>(request, `/api/staff/customers/${created!.id}`);
+  expect(detail.contacts.map((c) => c.email)).toEqual([email]);
+});
+
+test("admin adds a customer and leaves the contact row empty; it is saved without contacts", async ({ page }, testInfo) => {
+  const request = page.request;
+  const tag = projectTag(testInfo.project.name);
+  const number = `E2E-NOCONTACT-${tag.toUpperCase()}`;
+
+  await page.goto("/staff/customers/new");
+  const form = page.getByRole("form", { name: "New customer" });
+  await form.getByLabel("Customer number").fill(number);
+  await form.getByLabel("Name", { exact: true }).first().fill(`Quiet Clinic ${tag}`);
+  await form.getByRole("button", { name: "Create customer" }).click();
+  await expect(page.getByText(`Created Quiet Clinic ${tag} (${number}).`)).toBeVisible();
+
+  const list = await apiGet<{ customers: { id: number; customerNumber: string }[] }>(request, `/api/staff/customers?query=${number}`);
+  const created = list.customers.find((c) => c.customerNumber === number);
+  const detail = await apiGet<{ contacts: unknown[] }>(request, `/api/staff/customers/${created!.id}`);
+  expect(detail.contacts).toEqual([]);
 });
 
 test("staff cancel a confirmed appointment; the customer sees it cancelled and is emailed", async ({ page }, testInfo) => {

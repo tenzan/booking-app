@@ -604,16 +604,13 @@ function RemindersCard(p: CardProps) {
     summary: s("reminders.summary"),
     done: s("reminders.done"),
   };
-  const soon = <Soon />;
   return (
     <EditableCard
       {...p}
       id="reminders"
       title={s("reminders.title")}
-      badge={soon}
       lead={s("reminders.lead")}
       spec={spec}
-      note={<CardNote tone="soon">{s("reminders.note")}</CardNote>}
       values={
         <ReadValue
           label={s("reminders.listLabel")}
@@ -702,10 +699,6 @@ function ReminderChips({ value, error, onChange }: { value: number[]; error?: st
   );
 }
 
-function Soon() {
-  return <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-300">{s("comingSoon")}</span>;
-}
-
 // ---- Reassignment ------------------------------------------------------------------------------------------------
 
 function ReassignCard(p: CardProps) {
@@ -751,10 +744,9 @@ function ReschedulingCard(p: CardProps) {
       {...p}
       id="rescheduling"
       title={s("rescheduling.title")}
-      badge={<Soon />}
       lead={s("rescheduling.lead")}
       spec={spec}
-      note={<CardNote tone="soon">{s("rescheduling.note")}</CardNote>}
+      note={<CardNote>{s("rescheduling.note")}</CardNote>}
       values={
         <>
           <ReadValue label={s("rescheduling.proposalExpiryBh")} value={`${st.proposalExpiryBh} ${s("units.bh")}`} />

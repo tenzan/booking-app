@@ -15,6 +15,9 @@ test("customer books, staff approves, customer sees it confirmed", async ({ page
 
   // ---- customer asks for a link and follows it from the dev mailbox
   await page.goto("/");
+  // A new device: nothing to remember yet.
+  await expect(page.getByLabel("Email address")).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Not you? Use another address" })).toHaveCount(0);
   await page.getByLabel("Email address").fill(CUSTOMER);
   await page.getByRole("button", { name: "Email me a link" }).click();
   await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
@@ -37,7 +40,7 @@ test("customer books, staff approves, customer sees it confirmed", async ({ page
   await page.getByRole("button", { name: "Send request" }).click();
   await expect(page).toHaveURL(/\/book\/success\//);
   await expect(page.getByRole("heading", { name: /not yet confirmed/ })).toBeVisible();
-  const ref = (await page.locator("dd.font-mono").first().textContent())!.trim();
+  const ref = (await page.getByRole("definition").filter({ hasText: /^R-[A-Z0-9]{4}-[A-Z0-9]{4}$/ }).textContent())!.trim();
   expect(ref).toMatch(/^R-/);
 
   // ---- technician signs in (independent of the customer session in the same browser)
@@ -74,4 +77,18 @@ test("customer books, staff approves, customer sees it confirmed", async ({ page
   await expect(
     page.getByRole("list", { name: "Messages" }).getByRole("button").filter({ hasText: CUSTOMER }).filter({ hasText: /Confirmed:/ }),
   ).toHaveCount(1);
+
+  // ---- signed out, this device offers the addresses it last asked links for, separately for customers and staff
+  await page.context().clearCookies();
+  await page.goto("/staff/login");
+  const work = page.getByLabel("Work email");
+  await expect(work).toHaveValue(TECH);
+  await page.getByRole("button", { name: "Not you? Use another address" }).click();
+  await expect(work).toHaveValue("");
+  await expect(work).toBeFocused();
+  await page.reload();
+  await expect(work).toHaveValue("");
+  await page.goto("/");
+  await expect(page.getByLabel("Email address")).toHaveValue(CUSTOMER);
+  await expect(page.getByLabel("Email address")).toBeEditable();
 });

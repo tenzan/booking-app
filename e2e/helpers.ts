@@ -6,14 +6,19 @@ export const BASE_URL = "http://localhost:5173";
 export const ADMIN_STATE = "test-results/.auth/admin.json";
 const WRITE_HEADERS = { Origin: BASE_URL, "X-Requested-With": "fetch" };
 
-/** Open the dev mailbox, pick the newest message to `to` whose subject matches, and click `linkName` inside the email. */
-export async function followEmailLink(page: Page, to: string, subject: RegExp, linkName: string) {
+/** Open the dev mailbox and the newest message to `to` whose subject matches; returns the email's preview frame. */
+export async function openEmail(page: Page, to: string, subject: RegExp) {
   await page.goto("/dev/mail");
   await expect(page.getByText("Development mailbox — emails are not sent")).toBeVisible();
   const item = devMailMessages(page, to, subject).first();
   await expect(item).toBeVisible();
   await item.click();
-  const email = page.frameLocator('iframe[title^="Email preview"]:visible');
+  return page.frameLocator('iframe[title^="Email preview"]:visible');
+}
+
+/** Open the dev mailbox, pick the newest message to `to` whose subject matches, and click `linkName` inside the email. */
+export async function followEmailLink(page: Page, to: string, subject: RegExp, linkName: string | RegExp) {
+  const email = await openEmail(page, to, subject);
   await email.getByRole("link", { name: linkName }).click();
 }
 
@@ -41,7 +46,22 @@ interface DevMessage {
   text: string;
 }
 
+/**
+ * The dev mailbox's messages, newest first. The route returns only the newest 50 rows, so anything older is not seen:
+ * counts made through this (countMail, countMailAnyone) are of those 50 only.
+ */
 const devMail = async (req: APIRequestContext) => (await apiGet<{ messages: DevMessage[] }>(req, "/api/dev/mail")).messages;
+
+/** How many of the dev mailbox's (newest 50) messages are to `to` with a subject matching `subject`. */
+export const countMail = async (req: APIRequestContext, to: string, subject: RegExp) =>
+  (await devMail(req)).filter((m) => m.to === to && subject.test(m.subject)).length;
+
+/** How many of the dev mailbox's (newest 50) messages have a subject matching `subject`, to anyone. */
+export const countMailAnyone = async (req: APIRequestContext, subject: RegExp) => (await devMail(req)).filter((m) => subject.test(m.subject)).length;
+
+/** Run the cron sweeps as of `now` (default: the real clock), then send what the outbox has due (dev-only route). */
+export const runCron = async (req: APIRequestContext, now?: number) =>
+  apiPost<{ counts: Record<string, number | null>; failed: string[] }>(req, "/api/dev/cron", now === undefined ? {} : { now });
 
 /**
  * Sign `email` in through its emailed magic link, entirely over the API: the session cookie lands in `req`'s cookie
@@ -67,7 +87,6 @@ export async function signIn(req: APIRequestContext, kind: "customer" | "staff",
 interface Slot {
   startAt: number;
   endAt: number;
-  spots: number;
 }
 
 /** The bookable slots of the next two weeks, earliest first, as the signed-in customer sees them. */
@@ -97,11 +116,21 @@ export async function createCustomer(admin: APIRequestContext, customerNumber: s
   await apiPost(admin, "/api/staff/customers", { customerNumber, name, contacts: [{ email, name: contactName }] });
 }
 
-/** The signed-in customer requests `slot` for their (only) account. Returns the reservation id and reference. */
-export async function requestSlot(customer: APIRequestContext, startAt: number, contactName: string): Promise<{ id: string; ref: string }> {
-  const { accounts } = await apiGet<{ accounts: Array<{ id: number }> }>(customer, "/api/customer/accounts");
+/**
+ * The signed-in customer requests `slot` for their account numbered `customerNumber` (default: their first account).
+ * Returns the reservation id and reference.
+ */
+export async function requestSlot(
+  customer: APIRequestContext,
+  startAt: number,
+  contactName: string,
+  customerNumber?: string,
+): Promise<{ id: string; ref: string }> {
+  const { accounts } = await apiGet<{ accounts: Array<{ id: number; customerNumber: string }> }>(customer, "/api/customer/accounts");
+  const account = customerNumber === undefined ? accounts[0] : accounts.find((a) => a.customerNumber === customerNumber);
+  expect(account, `the customer account ${customerNumber ?? ""}`).toBeTruthy();
   const { reservation } = await apiPost<{ reservation: { id: string; ref: string } }>(customer, "/api/customer/reservations", {
-    customerId: accounts[0]!.id,
+    customerId: account!.id,
     startAt,
     contactName,
     phone: "+1 555 0100",
@@ -111,16 +140,62 @@ export async function requestSlot(customer: APIRequestContext, startAt: number, 
   return reservation;
 }
 
-interface StaffReservation {
+export interface StaffReservation {
   id: string;
+  ref: string;
+  status: string;
   version: number;
+  startAt: number;
+  endAt: number;
+  expiresAt: number | null;
   provisionalStaffId: number | null;
+  closeReason: string | null;
+  replacedById: string | null;
+  proposal: {
+    id: string;
+    status: string;
+    options: Array<{ id: string; startAt: number; endAt: number; staffId: number }>;
+  } | null;
 }
+
+/** A reservation as staff see it (the API behind the request page). */
+export const staffReservation = async (admin: APIRequestContext, id: string) =>
+  (await apiGet<{ reservation: StaffReservation }>(admin, `/api/staff/reservations/${id}`)).reservation;
 
 /** Approve a pending request with `staffId` (default: the technician it is provisionally held by). */
 export async function approve(admin: APIRequestContext, id: string, staffId?: number) {
-  const { reservation: r } = await apiGet<{ reservation: StaffReservation }>(admin, `/api/staff/reservations/${id}`);
+  const r = await staffReservation(admin, id);
   await apiPost(admin, `/api/staff/reservations/${id}/approve`, { staffId: staffId ?? r.provisionalStaffId, version: r.version });
+}
+
+/**
+ * Cancel a reservation if it is still pending or confirmed (clean-up: a confirmed appointment left at the first bookable
+ * time keeps its technician busy for the tests that follow, which book that time too). Open proposals go with it.
+ */
+export async function cancelIfOpen(admin: APIRequestContext, id: string) {
+  const r = await staffReservation(admin, id);
+  if (r.status === "pending" || r.status === "confirmed")
+    await apiPost(admin, `/api/staff/reservations/${id}/cancel`, { reason: "End-to-end test clean-up.", version: r.version });
+}
+
+/**
+ * Propose `count` other times for a reservation: the first time that can be proposed on each of the first `count`
+ * days that have one (different days, so the times never overlap), each with its first free technician.
+ */
+export async function proposeTimes(admin: APIRequestContext, id: string, count: number) {
+  const r = await staffReservation(admin, id);
+  const from = new Date().toISOString().slice(0, 10);
+  const to = new Date(Date.now() + 13 * 86_400_000).toISOString().slice(0, 10);
+  const { days } = await apiGet<{ days: Array<{ slots: Array<{ startAt: number; staff: Array<{ id: number }> }> }> }>(
+    admin,
+    `/api/staff/reservations/${id}/proposal-candidates?from=${from}&to=${to}`,
+  );
+  const options = days
+    .filter((d) => d.slots.length > 0)
+    .slice(0, count)
+    .map((d) => ({ startAt: d.slots[0]!.startAt, staffId: d.slots[0]!.staff[0]!.id }));
+  expect(options.length, `${count} days with times that can be proposed`).toBe(count);
+  await apiPost(admin, `/api/staff/reservations/${id}/propose`, { options, version: r.version });
 }
 
 /** Turn online booking on (or off) if it isn't already. */

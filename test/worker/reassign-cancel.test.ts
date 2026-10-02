@@ -9,6 +9,7 @@ import { cancelReservation } from "../../src/worker/reservations/cancel";
 import { processOutbox } from "../../src/worker/mail/outbox";
 import { MIN, wallToUtc } from "../../src/domain/time";
 import type { StaffPrincipal } from "../../src/worker/env";
+import { bookableSlots } from "../../src/worker/scheduling/availability";
 
 afterEach(() => setNow(null));
 
@@ -127,6 +128,25 @@ describe("reassign (same time)", () => {
     expect(m!.text).toContain("Ada Admin reassigned this appointment from Tim Tech to Una Tech.");
     expect(m!.text).toContain(TZ_LABEL);
     expect(m!.text).toContain((await row(id)).ref);
+  });
+
+  it("tells both technicians involved even with notify off, once each, and never the acting one", async () => {
+    await env.DB.prepare("UPDATE staff SET notify = 0 WHERE id IN (?, ?, ?)").bind(team.a, team.b, team.c).run();
+    const id = await confirmedWith(pat, at(FRI, 10), team.a);
+    expect((await reassign(adminCookie, id, team.b)).status).toBe(200);
+    const to = (email: string) => count("SELECT COUNT(*) AS n FROM email_jobs WHERE template = 'reassigned' AND to_email = ?", email);
+    expect([await to("tech-a@example.test"), await to("tech-b@example.test")]).toEqual([1, 1]);
+    expect(await to("tech-c@example.test")).toBe(0);
+    expect(await to("admin@example.test")).toBe(0);
+    expect(await jobStatus(`reassigned:${id}:v3:${team.a}`)).toBe("sent");
+    expect(await jobStatus(`reassigned:${id}:v3:${team.b}`)).toBe("sent");
+
+    // The technician who hands their own appointment on is the actor: only the new technician is told.
+    const res = await reassign(await loginStaff("tech-b@example.test"), id, team.admin, 3);
+    expect(res.status).toBe(200);
+    expect(await jobStatus(`reassigned:${id}:v4:${team.admin}`)).toBe("sent");
+    expect(await jobStatus(`reassigned:${id}:v4:${team.b}`)).toBeNull();
+    expect(await jobStatus(`reassigned:${id}:v4:${team.a}`)).toBeNull();
   });
 
   it("lets a technician reassign, and moves a pending request off the new technician", async () => {
@@ -273,8 +293,8 @@ describe("staff cancellation", () => {
     expect(JSON.parse(a.details)).toEqual({ reason: "Duplicate request", from: "pending" });
 
     // Capacity is back.
-    const av = await api("GET", `/api/customer/availability?from=${FRI}&to=${FRI}`, { cookie: sam.cookie });
-    expect(av.json.days[0].slots.find((s: any) => s.startAt === at(FRI, 10)).spots).toBe(3);
+    const av = await bookableSlots(env, FRI, FRI);
+    expect(av.days[0]!.slots.find((s) => s.startAt === at(FRI, 10))!.spots).toBe(3);
   });
 
   it("cancels a confirmed appointment and cancels its unsent reminder and confirmation mails", async () => {
@@ -307,6 +327,22 @@ describe("staff cancellation", () => {
     expect(await jobStatus(`cancelled:${id}`)).toBe("queued");
     expect(await jobStatus(`cancelled-team:${id}:${team.a}`)).toBe("queued");
     expect(await jobStatus(`cancelled-team:${id}:${team.admin}`)).toBeNull();
+  });
+
+  it("tells the assigned technician even with notify off (once), unless they are the one cancelling", async () => {
+    await env.DB.prepare("UPDATE staff SET notify = 0 WHERE id IN (?, ?)").bind(team.a, team.b).run();
+    const id = await confirmedWith(pat, at(FRI, 10), team.a);
+    expect((await cancel(adminCookie, id, "Technician ill", 2)).status).toBe(200);
+    expect(await jobStatus(`cancelled-team:${id}:${team.a}`)).toBe("sent");
+    expect(await jobStatus(`cancelled-team:${id}:${team.b}`)).toBeNull();
+    expect(await teamCancelJobs(id)).toBe(3); // c, d (notify; the admin cancelled) + tech a (involved)
+  });
+
+  it("does not mail the technician who cancels their own appointment", async () => {
+    await env.DB.prepare("UPDATE staff SET notify = 0 WHERE id = ?").bind(team.a).run();
+    const id = await confirmedWith(pat, at(FRI, 10), team.a);
+    expect((await cancel(techCookie, id, "No answer", 2)).status).toBe(200);
+    expect(await jobStatus(`cancelled-team:${id}:${team.a}`)).toBeNull();
   });
 
   it("customer and team mails carry the facts with time zone labels", async () => {
@@ -446,7 +482,7 @@ describe("customer cancellation (core, used by the Plan 3 routes)", () => {
 
     await processOutbox(env, 50);
     const [c] = await mailsTo("pat@example.test", "Cancelled%");
-    expect(c!.text).toContain("cancelled as you requested");
+    expect(c!.text).toContain("You cancelled this appointment.");
     expect(c!.text).not.toContain("our team");
     const [tm] = await mailsTo("admin@example.test", "%cancelled%");
     expect(tm!.text).toContain("The customer (pat@example.test) cancelled this reservation.");

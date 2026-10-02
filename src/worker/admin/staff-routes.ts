@@ -5,6 +5,7 @@ import type { AppEnv } from "../env";
 import { clock } from "../lib/clock";
 import { assertSql, audit } from "../lib/db";
 import { HttpError, readJson } from "../lib/http";
+import { kickOutbox } from "../mail/outbox";
 import { requireStaff } from "../middleware/session";
 import { getStaff, listStaff, OTHER_ACTIVE_ADMIN_SQL } from "../repos/staff";
 import { applyChange, previewChange } from "../scheduling/roster";
@@ -91,5 +92,7 @@ staffRoutes.post("/team/:id/apply", requireStaff("admin"), async (c) => {
   const id = parseId(c.req.param("id"));
   const { version, ...body } = await readJson(c, staffApplyBodySchema);
   if (body.active === false) assertNotSelf(c.var.staff!.id, id);
-  return c.json(await applyChange(c.env, c.var.staff!, { type: "staff.update", id, active: body.active, bookable: body.bookable }, version, body.resolutions));
+  const result = await applyChange(c.env, c.var.staff!, { type: "staff.update", id, active: body.active, bookable: body.bookable }, version, body.resolutions);
+  kickOutbox(c);
+  return c.json(result);
 });

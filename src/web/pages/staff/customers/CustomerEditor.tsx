@@ -124,6 +124,8 @@ function CustomerFields({
 }
 
 let nextKey = 1;
+/** Field order for moving focus to the first error, with `n` contact rows. */
+const orderFor = (n: number) => ["customerNumber", "name", "phone", "notes", ...Array.from({ length: n }, (_, i) => ["email", "name", "phone"].map((f) => `contacts.${i}.${f}`)).flat()];
 const blankContact = (): ContactDraft => ({ key: nextKey++, email: "", name: "", phone: "" });
 
 /** `/staff/customers/new` — a new customer, with any number of contacts. Administrators only. */
@@ -158,7 +160,8 @@ function CreateForm({ listSearch }: { listSearch: string }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [draft, setDraft] = useState<CustomerDraft>({ customerNumber: "", name: "", phone: "", notes: "" });
-  const [contacts, setContacts] = useState<ContactDraft[]>([]);
+  // Open with one contact row: the email address is how anyone books for this customer.
+  const [contacts, setContacts] = useState<ContactDraft[]>(() => [blankContact()]);
   const [errors, setErrors] = useState<Errors>({});
   const [busy, setBusy] = useState(false);
   const focusAfter = useRef<string | null>(null);
@@ -190,15 +193,19 @@ function CreateForm({ listSearch }: { listSearch: string }) {
     setContacts((list) => list.filter((_, i) => i !== index));
   };
 
-  const order = ["customerNumber", "name", "phone", "notes", ...contacts.flatMap((_, i) => ["email", "name", "phone"].map((f) => `contacts.${i}.${f}`))];
 
   async function save() {
-    const body = { ...draft, contacts: contacts.map(({ email, name, phone }) => ({ email, name, phone })) };
+    // A row left completely empty is not a contact; drop it so a customer may still be saved without one.
+    const filled = contacts.filter((c) => c.email.trim() || c.name.trim() || c.phone.trim());
+    if (filled.length !== contacts.length) setContacts(filled);
+    // Errors and focus are keyed by row position, so use the rows as they will render.
+    const order = orderFor(filled.length);
+    const body = { ...draft, contacts: filled.map(({ email, name, phone }) => ({ email, name, phone })) };
     const parsed = customerCreateSchema.safeParse(body);
-    const next: Errors = parsed.success ? {} : errorsFrom(parsed.error.issues, draft, contacts);
+    const next: Errors = parsed.success ? {} : errorsFrom(parsed.error.issues, draft, filled);
     // The same email twice: point at the later one rather than the list as a whole.
     const seen = new Set<string>();
-    contacts.forEach((c, i) => {
+    filled.forEach((c, i) => {
       const email = c.email.trim().toLowerCase();
       if (email && seen.has(email)) next[`contacts.${i}.email`] ??= cu("errors.duplicateEmail");
       seen.add(email);
@@ -224,7 +231,7 @@ function CreateForm({ listSearch }: { listSearch: string }) {
         setErrors(errs);
         focusFirstError(id, errs, order);
       } else if (isApiError(e, 400, "invalid") && Array.isArray(e.details)) {
-        const errs = { ...errorsFrom(e.details as Issue[], draft, contacts) };
+        const errs = { ...errorsFrom(e.details as Issue[], draft, filled) };
         errs.form ??= cu("errors.invalid");
         setErrors(errs);
         focusFirstError(id, errs, order);
@@ -272,6 +279,7 @@ function CreateForm({ listSearch }: { listSearch: string }) {
                         inputMode="email"
                         value={c.email}
                         onChange={(v) => setContact(i, "email", v)}
+                        hint={cu("contacts.emailHint")}
                         error={errors[`contacts.${i}.email`]}
                         maxLength={LIMITS.email}
                       />

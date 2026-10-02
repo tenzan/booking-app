@@ -44,6 +44,40 @@ describe("enqueueEmail", () => {
   });
 });
 
+describe("send-time status re-check", () => {
+  it("skips a job whose reservation was cancelled after it was claimed and rendered, without sending", async () => {
+    await seedReservation({ status: "confirmed", staff: true });
+    await enqueue("confirmed", "pat@example.test");
+    // The reservation is cancelled while the job is being rendered (the render mints the access token).
+    const real = env.DB;
+    const racing = {
+      prepare: (q: string) => {
+        const stmt = real.prepare(q);
+        if (!q.includes("INSERT INTO access_tokens")) return stmt;
+        return {
+          bind: (...args: unknown[]) => ({
+            run: async () => {
+              const r = await stmt.bind(...args).run();
+              await real.prepare("UPDATE reservations SET status = 'cancelled' WHERE id = 'res-1'").run();
+              return r;
+            },
+          }),
+        };
+      },
+      batch: (stmts: D1PreparedStatement[]) => real.batch(stmts),
+    } as unknown as D1Database;
+    expect(await processOutbox({ ...env, DB: racing } as typeof env)).toEqual({ sent: 0, failed: 0, skipped: 1 });
+    expect(await mailbox()).toEqual([]);
+    expect((await job()).status).toBe("skipped");
+  });
+
+  it("still sends when the reservation stays valid", async () => {
+    await seedReservation({ status: "confirmed", staff: true });
+    await enqueue("confirmed", "pat@example.test");
+    expect(await processOutbox(env)).toEqual({ sent: 1, failed: 0, skipped: 0 });
+  });
+});
+
 describe("processOutbox", () => {
   it("renders a customer login in dev mode with a hashed single-use token", async () => {
     setNow(T0);
@@ -179,7 +213,7 @@ describe("processOutbox", () => {
     expect(m!.html).toContain("max-width:560px");
   });
 
-  it("request_received mints an access token with a view link and no cancel link (until cancellation exists)", async () => {
+  it("request_received mints an access token with a view link and a cancel link for the same token", async () => {
     await seedReservation();
     await enqueue("request_received", "pat@example.test");
     await processOutbox(env);
@@ -187,9 +221,8 @@ describe("processOutbox", () => {
     expect(m!.subject).toBe("Request received — not yet confirmed (RS-1001)");
     const token = /\/r#t=([A-Za-z0-9_-]+)\n/.exec(m!.text)?.[1];
     expect(token).toBeTruthy();
-    expect(m!.text).not.toContain("action=cancel");
-    expect(m!.text).not.toContain("Cancel reservation");
-    expect(m!.html).not.toContain("action=cancel");
+    expect(m!.text).toContain(`Cancel reservation: http://localhost:5173/r#t=${token}&action=cancel`);
+    expect(m!.html).toContain(`/r#t=${token}&amp;action=cancel`);
     const row = await env.DB.prepare("SELECT * FROM access_tokens").first<any>();
     expect(row).toMatchObject({
       reservation_id: "res-1",
@@ -205,8 +238,7 @@ describe("processOutbox", () => {
     const [m] = await mailbox();
     expect(m!.subject).toBe("Confirmed: remote support on Fri, Oct 2, 2026, 10:00 Asia/Tokyo (GMT+9) (RS-1001)");
     expect(m!.text).toContain("A technician will telephone you at +81-3-0000-0000 at the appointment time. Please have your computer turned on and TeamViewer ready.");
-    expect(m!.text).toContain("http://localhost:5173/r#t=");
-    expect(m!.text).not.toContain("action=cancel");
+    expect(m!.text).toMatch(/Cancel reservation: http:\/\/localhost:5173\/r#t=[A-Za-z0-9_-]+&action=cancel/);
   });
 
   it("assigned names the approver and the technician", async () => {
@@ -297,6 +329,30 @@ describe("i18n", () => {
     expect(t("email.nope.nothing")).toBe("email.nope.nothing");
     expect(t("email")).toBe("email");
     expect(t("email.assigned.subject", { ref: "R" })).toBe("R confirmed — assigned to {tech}");
+  });
+  it("every email template has a label for the Emails page and Activity (the record must name each template)", () => {
+    const all: Record<TemplateName, true> = {
+      customer_login: true,
+      staff_login: true,
+      request_received: true,
+      new_request: true,
+      confirmed: true,
+      assigned: true,
+      declined: true,
+      cancelled: true,
+      reassigned: true,
+      expired: true,
+      approval_reminder: true,
+      approval_escalation: true,
+      appointment_reminder: true,
+      proposal: true,
+      proposal_outcome: true,
+      rescheduled: true,
+      reply_relay: true,
+    };
+    const missing = Object.keys(all).filter((name) => t(`web.staff.emails.templates.${name}`) === `web.staff.emails.templates.${name}`);
+    expect(missing).toEqual([]);
+    expect(t("web.staff.emails.templates.reply_relay")).toBe("Customer reply (relayed)");
   });
   it("formats date-times and zone labels in the target zone", () => {
     expect(fmtDateTime(Date.UTC(2026, 9, 1, 1, 0), "Asia/Tokyo", "en-US")).toBe("Thu, Oct 1, 2026, 10:00");

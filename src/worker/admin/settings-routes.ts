@@ -9,6 +9,7 @@ import type { AppEnv } from "../env";
 import { clock } from "../lib/clock";
 import { readScheduleVersion } from "../lib/db";
 import { HttpError, readJson } from "../lib/http";
+import { kickOutbox } from "../mail/outbox";
 import { requireStaff } from "../middleware/session";
 import { getSettings } from "../repos/settings";
 import { applyChange, previewChange, type ScheduleChange } from "../scheduling/roster";
@@ -37,7 +38,9 @@ settingsRoutes.post("/settings/preview", requireStaff("admin"), async (c) => {
 
 settingsRoutes.post("/settings/apply", requireStaff("admin"), async (c) => {
   const { patch, version, resolutions } = await readJson(c, settingsApplyBodySchema);
-  return c.json(await applyChange(c.env, c.var.staff!, await settingsChange(c, patch), version, resolutions));
+  const result = await applyChange(c.env, c.var.staff!, await settingsChange(c, patch), version, resolutions);
+  kickOutbox(c);
+  return c.json(result);
 });
 
 // ---- Holidays ---------------------------------------------------------------------------------------------------
@@ -94,6 +97,7 @@ settingsRoutes.post("/holidays/import/apply", requireStaff("admin"), async (c) =
   if (rows.some((r) => r.status === "error")) throw new HttpError(400, "invalid_rows", { rows: rows.filter((r) => r.status === "error") });
   if (!change) throw new HttpError(400, "nothing_to_import");
   const result = await applyChange(c.env, c.var.staff!, change, version, resolutions);
+  kickOutbox(c);
   return c.json({ ...result, applied: rows.filter((r) => r.status !== "unchanged").length });
 });
 

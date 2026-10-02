@@ -6,6 +6,7 @@ import type { UnavailabilityDTO, WindowDTO } from "../../shared/types";
 import type { AppEnv, Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
 import { HttpError, readJson } from "../lib/http";
+import { kickOutbox } from "../mail/outbox";
 import { requireStaff } from "../middleware/session";
 import { loadWindows } from "../repos/schedule";
 import { applyChange, previewChange } from "../scheduling/roster";
@@ -85,5 +86,7 @@ scheduleRoutes.post("/preview", async (c) => {
 scheduleRoutes.post("/apply", async (c) => {
   const { change, version, resolutions } = await readJson(c, applyBodySchema);
   await authorize(c.env, c.var.staff!, change);
-  return c.json(await applyChange(c.env, c.var.staff!, change, version, resolutions));
+  const result = await applyChange(c.env, c.var.staff!, change, version, resolutions);
+  kickOutbox(c);
+  return c.json(result);
 });

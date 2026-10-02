@@ -22,9 +22,51 @@ export interface ReservationDTO {
   closedAt: number | null;
   /** Display name for staff closures; the raw actor otherwise. */
   closedBy: string | null;
+  /** Who closed it: a team member (`closedBy` is their name), the customer (`closedBy` is the contact's email) or the system. */
+  closedByKind: "staff" | "customer" | "system" | null;
   closeReason: string | null;
   confirmedAt: number | null;
   confirmedBy: { id: number; name: string } | null;
+  /** The open rescheduling proposal, else the latest one closed within the last 7 days; null otherwise. */
+  proposal: ProposalDTO | null;
+  /** The reservation this one asks to replace (a customer's "choose another time" request), with its status now. */
+  replacesId: string | null;
+  replacesRef: string | null;
+  replacesStatus: ReservationStatus | null;
+  /** The newest replacement request made for this reservation, with its status now. */
+  replacedById: string | null;
+  replacedByRef: string | null;
+  replacedByStatus: ReservationStatus | null;
+}
+
+export type ProposalStatus = "open" | "accepted" | "rejected" | "expired" | "superseded" | "withdrawn";
+
+export interface ProposalDTO {
+  id: string;
+  status: ProposalStatus;
+  message: string | null;
+  createdAt: number;
+  expiresAt: number;
+  resolvedAt: number | null;
+  /** Soonest first. */
+  options: Array<{ id: string; startAt: number; endAt: number; staffId: number; staffName: string }>;
+}
+
+/** A proposal as the customer sees it: no technician fields. */
+export interface CustomerProposalDTO {
+  id: string;
+  status: ProposalStatus;
+  message: string | null;
+  expiresAt: number;
+  options: Array<{ id: string; startAt: number; endAt: number }>;
+}
+
+/** Times a reservation could be proposed for, with the technicians free to take each. */
+export interface ProposalCandidatesDTO {
+  timezone: string;
+  /** The booking window's last date (today + horizon): no candidates after it, so paging can stop there. */
+  lastDate: string;
+  days: Array<{ date: string; slots: Array<{ startAt: number; endAt: number; staff: Array<{ id: number; name: string }> }> }>;
 }
 
 /** What a customer may see of their own reservation: no staff, no provisional technician, no contact email. */
@@ -32,6 +74,8 @@ export interface CustomerReservationDTO {
   id: string;
   ref: string;
   status: ReservationStatus;
+  /** Optimistic-concurrency token for customer actions (cancel). */
+  version: number;
   startAt: number;
   endAt: number;
   accountName: string;
@@ -41,6 +85,17 @@ export interface CustomerReservationDTO {
   issue: string;
   createdAt: number;
   closeReason: string | null;
+  /** Same selection as the staff view's `proposal`, without technician data. */
+  proposal: CustomerProposalDTO | null;
+  /** The reservation this one asks to replace ("choose another time"), if any. */
+  replacesRef: string | null;
+  /**
+   * Whether that reservation is still active (pending or confirmed, not started): only then does it stay as it is until
+   * this request is confirmed. False when there is none.
+   */
+  replacesActive: boolean;
+  /** The latest request to replace this one that is pending or went through (declined or expired ones don't count). */
+  replacedByRef: string | null;
 }
 
 export type TechUnavailableReason = "not_scheduled" | "unavailable" | "busy" | "needed_for_other_request";
@@ -244,9 +299,28 @@ export interface CalendarSlotDTO {
   pendingCount: number;
 }
 
+/** A time held for an open rescheduling proposal (one option), on the technician it would go to. */
+export interface CalendarProposalHoldDTO {
+  reservationId: string;
+  ref: string;
+  proposalId: string;
+  optionId: string;
+  startAt: number;
+  endAt: number;
+  staffId: number;
+  staffName: string;
+  customerName: string;
+  /** When the proposal (and so this hold) lapses unless the customer answers. */
+  expiresAt: number;
+}
+
 export interface CalendarDTO {
   timezone: string;
   reservations: CalendarReservationDTO[];
+  /** Open proposals' options starting in the range (filtered to the technician when the feed is). */
+  proposalHolds: CalendarProposalHoldDTO[];
+  /** More proposal holds matched than the feed carries. */
+  holdsTruncated: boolean;
   /** More reservations matched than the feed carries; narrow the range or filters. */
   truncated: boolean;
   slots: Array<{ date: string; slots: CalendarSlotDTO[] }>;

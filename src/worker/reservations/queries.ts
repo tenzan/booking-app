@@ -1,24 +1,106 @@
 import { assignableFor } from "../../domain/matching";
 import { freeStaffAt, windowStaffAt } from "../../domain/slots";
 import { AUDIT_PAGE_SIZE, RESERVATIONS_PAGE_DEFAULT } from "../../shared/schemas";
-import type { AuditEntryDTO, AuditListDTO, AuditRow, CustomerReservationDTO, ReservationDTO, ReservationListDTO, ReservationStatus, TechOption } from "../../shared/types";
+import type {
+  AuditEntryDTO,
+  AuditListDTO,
+  AuditRow,
+  CustomerProposalDTO,
+  CustomerReservationDTO,
+  ProposalDTO,
+  ProposalStatus,
+  ReservationDTO,
+  ReservationListDTO,
+  ReservationStatus,
+  TechOption,
+} from "../../shared/types";
 import type { Env } from "../env";
+import { clock } from "../lib/clock";
 import { decodeCursor, encodeCursor } from "../lib/cursor";
 import { loadScheduleCtx } from "../scheduling/context";
+import { releasedHolds, replacedBy } from "./replacement";
 
-export type { AuditRow, CustomerReservationDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
+export type { AuditRow, CustomerProposalDTO, CustomerReservationDTO, ProposalDTO, ReservationDTO, ReservationStatus, TechOption } from "../../shared/types";
+
+/** How long a closed proposal stays on the reservation's views. */
+const CLOSED_PROPOSAL_SHOWN_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Each reservation's proposal to show, by reservation id: its latest proposal when that is open (there is at most one
+ * open, and a new one supersedes it, so the open one is always the latest) or was closed within the last 7 days.
+ */
+export async function loadProposals(db: D1Database, reservationIds: string[], now: number): Promise<Map<string, ProposalDTO>> {
+  const out = new Map<string, ProposalDTO>();
+  if (reservationIds.length === 0) return out;
+  const { results: proposals } = await db
+    .prepare(
+      `SELECT p.id, p.reservation_id, p.status, p.message, p.created_at, p.expires_at, p.resolved_at
+       FROM proposals p
+       WHERE p.reservation_id IN (SELECT value FROM json_each(?1))
+         AND p.rowid = (SELECT q.rowid FROM proposals q WHERE q.reservation_id = p.reservation_id ORDER BY q.created_at DESC, q.rowid DESC LIMIT 1)
+         AND (p.status = 'open' OR p.resolved_at >= ?2)`,
+    )
+    .bind(JSON.stringify([...new Set(reservationIds)]), now - CLOSED_PROPOSAL_SHOWN_MS)
+    .all<{ id: string; reservation_id: string; status: ProposalStatus; message: string | null; created_at: number; expires_at: number; resolved_at: number | null }>();
+  if (proposals.length === 0) return out;
+  const { results: options } = await db
+    .prepare(
+      `SELECT o.id, o.proposal_id, o.start_at, o.end_at, o.staff_id, s.name AS staff_name
+       FROM proposal_options o JOIN staff s ON s.id = o.staff_id
+       WHERE o.proposal_id IN (SELECT value FROM json_each(?))
+       ORDER BY o.start_at, o.rowid`,
+    )
+    .bind(JSON.stringify(proposals.map((p) => p.id)))
+    .all<{ id: string; proposal_id: string; start_at: number; end_at: number; staff_id: number; staff_name: string }>();
+  const byId = new Map<string, ProposalDTO>();
+  for (const p of proposals) {
+    const dto: ProposalDTO = {
+      id: p.id,
+      status: p.status,
+      message: p.message,
+      createdAt: p.created_at,
+      expiresAt: p.expires_at,
+      resolvedAt: p.resolved_at,
+      options: [],
+    };
+    byId.set(p.id, dto);
+    out.set(p.reservation_id, dto);
+  }
+  for (const o of options) {
+    byId.get(o.proposal_id)?.options.push({ id: o.id, startAt: o.start_at, endAt: o.end_at, staffId: o.staff_id, staffName: o.staff_name });
+  }
+  return out;
+}
+
+/** The customer's view of a proposal: times only, never who would take them. */
+export const toCustomerProposal = (p: ProposalDTO | null): CustomerProposalDTO | null =>
+  p === null
+    ? null
+    : {
+        id: p.id,
+        status: p.status,
+        message: p.message,
+        expiresAt: p.expiresAt,
+        options: p.options.map((o) => ({ id: o.id, startAt: o.startAt, endAt: o.endAt })),
+      };
 
 const SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at,
     r.customer_id, c.customer_number, c.name AS customer_name, c.active AS customer_active,
     r.contact_name, r.contact_email, r.phone, r.issue,
     r.assigned_staff_id, asg.name AS assigned_name, r.provisional_staff_id,
     r.created_at, r.expires_at, r.closed_at, COALESCE(closer.name, r.closed_by) AS closed_by, r.close_reason,
-    r.confirmed_at, r.confirmed_by, cb.name AS confirmed_by_name
+    r.confirmed_at, r.confirmed_by, cb.name AS confirmed_by_name, r.closed_by_kind,
+    r.replaces_id, orig.ref AS replaces_ref, orig.status AS replaces_status,
+    nxt.id AS replaced_by_id, nxt.ref AS replaced_by_ref, nxt.status AS replaced_by_status
   FROM reservations r
   JOIN customers c ON c.id = r.customer_id
   LEFT JOIN staff asg ON asg.id = r.assigned_staff_id
   LEFT JOIN staff cb ON cb.id = r.confirmed_by
-  LEFT JOIN staff closer ON r.closed_by_kind = 'staff' AND CAST(closer.id AS TEXT) = r.closed_by`;
+  LEFT JOIN staff closer ON r.closed_by_kind = 'staff' AND CAST(closer.id AS TEXT) = r.closed_by
+  LEFT JOIN reservations orig ON orig.id = r.replaces_id
+  LEFT JOIN reservations nxt ON nxt.id = (
+    SELECT n.id FROM reservations n WHERE n.replaces_id = r.id ORDER BY n.created_at DESC, n.rowid DESC LIMIT 1
+  )`;
 
 interface Row {
   id: string;
@@ -46,9 +128,16 @@ interface Row {
   confirmed_at: number | null;
   confirmed_by: number | null;
   confirmed_by_name: string | null;
+  closed_by_kind: ReservationDTO["closedByKind"];
+  replaces_id: string | null;
+  replaces_ref: string | null;
+  replaces_status: ReservationStatus | null;
+  replaced_by_id: string | null;
+  replaced_by_ref: string | null;
+  replaced_by_status: ReservationStatus | null;
 }
 
-const toDTO = (r: Row): ReservationDTO => ({
+const toDTO = (r: Row, proposal: ProposalDTO | null): ReservationDTO => ({
   id: r.id,
   ref: r.ref,
   status: r.status,
@@ -66,19 +155,34 @@ const toDTO = (r: Row): ReservationDTO => ({
   expiresAt: r.expires_at,
   closedAt: r.closed_at,
   closedBy: r.closed_by,
+  closedByKind: r.closed_by_kind,
   closeReason: r.close_reason,
   confirmedAt: r.confirmed_at,
   confirmedBy: r.confirmed_by === null ? null : { id: r.confirmed_by, name: r.confirmed_by_name ?? "" },
+  proposal,
+  replacesId: r.replaces_id,
+  replacesRef: r.replaces_ref,
+  replacesStatus: r.replaces_status,
+  replacedById: r.replaced_by_id,
+  replacedByRef: r.replaced_by_ref,
+  replacedByStatus: r.replaced_by_status,
 });
+
+/** Staff DTOs for `rows`, each with its proposal (one extra query for all of them). */
+async function withProposals(db: D1Database, rows: Row[]): Promise<ReservationDTO[]> {
+  const proposals = await loadProposals(db, rows.map((r) => r.id), clock.now());
+  return rows.map((r) => toDTO(r, proposals.get(r.id) ?? null));
+}
 
 export async function getReservation(db: D1Database, id: string): Promise<ReservationDTO | null> {
   const row = await db.prepare(`${SELECT} WHERE r.id = ?`).bind(id).first<Row>();
-  return row ? toDTO(row) : null;
+  return row ? (await withProposals(db, [row]))[0]! : null;
 }
 
 /**
  * Filters: `from` inclusive / `to` exclusive on the start time; `staffId` matches the assigned technician only
- * (`orProvisionalStaffId` additionally matches pending requests provisionally on that technician: the calendar's view).
+ * (`orProvisionalStaffId` additionally matches pending requests provisionally on that technician: the calendar's view);
+ * `proposal: "open"` keeps only reservations with an open rescheduling proposal.
  * Soonest first (then creation time, then id), `limit` rows (default 50) after `cursor`.
  */
 export async function listReservations(
@@ -89,6 +193,7 @@ export async function listReservations(
     to?: number;
     staffId?: number;
     orProvisionalStaffId?: number;
+    proposal?: "open";
     limit?: number;
     cursor?: string;
   },
@@ -116,6 +221,7 @@ export async function listReservations(
     where.push("(r.assigned_staff_id = ? OR (r.status = 'pending' AND r.provisional_staff_id = ?))");
     binds.push(f.orProvisionalStaffId, f.orProvisionalStaffId);
   }
+  if (f.proposal === "open") where.push("EXISTS (SELECT 1 FROM proposals p WHERE p.reservation_id = r.id AND p.status = 'open')");
   if (f.cursor !== undefined) {
     const [startAt, createdAt, id] = decodeCursor(f.cursor, ["number", "number", "string"]);
     where.push("(r.start_at > ? OR (r.start_at = ? AND (r.created_at > ? OR (r.created_at = ? AND r.id > ?))))");
@@ -123,19 +229,27 @@ export async function listReservations(
   }
   const sql = `${SELECT}${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY r.start_at, r.created_at, r.id LIMIT ?`;
   const { results } = await db.prepare(sql).bind(...binds, limit + 1).all<Row>();
-  const page = results.slice(0, limit).map(toDTO);
+  const page = await withProposals(db, results.slice(0, limit));
   const last = page.at(-1);
   return { reservations: page, nextCursor: results.length > limit && last ? encodeCursor([last.startAt, last.createdAt, last.id]) : null };
 }
 
-const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
-    r.contact_name, r.phone, r.issue, r.created_at, r.close_reason
-  FROM reservations r JOIN customers c ON c.id = r.customer_id`;
+/**
+ * `replaces_ref`: the reservation this one asks to replace. `replaced_by_ref`: the latest request replacing this one that
+ * is still pending or went through (a declined, expired or superseded one replaces nothing).
+ */
+const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
+    r.contact_name, r.phone, r.issue, r.created_at, r.close_reason, orig.ref AS replaces_ref,
+    orig.status AS replaces_status, orig.start_at AS replaces_start_at,
+    (SELECT n.ref FROM reservations n WHERE n.replaces_id = r.id AND n.status IN ('pending','confirmed','completed')
+      ORDER BY n.created_at DESC, n.id DESC LIMIT 1) AS replaced_by_ref
+  FROM reservations r JOIN customers c ON c.id = r.customer_id LEFT JOIN reservations orig ON orig.id = r.replaces_id`;
 
 interface CustomerRow {
   id: string;
   ref: string;
   status: ReservationStatus;
+  version: number;
   start_at: number;
   end_at: number;
   account_name: string;
@@ -145,12 +259,17 @@ interface CustomerRow {
   issue: string;
   created_at: number;
   close_reason: string | null;
+  replaces_ref: string | null;
+  replaces_status: ReservationStatus | null;
+  replaces_start_at: number | null;
+  replaced_by_ref: string | null;
 }
 
-const toCustomerDTO = (r: CustomerRow): CustomerReservationDTO => ({
+const toCustomerDTO = (r: CustomerRow, proposal: CustomerProposalDTO | null, now: number): CustomerReservationDTO => ({
   id: r.id,
   ref: r.ref,
   status: r.status,
+  version: r.version,
   startAt: r.start_at,
   endAt: r.end_at,
   accountName: r.account_name,
@@ -160,7 +279,27 @@ const toCustomerDTO = (r: CustomerRow): CustomerReservationDTO => ({
   issue: r.issue,
   createdAt: r.created_at,
   closeReason: r.close_reason,
+  proposal,
+  replacesRef: r.replaces_ref,
+  // The same notion of "still active" submit and approve use for the original.
+  replacesActive: (r.replaces_status === "pending" || r.replaces_status === "confirmed") && r.replaces_start_at !== null && r.replaces_start_at > now,
+  replacedByRef: r.replaced_by_ref,
 });
+
+async function customerDTOs(db: D1Database, rows: CustomerRow[]): Promise<CustomerReservationDTO[]> {
+  const now = clock.now();
+  const proposals = await loadProposals(db, rows.map((r) => r.id), now);
+  return rows.map((r) => toCustomerDTO(r, toCustomerProposal(proposals.get(r.id) ?? null), now));
+}
+
+/**
+ * The customer's view of reservation `id`, for a caller who has already proven access to it (an answer to their action,
+ * or the current state in a 409): no technician, approver or contact-email fields ever cross over.
+ */
+export async function customerView(db: D1Database, id: string): Promise<CustomerReservationDTO | null> {
+  const row = await db.prepare(`${CUSTOMER_SELECT} WHERE r.id = ?`).bind(id).first<CustomerRow>();
+  return row ? (await customerDTOs(db, [row]))[0]! : null;
+}
 
 const placeholders = (n: number) => Array.from({ length: n }, () => "?").join(",");
 
@@ -171,7 +310,7 @@ export async function listCustomerReservations(db: D1Database, accountIds: numbe
     .prepare(`${CUSTOMER_SELECT} WHERE r.customer_id IN (${placeholders(accountIds.length)}) ORDER BY r.start_at DESC, r.created_at DESC, r.id`)
     .bind(...accountIds)
     .all<CustomerRow>();
-  return results.map(toCustomerDTO);
+  return customerDTOs(db, results);
 }
 
 /** One reservation, only when it belongs to one of `accountIds`. */
@@ -181,7 +320,7 @@ export async function getCustomerReservation(db: D1Database, id: string, account
     .prepare(`${CUSTOMER_SELECT} WHERE r.id = ? AND r.customer_id IN (${placeholders(accountIds.length)})`)
     .bind(id, ...accountIds)
     .first<CustomerRow>();
-  return row ? toCustomerDTO(row) : null;
+  return row ? (await customerDTOs(db, [row]))[0]! : null;
 }
 
 /** The reservation an unexpired access token points at (token given as its sha256 hex). */
@@ -190,7 +329,16 @@ export async function getCustomerReservationByAccessToken(db: D1Database, tokenH
     .prepare(`${CUSTOMER_SELECT} JOIN access_tokens t ON t.reservation_id = r.id WHERE t.token_hash = ? AND t.expires_at > ?`)
     .bind(tokenHash, now)
     .first<CustomerRow>();
-  return row ? toCustomerDTO(row) : null;
+  return row ? (await customerDTOs(db, [row]))[0]! : null;
+}
+
+/** The reservation (id and contact email) an unexpired access token points at; the contact is who acts through the link. */
+export async function getAccessTokenTarget(db: D1Database, tokenHash: string, now: number): Promise<{ id: string; contactEmail: string } | null> {
+  const row = await db
+    .prepare("SELECT r.id, r.contact_email FROM reservations r JOIN access_tokens t ON t.reservation_id = r.id WHERE t.token_hash = ? AND t.expires_at > ?")
+    .bind(tokenHash, now)
+    .first<{ id: string; contact_email: string }>();
+  return row ? { id: row.id, contactEmail: row.contact_email } : null;
 }
 
 /** Audit trail of one reservation, oldest first; staff actors are shown by name. */
@@ -292,7 +440,8 @@ export async function listAudit(
  * Every active bookable technician, assignable ones first, then by name, each with the reason it cannot take
  * this request (first match wins: not on the slot, unavailable, busy with a fixed hold, needed elsewhere).
  * Pending requests get approval candidates; confirmed appointments get same-time reassignment candidates, with the
- * current technician flagged `current`. Other statuses get no options.
+ * current technician flagged `current`. Other statuses get no options. Holds the decision would release in its own batch
+ * (the reservation's open proposal options; a replacement's original) don't count, as in approve and reassign.
  */
 export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOption[]> {
   if (r.status !== "pending" && r.status !== "confirmed") return [];
@@ -309,7 +458,8 @@ export async function techOptions(env: Env, r: ReservationDTO): Promise<TechOpti
   const free = new Set(freeList);
   // Exactly the free technicians: the context's provisional fallback (which only keeps capacity held) is no option.
   // A confirmed appointment is unfixed here so that each candidate is tried in place of its technician.
-  const holds = ctx.holds.map((h) => (h.id === r.id ? { ...h, fixed: null, eligible: freeList } : h));
+  const released = releasedHolds(ctx, r, r.status === "pending" ? (await replacedBy(env.DB, r.id, clock.now())).original : null);
+  const holds = ctx.holds.filter((h) => !released.has(h.id)).map((h) => (h.id === r.id ? { ...h, fixed: null, eligible: freeList } : h));
   const assignable = new Set(assignableFor(holds, r.id));
   const currentId = r.status === "confirmed" ? (r.assignedStaff?.id ?? null) : null;
 

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { MIN } from "../../domain/time";
 import type { Env, StaffPrincipal } from "../env";
 import { clock } from "../lib/clock";
@@ -5,28 +6,22 @@ import { assertSql, audit, capacityBatch, readScheduleVersion, withRetry } from 
 import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
 import { getSettings } from "../repos/settings";
-import { notifyStaff } from "../repos/staff";
-import { getReservation, type ReservationDTO } from "./queries";
+import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
+import { cancelObsoleteMail, releaseHoldStatements } from "./holds";
+import { cancelReplacedStatements } from "./replacement";
+import { customerView, getReservation, type CustomerReservationDTO, type ReservationDTO } from "./queries";
 
 export type CancelActor = { kind: "staff"; staff: StaffPrincipal } | { kind: "customer"; email: string };
 
-/** Queued mail about the reservation that is wrong once it is cancelled: reminders and confirmation-type messages. */
-const OBSOLETE_TEMPLATES = [
-  "appointment_reminder",
-  "approval_reminder",
-  "approval_escalation",
-  "request_received",
-  "new_request",
-  "confirmed",
-  "assigned",
-  "reassigned",
-] as const;
-
 const REASON_MAX = 500;
+
+/** Body of both customer cancel endpoints (the access-token one adds the token). */
+export const customerCancelBody = z.object({ reason: z.string().max(REASON_MAX).optional(), version: z.number().int() });
 
 /**
  * Cancel a pending or confirmed reservation: frees its blocks and any open proposal's option holds, closes the
- * reservation, cancels its obsolete queued mail and tells the customer and the team. Staff need a reason and may
+ * reservation, cancels its obsolete queued mail and tells the customer and the team. A change request still pending on
+ * it goes with it in the same batch (closed as 'original_cancelled'), and the one cancellation email covers both. Staff need a reason and may
  * cancel until the appointment ends; customers may give one and cancel before the start (confirmed appointments only
  * until `cancelCutoffMin` before it). Ownership is the caller's job. An already-cancelled reservation is returned
  * unchanged when asked at its current version or by a retry of the cancelling request itself (same actor, reason and
@@ -75,27 +70,28 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
   } else {
     if (current.startAt <= now) throw new HttpError(409, "too_late");
     if (current.status === "confirmed") {
-      const { cancelCutoffMin } = await getSettings(db, env);
-      if (current.startAt - cancelCutoffMin * MIN <= now) throw new HttpError(409, "past_cutoff");
+      const { cancelCutoffMin, supportPhone } = await getSettings(db, env);
+      if (current.startAt - cancelCutoffMin * MIN <= now) throw new HttpError(409, "past_cutoff", { cutoffMin: cancelCutoffMin, supportPhone });
     }
   }
 
   const closedBy = actor.kind === "staff" ? String(actor.staff.id) : actor.email;
-  // A staff actor already knows; everyone else who follows requests is told.
-  const team = (await notifyStaff(db)).filter((s) => actor.kind !== "staff" || s.id !== actor.staff.id);
-  const templates = OBSOLETE_TEMPLATES.map(() => "?").join(",");
+  // Everyone who follows requests is told, and the technician the appointment is with whatever their notify setting.
+  // A staff actor already knows.
+  const involved = current.assignedStaff ? await activeStaffByIds(db, [current.assignedStaff.id]) : [];
+  const team = noticeRecipients(await notifyStaff(db), involved, actor.kind === "staff" ? actor.staff.id : undefined);
+  // The customer's change request for it, if one is waiting: nothing would be left for it to change.
+  const replacement = await db
+    .prepare("SELECT id, ref, version FROM reservations WHERE replaces_id = ? AND status = 'pending'")
+    .bind(id)
+    .first<{ id: string; ref: string; version: number }>();
+  const mailPayload = replacement ? { alsoCancelledRef: replacement.ref } : {};
 
   await capacityBatch(db, scheduleVersion, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = ? AND version = ?", id, current.status, version),
-    db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
-    // Option blocks before closing their proposal (the subquery finds them through the open proposal).
-    db
-      .prepare(
-        `DELETE FROM tech_blocks WHERE owner_kind = 'option' AND owner_id IN (
-           SELECT o.id FROM proposal_options o JOIN proposals p ON p.id = o.proposal_id WHERE p.reservation_id = ? AND p.status = 'open')`,
-      )
-      .bind(id),
-    db.prepare("UPDATE proposals SET status = 'withdrawn', resolved_at = ? WHERE reservation_id = ? AND status = 'open'").bind(now, id),
+    // No change request other than the one read (a racing one is caught here and the retry takes it along).
+    assertSql(db, "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM reservations WHERE replaces_id = ? AND status = 'pending' AND id IS NOT ?)", id, replacement?.id ?? null),
+    ...releaseHoldStatements(db, id, now),
     db
       .prepare(
         `UPDATE reservations SET status = 'cancelled', closed_at = ?, closed_by_kind = ?, closed_by = ?, close_reason = ?,
@@ -103,12 +99,29 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
          WHERE id = ? AND status = ? AND version = ?`,
       )
       .bind(now, actor.kind, closedBy, reason, now, id, current.status, version),
-    db
-      .prepare(`UPDATE email_jobs SET status = 'cancelled' WHERE reservation_id = ? AND status = 'queued' AND template IN (${templates})`)
-      .bind(id, ...OBSOLETE_TEMPLATES),
-    enqueueEmail(db, { template: "cancelled", to: current.contactEmail, dedupeKey: `cancelled:${id}`, reservationId: id, payload: { audience: "customer" } }),
+    cancelObsoleteMail(db, id),
+    ...(replacement
+      ? cancelReplacedStatements(
+          db,
+          { id: replacement.id, status: "pending", version: replacement.version },
+          { by: { kind: actor.kind, id: closedBy }, reason: "original_cancelled", originalId: id, customerId: current.customer.id, now },
+        )
+      : []),
+    enqueueEmail(db, {
+      template: "cancelled",
+      to: current.contactEmail,
+      dedupeKey: `cancelled:${id}`,
+      reservationId: id,
+      payload: { audience: "customer", ...mailPayload },
+    }),
     ...team.map((s) =>
-      enqueueEmail(db, { template: "cancelled", to: s.email, dedupeKey: `cancelled-team:${id}:${s.id}`, reservationId: id, payload: { audience: "team" } }),
+      enqueueEmail(db, {
+        template: "cancelled",
+        to: s.email,
+        dedupeKey: `cancelled-team:${id}:${s.id}`,
+        reservationId: id,
+        payload: { audience: "team", ...mailPayload },
+      }),
     ),
     audit(db, {
       actorKind: actor.kind,
@@ -120,4 +133,19 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
     }),
   ]);
   return (await getReservation(db, id))!;
+}
+
+/**
+ * Cancel on behalf of the customer who proved ownership (an active contact's session, or an access token: then the
+ * reservation's own contact email). The answer, and the current state of a stale 409, are the customer's view: never
+ * technician or approver data.
+ */
+export async function cancelAsCustomer(env: Env, email: string, id: string, input: { reason?: string; version: number }): Promise<CustomerReservationDTO> {
+  try {
+    await cancelReservation(env, { kind: "customer", email }, id, input);
+    return (await customerView(env.DB, id))!;
+  } catch (e) {
+    if (e instanceof HttpError && e.code === "stale") throw new HttpError(409, "stale", { current: await customerView(env.DB, id) });
+    throw e;
+  }
 }

@@ -5,6 +5,7 @@ import { loginCustomer, seedCustomer, seedTeam, seedWeekly, TZ, withBatchHook } 
 import { setNow } from "../../src/worker/lib/clock";
 import { submitReservation, type SubmitInput } from "../../src/worker/reservations/submit";
 import { wallToUtc, MIN } from "../../src/domain/time";
+import { bookableSlots } from "../../src/worker/scheduling/availability";
 
 afterEach(() => setNow(null));
 
@@ -74,8 +75,8 @@ describe("POST /api/customer/reservations", () => {
       expect(audit).toMatchObject({ actor_kind: "customer", actor: "pat@example.test", reservation_id: id, customer_id: pat.id });
       expect(JSON.parse(audit.details)).toEqual({ startAt: at(FRI, 10), provisionalStaffId: row.provisional_staff_id });
 
-      const av = await api("GET", `/api/customer/availability?from=${FRI}&to=${FRI}`, { cookie: sam.cookie });
-      expect(av.json.days[0].slots.map((s: any) => [s.startAt, s.spots])).toEqual([
+      const av = await bookableSlots(env, FRI, FRI);
+      expect(av.days[0]!.slots.map((s) => [s.startAt, s.spots])).toEqual([
         [at(FRI, 10), 1],
         [at(FRI, 10, 30), 1],
       ]);

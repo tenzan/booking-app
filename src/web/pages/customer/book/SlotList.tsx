@@ -21,20 +21,15 @@ export function SlotList({ date, slots, tz, selected, onSelect }: Props) {
               type="button"
               aria-pressed={isSelected}
               onClick={() => onSelect(s)}
-              className={`relative flex min-h-16 w-full flex-col items-start justify-center rounded-xl border px-4 py-3 text-left transition-colors ${
+              className={`relative flex min-h-16 w-full items-center justify-center rounded-xl border px-3 py-3 transition-colors ${
                 isSelected
                   ? "border-blue-700 bg-blue-50 ring-2 ring-blue-700 dark:border-blue-400 dark:bg-blue-400/10 dark:ring-blue-400"
                   : "border-slate-300 bg-white hover:border-blue-600 hover:bg-blue-50 dark:border-slate-600 dark:bg-slate-900 dark:hover:border-blue-400 dark:hover:bg-slate-800"
               }`}
             >
               <span className="font-semibold whitespace-nowrap tabular-nums sm:text-lg">{fmtTimeRange(s.startAt, s.endAt, tz)}</span>
-              <span
-                className={`text-sm ${s.spots === 1 ? "font-medium text-amber-800 dark:text-amber-300" : "text-slate-600 dark:text-slate-400"}`}
-              >
-                {s.spots === 1 ? t("web.book.slot.lastSpot") : t("web.book.slot.spotsLeft", { n: s.spots })}
-              </span>
               {isSelected && (
-                <svg className="absolute right-3 bottom-3 size-5 text-blue-700 dark:text-blue-300" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <svg className="absolute -top-2 -right-2 size-6 rounded-full bg-slate-50 text-blue-700 dark:bg-slate-950 dark:text-blue-300" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <circle cx="12" cy="12" r="10" fill="currentColor" />
                   <path d="m7.5 12 3 3 6-6" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>

@@ -9,7 +9,10 @@ import { requireCustomer } from "../middleware/session";
 import { accountIdsForContact, eligibleAccountsForEmail, lastPhonesForEmail } from "../repos/customers";
 import { assertBookingEnabled } from "../repos/settings";
 import { customerAvailability } from "../scheduling/availability";
+import { cancelAsCustomer, customerCancelBody } from "./cancel";
+import { customerIcs, icsResponse } from "./ics";
 import { getCustomerReservation, listCustomerReservations } from "./queries";
+import { acceptBody, acceptProposal, rejectBody, rejectProposal } from "./respond";
 import { submitReservation } from "./submit";
 
 const MAX_SPAN_DAYS = 31;
@@ -46,6 +49,8 @@ const submitBody = z.object({
   phone: z.string().min(5).max(30).regex(/^[0-9+()\- ]+$/),
   issue: z.string().trim().min(1).max(1000),
   idempotencyKey: z.uuid(),
+  /** A request to change this reservation of the caller's ("choose another time"). */
+  replacesId: z.string().min(1).max(100).optional(),
 });
 
 customerRoutes.post("/reservations", async (c) => {
@@ -67,5 +72,54 @@ customerRoutes.get("/reservations/:id", async (c) => {
   const accountIds = await accountIdsForContact(c.env.DB, c.var.customerEmail!);
   const reservation = await getCustomerReservation(c.env.DB, c.req.param("id"), accountIds);
   if (!reservation) throw new HttpError(404, "not_found");
+  return c.json({ reservation });
+});
+
+/** The appointment as a calendar file (a POST so it is only ever fetched by the page itself). Ownership as for cancel. */
+customerRoutes.post("/reservations/:id/ics", async (c) => {
+  const id = c.req.param("id");
+  await assertOwned(c.env.DB, c.var.customerEmail!, id);
+  return icsResponse(c, await customerIcs(c.env, id));
+});
+
+/**
+ * Cancel one of the caller's reservations. Ownership is an active contact on the account, nothing else: a deactivated
+ * account or one that lost eligibility can still cancel. Not-owned and non-existent are indistinguishable.
+ */
+customerRoutes.post("/reservations/:id/cancel", async (c) => {
+  const body = await readJson(c, customerCancelBody);
+  const email = c.var.customerEmail!;
+  const id = c.req.param("id");
+  await assertOwned(c.env.DB, email, id);
+  const reservation = await cancelAsCustomer(c.env, email, id, body);
+  kickOutbox(c);
+  return c.json({ reservation });
+});
+
+/** Ownership as for cancel: an active contact on the reservation's account. Not-owned and non-existent are indistinguishable. */
+async function assertOwned(db: D1Database, email: string, id: string): Promise<void> {
+  const accountIds = await accountIdsForContact(db, email);
+  if (!(await getCustomerReservation(db, id, accountIds))) throw new HttpError(404, "not_found");
+}
+
+/** Take one of the proposed times (see acceptProposal). */
+customerRoutes.post("/reservations/:id/proposal/accept", async (c) => {
+  const body = await readJson(c, acceptBody);
+  const email = c.var.customerEmail!;
+  const id = c.req.param("id");
+  await assertOwned(c.env.DB, email, id);
+  const reservation = await acceptProposal(c.env, email, id, body);
+  kickOutbox(c);
+  return c.json({ reservation });
+});
+
+/** Keep the original time: the proposal is rejected (see rejectProposal). */
+customerRoutes.post("/reservations/:id/proposal/reject", async (c) => {
+  const body = await readJson(c, rejectBody);
+  const email = c.var.customerEmail!;
+  const id = c.req.param("id");
+  await assertOwned(c.env.DB, email, id);
+  const reservation = await rejectProposal(c.env, email, id, body);
+  kickOutbox(c);
   return c.json({ reservation });
 });

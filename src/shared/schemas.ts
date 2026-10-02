@@ -99,6 +99,10 @@ export const scheduleEditSchema = z.discriminatedUnion("type", [
 ]);
 export type ScheduleEdit = z.output<typeof scheduleEditSchema>;
 
+/** A rescheduling proposal offers 1 to this many times, with an optional message of at most PROPOSAL_MESSAGE_MAX characters. */
+export const MAX_PROPOSAL_OPTIONS = 3;
+export const PROPOSAL_MESSAGE_MAX = 500;
+
 /** Most conflicts one change may answer in the same commit. */
 export const MAX_RESOLUTIONS = 50;
 /** Staged conflict answers sent with a schedule-affecting change; one per reservation. */
@@ -303,6 +307,8 @@ export const reservationListQuerySchema = z.object({
   from: optionalInt,
   to: optionalInt,
   staffId: optionalInt,
+  /** `open`: only reservations with an open rescheduling proposal (waiting for the customer). */
+  proposal: z.preprocess(blankToUndefined, z.literal("open").optional()),
   limit: z.preprocess(blankToUndefined, z.coerce.number().int().min(1).max(RESERVATIONS_PAGE_MAX).default(RESERVATIONS_PAGE_DEFAULT)),
   cursor: optionalText(300),
 });

@@ -18,24 +18,37 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiFetch<T>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
+type ApiOpts = { method?: string; body?: unknown };
+
+/** A successful response to an API request; any failure is thrown as an ApiError (JSON error bodies decoded). */
+async function apiResponse(path: string, opts: ApiOpts, accept: string): Promise<Response> {
   let res: Response;
   try {
     res = await fetch(path, {
       method: opts.method ?? "GET",
       credentials: "same-origin",
-      headers: { "X-Requested-With": "fetch", "content-type": "application/json", accept: "application/json" },
+      headers: { "X-Requested-With": "fetch", "content-type": "application/json", accept },
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   } catch {
     throw new ApiError(0, "network");
   }
-  const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
   if (!res.ok) {
+    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     const code = typeof data?.error === "string" ? data.error : "http_error";
     throw new ApiError(res.status, code, data?.details, data ?? undefined);
   }
-  return data as T;
+  return res;
+}
+
+export async function apiFetch<T>(path: string, opts: ApiOpts = {}): Promise<T> {
+  const res = await apiResponse(path, opts, "application/json");
+  return (await res.json().catch(() => null)) as T;
+}
+
+/** An API request answered with a file (e.g. a calendar download), as a Blob. Errors as for apiFetch. */
+export async function apiFetchBlob(path: string, opts: ApiOpts = {}): Promise<Blob> {
+  return (await apiResponse(path, opts, "*/*")).blob();
 }
 
 export const isApiError = (e: unknown, status?: number, code?: string): e is ApiError =>
@@ -82,7 +95,6 @@ export interface Account {
 export interface Slot {
   startAt: number;
   endAt: number;
-  spots: number;
 }
 
 export interface Availability {
@@ -233,12 +245,28 @@ export function useMe() {
  */
 export function takeFragmentToken(): string | null {
   const state = (window.history.state ?? {}) as Record<string, unknown>;
-  const fromHash = new URLSearchParams(window.location.hash.slice(1)).get("t");
+  const hash = new URLSearchParams(window.location.hash.slice(1));
+  const fromHash = hash.get("t");
   if (fromHash) {
-    window.history.replaceState({ ...state, fragmentToken: fromHash }, "", window.location.pathname + window.location.search);
+    hash.delete("t");
+    // The rest of the fragment (`action=cancel`, …) is parked with the token: see fragmentParams.
+    const fragmentParams = Object.fromEntries(hash);
+    window.history.replaceState({ ...state, fragmentToken: fromHash, fragmentParams }, "", window.location.pathname + window.location.search);
     return fromHash;
   }
   return typeof state.fragmentToken === "string" ? state.fragmentToken : null;
+}
+
+/** The other `#key=value` pairs that came with this history entry's fragment token (e.g. `action=cancel`). */
+export function fragmentParams(): Record<string, string> {
+  const p = (window.history.state as Record<string, unknown> | null)?.fragmentParams;
+  return p && typeof p === "object" ? (p as Record<string, string>) : {};
+}
+
+/** Forget the parked fragment params once they have been acted on (a reload then opens the plain page). */
+export function clearFragmentParams(): void {
+  const state = (window.history.state ?? {}) as Record<string, unknown>;
+  if (state.fragmentParams) window.history.replaceState({ ...state, fragmentParams: {} }, "", window.location.href);
 }
 
 /** The fragment token for this page; picks up a new one if another link is opened in the same tab. */

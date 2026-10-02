@@ -35,7 +35,7 @@ APP_DOMAIN ──► Worker
   ├─ /api/*          Hono routes (JSON; all state changes are POST/PUT/DELETE)
   ├─ scheduled()     every minute: email outbox, approval reminders/escalation/expiry,
   │                  proposal expiry, customer reminders, completion
-  └─ email()         inbound mail to the sender subdomain → forwarded to MAIL_REPLY_FORWARD_TO
+  └─ email()         inbound mail to the sender subdomain → relayed to every notify staff member (Reply-To = the customer)
 ```
 
 ### Source layout
@@ -63,7 +63,6 @@ The domain layer is pure so it can be unit-tested exhaustively and ported if the
 | `ORG_NAME` | config | `Example Support` (initial value; editable in settings afterwards) |
 | `MAIL_FROM` | config | `no-reply@booking.example.com` (also the allowed sender) |
 | `MAIL_FROM_NAME` | config | `Example Support` |
-| `MAIL_REPLY_FORWARD_TO` | config | team mailbox for inbound replies (optional) |
 | `MAIL_MODE` | config | `cloudflare` (prod) · `dev` (local mailbox, viewable at `/dev/mail`) |
 | `APP_TIMEZONE` | config | `UTC` default; reference deployment `Asia/Tokyo` |
 | `APP_LOCALE` | config | `en` |

@@ -4,7 +4,7 @@ import { uuid } from "../lib/crypto";
 import { assertSql, audit } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { mailerFor, type Mailer } from "./adapters";
-import { renderJob } from "./templates";
+import { jobStillValid, renderJob } from "./templates";
 
 export type TemplateName =
   | "customer_login"
@@ -15,7 +15,15 @@ export type TemplateName =
   | "assigned"
   | "declined"
   | "cancelled"
-  | "reassigned";
+  | "reassigned"
+  | "expired"
+  | "approval_reminder"
+  | "approval_escalation"
+  | "appointment_reminder"
+  | "proposal"
+  | "proposal_outcome"
+  | "rescheduled"
+  | "reply_relay";
 
 export interface EmailJobRow {
   id: string;
@@ -94,6 +102,12 @@ export async function processOutbox(
     try {
       const rendered = await renderJob(env, j);
       if (rendered === "skip") {
+        await env.DB.prepare("UPDATE email_jobs SET status = 'skipped', locked_until = NULL WHERE id = ?").bind(j.id).run();
+        out.skipped++;
+        continue;
+      }
+      // The reservation may have changed since the render read it (cancelled, say): the last look before the send.
+      if (!(await jobStillValid(env, j))) {
         await env.DB.prepare("UPDATE email_jobs SET status = 'skipped', locked_until = NULL WHERE id = ?").bind(j.id).run();
         out.skipped++;
         continue;

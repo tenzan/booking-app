@@ -16,6 +16,12 @@ export default function Login() {
   const [params] = useSearchParams();
   const next = safePath(params.get("next"));
   const [sentTo, setSentTo] = useState<string | null>(null);
+  // "Use a different email" from the sent confirmation: the form then starts empty.
+  const [another, setAnother] = useState(false);
+  const anotherAddress = () => {
+    setSentTo(null);
+    setAnother(true);
+  };
   const staff = me.data?.staff ?? null;
 
   return (
@@ -29,7 +35,7 @@ export default function Login() {
       ) : staff ? (
         <SignedIn email={staff.email} next={next} />
       ) : sentTo ? (
-        <LinkSent body={tNodes("web.staff.login.sentBody", { email: <EmailStrong email={sentTo} /> })} onReset={() => setSentTo(null)} />
+        <LinkSent body={tNodes("web.staff.login.sentBody", { email: <EmailStrong email={sentTo} /> })} onReset={anotherAddress} />
       ) : (
         <EmailLinkForm
           kind="staff"
@@ -38,6 +44,7 @@ export default function Login() {
           label={t("web.staff.login.emailLabel")}
           submitLabel={t("web.staff.login.submit")}
           onSent={setSentTo}
+          startEmpty={another}
         />
       )}
       {!staff && (

@@ -5,15 +5,19 @@ import { clock } from "../lib/clock";
 import { assertSql, audit, capacityBatch, withRetry } from "../lib/db";
 import { HttpError } from "../lib/http";
 import { enqueueEmail } from "../mail/outbox";
-import { notifyStaff } from "../repos/staff";
+import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff";
 import { loadScheduleCtx } from "../scheduling/context";
 import { blockInsert, movedPending, movePendingStatements } from "./holds";
+import { closeProposalStatements } from "./propose";
+import { releasedHolds } from "./replacement";
 import { getReservation, techOptions, type ReservationDTO } from "./queries";
 
 /**
  * Give a confirmed appointment another technician at the same time. The target must be free on the appointment's
  * window and stored range, and everything else must stay assignable with it fixed there (pending requests may move).
  * Same batch discipline as approve: of two racing reassignments exactly one commits, the other is stale on retry.
+ * An open proposal on the appointment is withdrawn in the same batch (staff decided), its options released first, and
+ * the customer is told the proposed times were withdrawn (the time itself is unchanged, so nothing else tells them).
  */
 export async function reassignReservation(env: Env, actor: StaffPrincipal, id: string, staffId: number, version: number): Promise<ReservationDTO> {
   return withRetry(() => attempt(env, actor, id, staffId, version));
@@ -32,8 +36,9 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   const target = ctx.holds.find((h) => h.id === id);
   if (!target) throw new HttpError(409, "stale", { current: (await getReservation(db, id)) ?? current });
 
+  const released = releasedHolds(ctx, current, null);
   const free = freeStaffAt(ctx.slotInput, current.startAt, target.start, target.end);
-  const fixedHolds = ctx.holds.map((h) => (h.id === id ? { ...h, fixed: staffId, eligible: [staffId] } : h));
+  const fixedHolds = ctx.holds.filter((h) => !released.has(h.id)).map((h) => (h.id === id ? { ...h, fixed: staffId, eligible: [staffId] } : h));
   const assignment = free.includes(staffId) ? solve(component(fixedHolds, target.start, target.end)) : null;
   if (!assignment) throw new HttpError(409, "tech_unavailable", { options: await techOptions(env, current) });
 
@@ -41,9 +46,23 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
   const newVersion = version + 1;
   const moved = movedPending(ctx, assignment, id);
   const staff = await notifyStaff(db);
+  const involved = await activeStaffByIds(db, [from, staffId]);
+  const openProposal = current.proposal?.status === "open" ? current.proposal : null;
 
   await capacityBatch(db, ctx.version, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = 'confirmed' AND version = ? AND assigned_staff_id = ?", id, version, from),
+    ...(openProposal
+      ? [
+          ...closeProposalStatements(db, id, openProposal.id, "withdrawn", now),
+          enqueueEmail(db, {
+            template: "proposal_outcome",
+            to: current.contactEmail,
+            dedupeKey: `proposal-outcome:${openProposal.id}`,
+            reservationId: id,
+            payload: { audience: "customer", proposalId: openProposal.id, outcome: "withdrawn" },
+          }),
+        ]
+      : []),
     // The appointment's blocks go first so a moved request may take its old technician.
     db.prepare("DELETE FROM tech_blocks WHERE owner_kind = 'reservation' AND owner_id = ?").bind(id),
     ...movePendingStatements(db, moved, now),
@@ -54,7 +73,7 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
       )
       .bind(staffId, now, id, version),
     blockInsert(db, staffId, rangeBlocks(target.start, target.end), id),
-    ...reassignedEmails(db, { id, newVersion, from, to: staffId, actorId: actor.id, staff, contactEmail: current.contactEmail, notifyCustomer: ctx.settings.notifyCustomerOnReassign }),
+    ...reassignedEmails(db, { id, newVersion, from, to: staffId, actorId: actor.id, staff, involved, contactEmail: current.contactEmail, notifyCustomer: ctx.settings.notifyCustomerOnReassign }),
     audit(db, {
       actorKind: "staff",
       actor: String(actor.id),
@@ -68,8 +87,9 @@ async function attempt(env: Env, actor: StaffPrincipal, id: string, staffId: num
 }
 
 /**
- * The `reassigned` notices for a confirmed appointment now at `newVersion`: every notified team member except the
- * actor, plus the customer when the setting asks for it. Shared by the direct reassign and schedule resolutions.
+ * The `reassigned` notices for a confirmed appointment now at `newVersion`: every notified team member and the two
+ * technicians involved (whatever their notify setting), once each and except the actor, plus the customer when the
+ * setting asks for it. Shared by the direct reassign and schedule resolutions.
  */
 export function reassignedEmails(
   db: D1Database,
@@ -80,14 +100,14 @@ export function reassignedEmails(
     to: number;
     actorId: number;
     staff: Array<{ id: number; email: string }>;
+    /** The technicians this appointment moved from and to (active ones only). */
+    involved: Array<{ id: number; email: string }>;
     contactEmail: string;
     notifyCustomer: boolean;
   },
 ): D1PreparedStatement[] {
   return [
-    ...o.staff
-      .filter((s) => s.id !== o.actorId)
-      .map((s) =>
+    ...noticeRecipients(o.staff, o.involved, o.actorId).map((s) =>
         enqueueEmail(db, {
           template: "reassigned",
           to: s.email,

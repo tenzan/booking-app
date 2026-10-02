@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useParams, useSearchParams } from "react-router";
 import type { ReservationDTO, TechOption } from "../../../shared/types";
@@ -11,27 +11,34 @@ import { Skeleton } from "../../components/Spinner";
 import { StatusBadge, statusTone } from "../../components/StatusBadge";
 import { TimezoneNote } from "../../components/TimezoneNote";
 import { fmtStamp, fmtWhen } from "../../format";
-import { t } from "../../i18n";
+import { t, tNodes } from "../../i18n";
 import { Countdown, useNow } from "./Countdown";
 import { ApprovePanel } from "./detail/ApprovePanel";
 import { CancelPanel } from "./detail/CancelPanel";
 import { DeclinePanel } from "./detail/DeclinePanel";
 import { History } from "./detail/History";
+import { ProposalCard } from "./detail/ProposalCard";
+import { ProposePanel } from "./detail/ProposePanel";
 import { ReassignPanel } from "./detail/ReassignPanel";
 
 type Action = "approve" | "decline" | "propose" | "reassign" | "cancel";
 /** What staff can do with a reservation in each status (until a confirmed appointment has ended). */
 const ACTIONS_FOR: Partial<Record<ReservationDTO["status"], Action[]>> = {
   pending: ["approve", "decline", "propose", "cancel"],
-  confirmed: ["reassign", "cancel"],
+  confirmed: ["reassign", "propose", "cancel"],
 };
 const asAction = (s: string | null, allowed: Action[]): Action | null => (allowed as Array<string | null>).includes(s) ? (s as Action) : null;
 
 type PageNotice = { tone: "success" | "warning"; text: string };
 
-/** Who closed or confirmed it, and when; null when the record doesn't say. */
-function handledBy(r: ReservationDTO): { name: string; at: number } | null {
-  if (r.status === "confirmed" && r.confirmedBy && r.confirmedAt !== null) return { name: r.confirmedBy.name, at: r.confirmedAt };
+/**
+ * Who closed or confirmed it, and when; null when the record doesn't say. `accepted`: confirmed by the customer choosing
+ * a time staff proposed (no staff member confirmed it).
+ */
+function handledBy(r: ReservationDTO): { name: string; at: number; accepted?: true } | null {
+  if (r.status === "confirmed" && r.confirmedAt !== null) {
+    return r.confirmedBy ? { name: r.confirmedBy.name, at: r.confirmedAt } : { name: t("web.staff.lifecycle.customer"), at: r.confirmedAt, accepted: true };
+  }
   if (r.closedAt !== null) return { name: r.closedBy ?? t("web.staff.detail.system"), at: r.closedAt };
   return null;
 }
@@ -93,13 +100,30 @@ export default function ReservationDetail() {
     const who = moved ? handledBy(current) : null;
     setNotice({
       tone: "warning",
-      text: who
-        ? t("web.staff.detail.stale", { status: t(`web.statusShort.${current!.status}`), name: who.name, time: fmtStamp(who.at, tz) })
-        : t("web.staff.detail.changed"),
+      text: who?.accepted
+        ? t("web.staff.lifecycle.staleAccepted", { time: fmtStamp(who.at, tz) })
+        : who
+          ? t("web.staff.detail.stale", { status: t(`web.statusShort.${current!.status}`), name: who.name, time: fmtStamp(who.at, tz) })
+          : t("web.staff.detail.changed"),
     });
     if (moved) openPanel(null);
     refresh();
   };
+
+  /** Done without closing the open panel (withdrawing a proposal from its card). */
+  const onSaved = (text: string) => {
+    setNotice({ tone: "success", text });
+    refresh();
+  };
+
+  /** Something the action relied on had already changed (e.g. the proposal closed): say so and reload. */
+  const onChanged = (text: string) => {
+    setNotice({ tone: "warning", text });
+    refresh();
+  };
+
+  // Another reservation (a replacement link): the previous page's notice doesn't belong to it.
+  useEffect(() => setNotice(null), [id]);
 
   const onOptions = (options: TechOption[]) => {
     qc.setQueryData<StaffReservationView>(key, (old) => (old ? { ...old, techOptions: options } : old));
@@ -121,7 +145,9 @@ export default function ReservationDetail() {
 
   const r = q.data?.reservation;
   const ended = r !== undefined && r.status === "confirmed" && r.endAt <= now;
-  const allowed = r && !ended ? (ACTIONS_FOR[r.status] ?? []) : [];
+  // The customer's own change request is pending: staff decide on that instead of proposing times (the server refuses).
+  const pendingChange = r?.replacedByStatus === "pending" && r.replacedById && r.replacedByRef ? { id: r.replacedById, ref: r.replacedByRef } : null;
+  const allowed = r && !ended ? (ACTIONS_FOR[r.status] ?? []).filter((a) => a !== "propose" || !pendingChange) : [];
   const action = asAction(params.get("action"), allowed);
 
   if (isApiError(q.error, 404)) {
@@ -183,11 +209,38 @@ export default function ReservationDetail() {
           <div className="grid items-start gap-6 lg:grid-cols-5">
             <div className="min-w-0 space-y-6 lg:col-span-3">
               <StatusBanner r={q.data.reservation} tz={tz} />
+              {q.data.reservation.proposal && (
+                <ProposalCard
+                  r={q.data.reservation}
+                  proposal={q.data.reservation.proposal}
+                  tz={tz}
+                  now={now}
+                  // The propose panel shows its own Withdraw while it is open.
+                  withdraw={action === "propose" ? undefined : { onDone: onSaved, onChanged }}
+                />
+              )}
               <Facts r={q.data.reservation} tz={tz} />
             </div>
             <div className="min-w-0 space-y-6 lg:sticky lg:top-32 lg:col-span-2">
               {allowed.length > 0 && (
-                <ActionsCard actions={allowed} action={action} onOpen={openPanel}>
+                <ActionsCard
+                  actions={allowed}
+                  action={action}
+                  onOpen={openPanel}
+                  note={
+                    pendingChange && (
+                      <Notice tone="info">
+                        {tNodes("web.staff.lifecycle.replacementPending", {
+                          ref: (
+                            <Link to={`/staff/r/${encodeURIComponent(pendingChange.id)}`} className={`font-mono ${linkClass}`}>
+                              {pendingChange.ref}
+                            </Link>
+                          ),
+                        })}
+                      </Notice>
+                    )
+                  }
+                >
                   {action === "approve" && (
                     <ApprovePanel
                       key={q.data.reservation.version}
@@ -201,7 +254,9 @@ export default function ReservationDetail() {
                     />
                   )}
                   {action === "decline" && <DeclinePanel r={q.data.reservation} onDone={onDone} onStale={onStale} />}
-                  {action === "propose" && <ProposeNote />}
+                  {action === "propose" && (
+                    <ProposePanel r={q.data.reservation} tz={tz} onDone={onDone} onStale={onStale} onWithdrawn={onDone} onChanged={onChanged} />
+                  )}
                   {action === "reassign" && (
                     <ReassignPanel
                       key={q.data.reservation.version}
@@ -231,6 +286,32 @@ export default function ReservationDetail() {
   );
 }
 
+/**
+ * Close reasons the system sets (not typed by anyone, so never quoted): an original whose change request was approved,
+ * a change request a newer one replaced, or a change request cancelled together with its original.
+ */
+const codedReason = (r: ReservationDTO): "rescheduled" | "superseded" | "original_cancelled" | null =>
+  r.closeReason === "rescheduled" && r.replacedById !== null
+    ? "rescheduled"
+    : r.closeReason === "superseded" && r.replacesId !== null
+      ? "superseded"
+      : r.closeReason === "original_cancelled" && r.replacesId !== null
+        ? "original_cancelled"
+        : null;
+
+/** Who cancelled it and when: a team member, the customer, or the customer's approved change request. */
+function cancelledLine(r: ReservationDTO, tz: string): string {
+  const when = r.closedAt !== null ? fmtStamp(r.closedAt, tz) : "—";
+  const b = (key: string, params: Record<string, string>) => t(`web.staff.lifecycle.banner.${key}`, params);
+  const coded = codedReason(r);
+  if (coded === "rescheduled") return r.replacedByRef ? b("cancelledRescheduled", { when, ref: r.replacedByRef }) : b("cancelledRescheduledNoRef", { when });
+  if (coded === "superseded") return b("cancelledSuperseded", { when });
+  if (coded === "original_cancelled") return b("cancelledWithOriginal", { when, ref: r.replacesRef ?? "—" });
+  if (r.closedByKind === "customer") return b("cancelledByCustomer", { name: r.closedBy ?? "—", when });
+  if (r.closedByKind === "staff") return b("cancelledByStaff", { name: r.closedBy ?? "—", when });
+  return t("web.staff.detail.banner.cancelled", { when });
+}
+
 function StatusBanner({ r, tz }: { r: ReservationDTO; tz: string }) {
   const now = useNow();
   const who = handledBy(r);
@@ -238,14 +319,18 @@ function StatusBanner({ r, tz }: { r: ReservationDTO; tz: string }) {
     r.status === "pending"
       ? t("web.staff.detail.banner.pending")
       : r.status === "confirmed"
-        ? t("web.staff.detail.banner.confirmed", {
+        ? t(who?.accepted ? "web.staff.lifecycle.banner.confirmedByAccept" : "web.staff.detail.banner.confirmed", {
             name: who?.name ?? "—",
             when: who ? fmtStamp(who.at, tz) : "—",
             tech: r.assignedStaff?.name ?? t("web.staff.dashboard.unassigned"),
           })
         : r.status === "completed"
-          ? t("web.staff.detail.banner.completed")
-          : t(`web.staff.detail.banner.${r.status}`, { name: who?.name ?? "—", when: who ? fmtStamp(who.at, tz) : "—" });
+          ? r.closedAt !== null
+            ? t("web.staff.lifecycle.banner.completed", { when: fmtStamp(r.closedAt, tz) })
+            : t("web.staff.detail.banner.completed")
+          : r.status === "cancelled"
+            ? cancelledLine(r, tz)
+            : t(`web.staff.detail.banner.${r.status}`, { name: who?.name ?? "—", when: who ? fmtStamp(who.at, tz) : "—" });
   return (
     <section className={`space-y-2 rounded-2xl border p-5 sm:p-6 ${statusTone[r.status].panel}`}>
       <p className="flex items-center gap-2 text-lg font-semibold">
@@ -253,7 +338,9 @@ function StatusBanner({ r, tz }: { r: ReservationDTO; tz: string }) {
         {t(`status.${r.status}`)}
       </p>
       <p className="break-words">{line}</p>
-      {r.status === "declined" && r.closeReason && <p className="break-words whitespace-pre-wrap opacity-90">“{r.closeReason}”</p>}
+      {(r.status === "declined" || (r.status === "cancelled" && codedReason(r) === null)) && r.closeReason && (
+        <p className="break-words whitespace-pre-wrap opacity-90">“{r.closeReason}”</p>
+      )}
       {r.status === "pending" && r.expiresAt !== null && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-sm">
           <Countdown expiresAt={r.expiresAt} now={now} />
@@ -277,14 +364,85 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 
 const linkClass = "font-medium text-blue-700 underline underline-offset-2 dark:text-blue-300";
 
+/** Another reservation of the replacement chain: its reference (a link) and current status. */
+function ReservationLink({ id, refText, status }: { id: string; refText: string; status: ReservationDTO["status"] | null }) {
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <Link to={`/staff/r/${encodeURIComponent(id)}`} className={`font-mono ${linkClass}`}>
+        {refText}
+      </Link>
+      {status && <StatusBadge status={status} />}
+    </span>
+  );
+}
+
+/** Staff download of the appointment as a calendar file: confirmed, or cancelled after it was confirmed (to remove it). */
+function IcsDownload({ r }: { r: ReservationDTO }) {
+  const cancelled = r.status === "cancelled" && r.confirmedAt !== null;
+  if (r.status !== "confirmed" && !cancelled) return null;
+  const noteId = `ics-note-${r.id}`;
+  return (
+    <div className="mt-3 space-y-1.5">
+      {/* A plain GET with the staff session: the browser saves the attachment, no token involved. */}
+      <a
+        href={`/api/staff/reservations/${encodeURIComponent(r.id)}/ics`}
+        download={`${r.ref}.ics`}
+        aria-describedby={noteId}
+        className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 font-semibold text-slate-900 hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
+      >
+        <svg className="size-5 shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.75" />
+          <path d="M3 10h18M8 3v4M16 3v4M12 13v5m-2.5-2.5L12 18l2.5-2.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        {cancelled ? t("web.staff.lifecycle.ics.addCancelled") : t("web.staff.lifecycle.ics.add")}
+      </a>
+      <p id={noteId} className="text-sm text-slate-600 dark:text-slate-400">
+        {t("web.staff.lifecycle.ics.note")}
+      </p>
+    </div>
+  );
+}
+
 function Facts({ r, tz }: { r: ReservationDTO; tz: string }) {
+  const whenId = useId();
+  const replacesOpen = r.replacesStatus === "pending" || r.replacesStatus === "confirmed";
+  const replacedByOpen = r.replacedByStatus === "pending";
   return (
     <Card className="space-y-5">
-      <div>
-        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{t("common.when")}</p>
+      <div role="group" aria-labelledby={whenId}>
+        <p id={whenId} className="text-sm font-medium text-slate-500 dark:text-slate-400">
+          {t("common.when")}
+        </p>
         <p className="text-lg font-semibold sm:text-xl">{fmtWhen(r.startAt, r.endAt, tz)}</p>
         <TimezoneNote tz={tz} atMs={r.startAt} className="mt-1" />
+        <IcsDownload r={r} />
       </div>
+      {(r.replacesId || r.replacedById) && (
+        <dl className="grid gap-x-6 gap-y-3 border-t border-slate-200 pt-5 sm:grid-cols-[minmax(8rem,auto)_1fr] dark:border-slate-800">
+          {r.replacesId && r.replacesRef && (
+            <Fact label={t("web.staff.lifecycle.links.replaces")}>
+              <ReservationLink id={r.replacesId} refText={r.replacesRef} status={r.replacesStatus} />
+              <span className="mt-1 block text-sm text-slate-600 dark:text-slate-400">
+                {r.status === "pending" && replacesOpen
+                  ? t("web.staff.lifecycle.links.replacesNote", { ref: r.replacesRef })
+                  : t("web.staff.lifecycle.links.replacesDoneNote", { ref: r.replacesRef })}
+              </span>
+            </Fact>
+          )}
+          {r.replacedById && r.replacedByRef && (
+            <Fact label={t("web.staff.lifecycle.links.replacedBy")}>
+              <ReservationLink id={r.replacedById} refText={r.replacedByRef} status={r.replacedByStatus} />
+              {(replacedByOpen || codedReason(r) === "rescheduled") && (
+                <span className="mt-1 block text-sm text-slate-600 dark:text-slate-400">
+                  {replacedByOpen
+                    ? t("web.staff.lifecycle.links.replacedByNote", { ref: r.replacedByRef })
+                    : t("web.staff.lifecycle.links.replacedByDoneNote", { ref: r.replacedByRef })}
+                </span>
+              )}
+            </Fact>
+          )}
+        </dl>
+      )}
       <dl className="grid gap-x-6 gap-y-3 border-t border-slate-200 pt-5 sm:grid-cols-[minmax(8rem,auto)_1fr] dark:border-slate-800">
         <Fact label={t("common.account")}>
           <span className="font-medium">{r.customer.name}</span>
@@ -332,11 +490,14 @@ function ActionsCard({
   actions,
   action,
   onOpen,
+  note,
   children,
 }: {
   actions: Action[];
   action: Action | null;
   onOpen: (a: Action | null) => void;
+  /** Shown under the actions: why one that would otherwise be there is not. */
+  note?: ReactNode;
   children: ReactNode;
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -358,8 +519,8 @@ function ActionsCard({
             ? "border-red-700 bg-red-700 text-white dark:border-red-500 dark:bg-red-600"
             : "border-slate-300 bg-white text-slate-900 hover:border-red-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
           : active
-            ? "border-slate-700 bg-slate-700 text-white dark:border-slate-400 dark:bg-slate-600"
-            : "border-slate-300 bg-white text-slate-900 hover:border-slate-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100";
+            ? "border-violet-700 bg-violet-700 text-white dark:border-violet-400 dark:bg-violet-600"
+            : "border-slate-300 bg-white text-slate-900 hover:border-violet-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100";
     return (
       <button
         key={a}
@@ -390,10 +551,11 @@ function ActionsCard({
       <div
         role="group"
         aria-label={t("web.staff.detail.actions.label")}
-        className={`grid grid-cols-2 gap-2 ${actions.length > 2 ? "sm:grid-cols-4 lg:grid-cols-2" : ""}`}
+        className={`grid grid-cols-2 gap-2 ${actions.length === 4 ? "sm:grid-cols-4 lg:grid-cols-2" : actions.length === 3 ? "sm:grid-cols-3 lg:grid-cols-2" : ""}`}
       >
         {actions.map(tab)}
       </div>
+      {note}
       {action && (
         <div id="action-panel" className="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-800">
           <h2 ref={headingRef} tabIndex={-1} className="text-lg font-semibold outline-none">
@@ -403,16 +565,5 @@ function ActionsCard({
         </div>
       )}
     </Card>
-  );
-}
-
-function ProposeNote() {
-  return (
-    <div className="space-y-2">
-      <span className="inline-flex rounded-full bg-violet-100 px-2.5 py-1 text-sm font-semibold text-violet-900 dark:bg-violet-400/15 dark:text-violet-200">
-        {t("web.staff.detail.propose.comingSoon")}
-      </span>
-      <p className="text-slate-600 dark:text-slate-400">{t("web.staff.detail.propose.body")}</p>
-    </div>
   );
 }

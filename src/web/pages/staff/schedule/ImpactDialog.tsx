@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import type { ConflictDTO, ImpactDTO, ReservationDTO, Resolution, ScheduleChange } from "../../../../shared/types";
-import { apiFetch, handleSignedOut, isApiError, queryKeys, type Previewed, type StaffReservationView } from "../../../api";
+import { ApiError, apiFetch, handleSignedOut, isApiError, queryKeys, type Previewed, type StaffReservationView } from "../../../api";
 import { Button } from "../../../components/Button";
 import { Notice } from "../../../components/Card";
 import { Dialog } from "../../../components/Dialog";
@@ -62,14 +62,47 @@ const signature = (i: ImpactDTO) =>
   ]);
 const isRace = (e: unknown) => isApiError(e, 409, "stale_preview") || isApiError(e, 409, "conflicts");
 
-type ApplyOutcome = { kind: "applied" } | { kind: "review"; previewed: Previewed };
+/** "review": the new impact to show; `changed` lists staged reassignments dropped because their reservation changed. */
+type ApplyOutcome = { kind: "applied" } | { kind: "review"; previewed: Previewed; changed: Staged[] };
+
+/** The reservation's technician and version as staging recorded them (its hold's identity for a silent re-apply). */
+interface Baseline {
+  status: ReservationDTO["status"];
+  version: number;
+  staffId: number | null;
+}
+const baselineOf = (r: ReservationDTO): Baseline => ({
+  status: r.status,
+  version: r.version,
+  staffId: r.status === "confirmed" ? (r.assignedStaff?.id ?? null) : r.provisionalStaffId,
+});
+
+/** Staged reassignments whose reservation is no longer exactly as it was when staged (or can't be read now). */
+async function changedSince(staged: Staged[]): Promise<Staged[]> {
+  const fresh = await Promise.all(
+    staged.map(async (st) => {
+      if (!st.baseline) return st;
+      try {
+        const now = baselineOf(await current(st.conflict));
+        const same = now.status === st.baseline.status && now.version === st.baseline.version && now.staffId === st.baseline.staffId;
+        return same ? null : st;
+      } catch (e) {
+        if (isApiError(e, 401)) throw e;
+        return st;
+      }
+    }),
+  );
+  return fresh.filter((x): x is Staged => x !== null);
+}
 
 /**
- * Apply at `version` with the staged `resolutions`. If the schedule moved on meanwhile (409 stale_preview), preview
- * again without a word: when the impact is still what was shown (and every staged resolution still holds), apply
- * once more; otherwise hand back the new impact for review.
+ * Apply at `version` with the `staged` reassignments. If the schedule moved on meanwhile (409 stale_preview), preview
+ * again without a word: when the impact is still what was shown, every staged resolution still holds, and each staged
+ * reservation still has the technician and version it had when staged (read afresh), apply once more; otherwise hand
+ * back the new impact for review (without the staged reassignments whose reservation changed).
  */
-async function applyChecked(req: ChangeRequest, version: number, shown: ImpactDTO, resolutions: Resolution[] = []): Promise<ApplyOutcome> {
+async function applyChecked(req: ChangeRequest, version: number, shown: ImpactDTO, staged: Staged[] = []): Promise<ApplyOutcome> {
+  const resolutions = toResolutions(staged);
   try {
     await req.apply(version, resolutions);
     return { kind: "applied" };
@@ -78,15 +111,20 @@ async function applyChecked(req: ChangeRequest, version: number, shown: ImpactDT
     const fresh = await req.preview(resolutions);
     const unchanged = fresh.impact.conflicts.length === 0 && !fresh.impact.invalidResolutions && signature(fresh.impact) === signature(shown);
     if (isApiError(e, 409, "stale_preview") && unchanged) {
+      const changed = staged.length > 0 ? await changedSince(staged) : [];
+      if (changed.length > 0) {
+        const keep = staged.filter((st) => !changed.includes(st));
+        return { kind: "review", previewed: await req.preview(toResolutions(keep)), changed };
+      }
       try {
         await req.apply(fresh.version, resolutions);
         return { kind: "applied" };
       } catch (e2) {
         if (!isRace(e2)) throw e2;
-        return { kind: "review", previewed: await req.preview(resolutions) };
+        return { kind: "review", previewed: await req.preview(resolutions), changed: [] };
       }
     }
-    return { kind: "review", previewed: fresh };
+    return { kind: "review", previewed: fresh, changed: [] };
   }
 }
 
@@ -96,6 +134,8 @@ interface Staged {
   conflict: ConflictDTO;
   staffId: number;
   name: string;
+  /** The reservation as read when the reassignment was staged; null when it couldn't be read (never re-applied silently). */
+  baseline: Baseline | null;
 }
 const toResolutions = (staged: Staged[]): Resolution[] => staged.map((s) => ({ reservationId: s.conflict.reservationId, staffId: s.staffId }));
 
@@ -275,12 +315,19 @@ function ImpactDialog({
   async function save() {
     setBusy("save");
     try {
-      const out = await applyChecked(req, review!.version, impact, toResolutions(review!.staged));
+      const out = await applyChecked(req, review!.version, impact, review!.staged);
       if (out.kind === "applied") onApplied(req);
       else {
-        const { keep, dropped } = reconcile(review!.staged, out.previewed.impact);
+        const { keep, dropped } = reconcile(
+          review!.staged.filter((st) => !out.changed.includes(st)),
+          out.previewed.impact,
+        );
+        const lead =
+          out.changed.length > 0
+            ? t("web.staff.lifecycle.impact.stagedChanged", { refs: out.changed.map((st) => st.conflict.ref).join(", ") })
+            : k("impact.changedMeanwhile");
         focusNotice.current = true;
-        setReview((r) => (r ? { ...r, ...out.previewed, staged: keep, notice: { tone: "warning", text: [k("impact.changedMeanwhile"), ...dropped].join(" ") } } : r));
+        setReview((r) => (r ? { ...r, ...out.previewed, staged: keep, notice: { tone: "warning", text: [lead, ...dropped].join(" ") } } : r));
         void refreshLists();
       }
     } catch (e) {
@@ -290,11 +337,20 @@ function ImpactDialog({
     }
   }
 
-  /** Stages "reassign `c` to `staffId`": nothing is written until the change is saved, together with it. */
+  /**
+   * Stages "reassign `c` to `staffId`": nothing is written until the change is saved, together with it. The reservation
+   * is read now, so a later silent re-apply can tell whether it changed in between.
+   */
   async function stage(c: ConflictDTO, staffId: number, name: string) {
     setBusy(c.id);
     try {
-      const next = [...review!.staged.filter((s) => s.conflict.reservationId !== c.reservationId), { conflict: c, staffId, name }];
+      let baseline: Baseline | null = null;
+      try {
+        baseline = baselineOf(await current(c));
+      } catch (e) {
+        if (signedOut(e)) return;
+      }
+      const next = [...review!.staged.filter((s) => s.conflict.reservationId !== c.reservationId), { conflict: c, staffId, name, baseline }];
       await rePreview(next, "success", k("impact.resolve.staged", { ref: c.ref, name }), c.reservationId);
     } finally {
       setBusy(null);
@@ -320,6 +376,8 @@ function ImpactDialog({
     } catch (e) {
       if (signedOut(e)) return;
       if (isApiError(e, 409, "stale")) await rePreview(staged, "warning", k("impact.resolve.stale", { ref: c.ref }));
+      else if (isApiError(e, 409, "proposal_closed") || (c.kind === "option" && isApiError(e, 404)))
+        await rePreview(staged, "warning", t("web.staff.lifecycle.impact.alreadyClosed", { ref: c.ref }));
       else if (isApiError(e, 409, "too_late")) say("error", k("impact.resolve.tooLate", { ref: c.ref }));
       else say("error", actionErrorText(e));
     } finally {
@@ -511,8 +569,35 @@ async function post(c: ConflictDTO, action: "cancel" | "decline", body: Record<s
   await apiFetch(`/api/staff/reservations/${encodeURIComponent(c.reservationId)}/${action}`, { method: "POST", body });
 }
 
+/** Withdraw the open proposal that holds option `c` (409 proposal_closed when it is no longer open). */
+async function withdrawOption(c: ConflictDTO) {
+  const r = await current(c);
+  const proposal = r.proposal?.status === "open" && r.proposal.options.some((o) => o.id === c.id) ? r.proposal : null;
+  if (!proposal) throw new ApiError(409, "proposal_closed");
+  await apiFetch(`/api/staff/reservations/${encodeURIComponent(c.reservationId)}/proposal/withdraw`, { method: "POST", body: { proposalId: proposal.id } });
+}
+
+/** Opens the reservation with the propose panel, in a new tab: the impact dialog stays as it is here. */
+function ProposeLink({ c, describedBy }: { c: ConflictDTO; describedBy: string }) {
+  return (
+    <a
+      href={`/staff/r/${encodeURIComponent(c.reservationId)}?action=propose`}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={t("web.staff.lifecycle.impact.proposeLabel", { ref: c.ref })}
+      aria-describedby={describedBy}
+      className="inline-flex min-h-11 items-center justify-start gap-2 rounded-xl border border-slate-300 bg-white px-4 font-semibold text-slate-900 hover:bg-slate-100 sm:justify-center dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
+    >
+      {t("web.staff.lifecycle.impact.propose")}
+      <svg className="size-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </a>
+  );
+}
+
 const REASON_MAX = 500;
-type Asking = { kind: "reassign"; staffId: number } | { kind: "cancel" } | { kind: "decline" } | null;
+type Asking = { kind: "reassign"; staffId: number } | { kind: "cancel" } | { kind: "decline" } | { kind: "withdraw" } | null;
 
 /** A staged reassignment: saved with the change, or undone. */
 function StagedCard({ s, tz, busy, onUndo }: { s: Staged; tz: string; busy: string | null; onUndo: () => void }) {
@@ -703,19 +788,53 @@ function ConflictCard({
             </>
           )}
           {c.kind === "reservation" && (
-            <div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+              <ProposeLink c={c} describedBy={`${headingId}-propose-note`} />
               <Button
                 variant="ghost"
                 disabled={disabled}
                 data-action="close"
                 onClick={() => open({ kind: c.status === "confirmed" ? "cancel" : "decline" }, "close")}
-                className="-ml-2 text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-400/10"
+                className="justify-start text-red-700 hover:bg-red-50 sm:justify-center dark:text-red-300 dark:hover:bg-red-400/10"
               >
                 {c.status === "confirmed" ? k("impact.cancelAppointment") : k("impact.decline")}
               </Button>
+              <p id={`${headingId}-propose-note`} className="basis-full text-sm text-slate-600 dark:text-slate-400">
+                {t("web.staff.lifecycle.impact.proposeNote")}
+              </p>
             </div>
           )}
-          {c.kind === "option" && <p className="text-sm text-slate-600 dark:text-slate-400">{k("impact.optionHint")}</p>}
+          {c.kind === "option" && (
+            <div>
+              <Button variant="secondary" disabled={disabled} data-action="withdraw" onClick={() => open({ kind: "withdraw" }, "withdraw")}>
+                {t("web.staff.lifecycle.impact.withdraw")}
+              </Button>
+            </div>
+          )}
+        </div>
+      ) : asking.kind === "withdraw" ? (
+        <div role="group" aria-labelledby={askId} onKeyDown={escape} className="space-y-3 rounded-lg border border-red-300 bg-white p-3 dark:border-red-400/40 dark:bg-slate-900">
+          <p id={askId} className="text-sm font-medium">
+            {t("web.staff.lifecycle.impact.withdrawAsk", { ref: c.ref })}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="danger"
+              loading={mine}
+              disabled={disabled && !mine}
+              onClick={() =>
+                onResolve(async () => {
+                  await withdrawOption(c);
+                  return t("web.staff.lifecycle.impact.withdrawn", { ref: c.ref });
+                })
+              }
+            >
+              {mine ? k("impact.resolve.working") : t("web.staff.lifecycle.impact.withdrawConfirm")}
+            </Button>
+            <Button ref={(el) => void (firstRef.current = el)} variant="secondary" disabled={mine} onClick={close}>
+              {t("web.staff.lifecycle.impact.keep")}
+            </Button>
+          </div>
         </div>
       ) : asking.kind === "reassign" ? (
         <div role="group" aria-labelledby={askId} onKeyDown={escape} className="space-y-3 rounded-lg border border-amber-300 bg-white p-3 dark:border-amber-400/40 dark:bg-slate-900">
