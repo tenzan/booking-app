@@ -1452,7 +1452,7 @@ export const en = {
           notesHint: "Only staff see these.",
         },
         newTitle: "New customer",
-        newLead: "Add a customer and the people who may book for them.",
+        newLead: "A customer is the organization (or person) you support, identified by its customer number. Its contacts are the people who sign in with their email address to book for it.",
         create: "Create customer",
         creating: "Creating…",
         editTitle: "Edit customer details",
@@ -1465,7 +1465,7 @@ export const en = {
         contacts: {
           title: "Contacts",
           lead: "People who sign in with their email address to book for this customer. Deactivated contacts can't sign in; their reservations and email links keep working.",
-          newLead: "People who sign in with their email address to book for this customer. You can add more later.",
+          newLead: "Add at least one person, so someone can sign in with their email address and book. You can add more later.",
           listLabel: "Contacts of {name}",
           numbered: "Contact {n}",
           email: "Email",

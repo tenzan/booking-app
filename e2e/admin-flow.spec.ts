@@ -248,6 +248,50 @@ test("admin imports a new customer from pasted CSV, and its contact can get a bo
   await expect(page.getByText(`Signed in as ${email}`)).toBeVisible();
 });
 
+test("admin adds a customer with the form; the first contact's email is asked for up front", async ({ page }, testInfo) => {
+  const request = page.request;
+  const tag = projectTag(testInfo.project.name);
+  const number = `E2E-FORM-${tag.toUpperCase()}`;
+  const email = `form-${testInfo.project.name}@example.test`;
+
+  await page.goto("/staff/customers/new");
+  await expect(page.getByRole("heading", { name: "New customer", level: 1 })).toBeVisible();
+  const form = page.getByRole("form", { name: "New customer" });
+  await form.getByLabel("Customer number").fill(number);
+  await form.getByLabel("Name", { exact: true }).first().fill(`Form Clinic ${tag}`);
+  // No "Add a contact" click: the first contact's email field is already there.
+  const contact = form.getByRole("group", { name: "Contact 1" });
+  await expect(contact.getByLabel("Email")).toBeVisible();
+  await contact.getByLabel("Email").fill(email);
+  await contact.getByLabel(/^Name/).fill("Robin Example");
+  await form.getByRole("button", { name: "Create customer" }).click();
+  await expect(page.getByText(`Created Form Clinic ${tag} (${number}).`)).toBeVisible();
+
+  const list = await apiGet<{ customers: { id: number; customerNumber: string }[] }>(request, `/api/staff/customers?query=${number}`);
+  const created = list.customers.find((c) => c.customerNumber === number);
+  expect(created).toBeDefined();
+  const detail = await apiGet<{ contacts: { email: string }[] }>(request, `/api/staff/customers/${created!.id}`);
+  expect(detail.contacts.map((c) => c.email)).toEqual([email]);
+});
+
+test("admin adds a customer and leaves the contact row empty; it is saved without contacts", async ({ page }, testInfo) => {
+  const request = page.request;
+  const tag = projectTag(testInfo.project.name);
+  const number = `E2E-NOCONTACT-${tag.toUpperCase()}`;
+
+  await page.goto("/staff/customers/new");
+  const form = page.getByRole("form", { name: "New customer" });
+  await form.getByLabel("Customer number").fill(number);
+  await form.getByLabel("Name", { exact: true }).first().fill(`Quiet Clinic ${tag}`);
+  await form.getByRole("button", { name: "Create customer" }).click();
+  await expect(page.getByText(`Created Quiet Clinic ${tag} (${number}).`)).toBeVisible();
+
+  const list = await apiGet<{ customers: { id: number; customerNumber: string }[] }>(request, `/api/staff/customers?query=${number}`);
+  const created = list.customers.find((c) => c.customerNumber === number);
+  const detail = await apiGet<{ contacts: unknown[] }>(request, `/api/staff/customers/${created!.id}`);
+  expect(detail.contacts).toEqual([]);
+});
+
 test("staff cancel a confirmed appointment; the customer sees it cancelled and is emailed", async ({ page }, testInfo) => {
   const tag = projectTag(testInfo.project.name);
   const api = page.request;
