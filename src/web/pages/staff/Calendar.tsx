@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode 
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useSearchParams } from "react-router";
 import { utcToWall, wallToUtc } from "../../../domain/time";
-import type { CalendarDTO, CalendarReservationDTO, CalendarSlotDTO, StaffDTO } from "../../../shared/types";
+import type { CalendarDTO, CalendarProposalHoldDTO, CalendarReservationDTO, CalendarSlotDTO, StaffDTO } from "../../../shared/types";
 import { apiFetch, queryKeys, useMe, type TeamList } from "../../api";
 import { Button } from "../../components/Button";
 import { Card, Notice } from "../../components/Card";
@@ -45,10 +45,17 @@ function minuteIn(ms: number, tz: string, date: string): number {
   return w.date > date ? 1440 : w.date < date ? 0 : w.minute;
 }
 
+/** One block on the calendar: a reservation, or a time held for an open proposal (an option). */
+type CalItem =
+  | { kind: "reservation"; id: string; startAt: number; endAt: number; r: CalendarReservationDTO }
+  | { kind: "hold"; id: string; startAt: number; endAt: number; h: CalendarProposalHoldDTO };
+
 interface Day {
   date: string;
   slots: CalendarSlotDTO[];
   reservations: CalendarReservationDTO[];
+  /** Reservations and proposal holds, soonest first. */
+  items: CalItem[];
 }
 
 /** How full a start time is: `booked` of `capacity` technicians (for one technician when filtered: 0 or 1 of 1). */
@@ -76,11 +83,11 @@ function openCount(day: Day, staffId: number | null): { open: number; total: num
 }
 
 /** Side-by-side lanes for overlapping bookings: each gets its lane and the number of lanes in its overlap group. */
-function layoutLanes(items: CalendarReservationDTO[]): Map<string, { lane: number; lanes: number; group: number }> {
+function layoutLanes(items: CalItem[]): Map<string, { lane: number; lanes: number; group: number }> {
   const out = new Map<string, { lane: number; lanes: number; group: number }>();
   let groupNo = 0;
   const sorted = [...items].sort((a, b) => a.startAt - b.startAt || a.endAt - b.endAt);
-  let group: CalendarReservationDTO[] = [];
+  let group: CalItem[] = [];
   let laneEnds: number[] = [];
   let groupEnd = -Infinity;
   const flush = () => {
@@ -156,13 +163,17 @@ export default function CalendarPage() {
     setParams(p, { replace: true, preventScrollReset: true });
   };
 
+  // Proposal holds are neither pending nor confirmed: shown with "All" only.
+  const showHolds = status === "all";
   const days: Day[] = Array.from({ length: 7 }, (_, i) => {
     const date = addDays(week, i);
-    return {
-      date,
-      slots: cal.data?.slots.find((d) => d.date === date)?.slots ?? [],
-      reservations: (cal.data?.reservations ?? []).filter((r) => dateIn(r.startAt, calTz) === date).sort((a, b) => a.startAt - b.startAt),
-    };
+    const reservations = (cal.data?.reservations ?? []).filter((r) => dateIn(r.startAt, calTz) === date).sort((a, b) => a.startAt - b.startAt);
+    const holds = showHolds ? (cal.data?.proposalHolds ?? []).filter((h) => dateIn(h.startAt, calTz) === date) : [];
+    const items: CalItem[] = [
+      ...reservations.map((r): CalItem => ({ kind: "reservation", id: r.id, startAt: r.startAt, endAt: r.endAt, r })),
+      ...holds.map((h): CalItem => ({ kind: "hold", id: h.optionId, startAt: h.startAt, endAt: h.endAt, h })),
+    ].sort((a, b) => a.startAt - b.startAt || a.endAt - b.endAt);
+    return { date, slots: cal.data?.slots.find((d) => d.date === date)?.slots ?? [], reservations, items };
   });
   const count = cal.data?.reservations.length ?? 0;
   const loading = cal.isFetching && cal.isPlaceholderData;
@@ -287,7 +298,7 @@ export default function CalendarPage() {
           <div className="lg:hidden">
             <Agenda days={days} tz={calTz} today={today} staffId={staffId} techName={techName} linkState={back} />
           </div>
-          <Legend filtered={staffId !== null} />
+          <Legend filtered={staffId !== null} holds={showHolds} />
         </div>
       )}
     </div>
@@ -311,6 +322,7 @@ function IconButton({ label, onClick, path }: { label: string; onClick: () => vo
 }
 
 const blockTone = {
+  hold: "border border-dashed border-violet-500 bg-violet-50 text-violet-950 hover:bg-violet-100 dark:border-violet-400 dark:bg-violet-950 dark:text-violet-100 dark:hover:bg-violet-900",
   pending:
     "border border-dashed border-amber-500 bg-amber-50 text-amber-950 hover:bg-amber-100 dark:border-amber-400 dark:bg-amber-950 dark:text-amber-100 dark:hover:bg-amber-900",
   confirmed:
@@ -322,6 +334,17 @@ function whoText(r: CalendarReservationDTO, techName: string | null): string {
   if (r.assignedStaff) return r.assignedStaff.name;
   if (r.status === "pending" && techName && r.provisionalForFilteredStaff) return k("provisional", { name: techName });
   return t("web.staff.dashboard.unassigned");
+}
+
+/** A proposal hold's tooltip and the rest of its accessible name. */
+function holdLabel(h: CalendarProposalHoldDTO, tz: string): string {
+  return t("web.staff.lifecycle.calendar.holdLabel", {
+    ref: h.ref,
+    date: fmtShortDate(dateIn(h.startAt, tz)),
+    time: fmtTimeRange(h.startAt, h.endAt, tz),
+    customer: h.customerName,
+    tech: h.staffName,
+  });
 }
 
 /** Tooltip, and (after the visible text) the rest of the link's accessible name. */
@@ -346,6 +369,7 @@ const loadTone = (booked: number, capacity: number) =>
 
 /** Agenda cards are larger than grid blocks: softer fills. */
 const agendaTone = {
+  hold: "border border-dashed border-violet-500 bg-violet-50 text-violet-950 hover:bg-violet-100 dark:border-violet-400/70 dark:bg-violet-400/10 dark:text-violet-100 dark:hover:bg-violet-400/15",
   pending: "border border-dashed border-amber-500 bg-amber-50 text-amber-950 hover:bg-amber-100 dark:border-amber-400/70 dark:bg-amber-400/10 dark:text-amber-100 dark:hover:bg-amber-400/15",
   confirmed: "border border-l-4 border-green-600 bg-green-50 text-green-950 hover:bg-green-100 dark:border-green-500/70 dark:bg-green-400/10 dark:text-green-100 dark:hover:bg-green-400/15",
 } as const;
@@ -376,7 +400,7 @@ function WeekGrid({ days, tz, today, now, staffId, techName, linkState, onShowDa
       lo = Math.min(lo, minuteIn(s.startAt, tz, d.date));
       hi = Math.max(hi, minuteIn(s.endAt, tz, d.date));
     }
-    for (const r of d.reservations) {
+    for (const r of d.items) {
       lo = Math.min(lo, minuteIn(r.startAt, tz, d.date));
       hi = Math.max(hi, minuteIn(r.endAt, tz, d.date));
     }
@@ -387,7 +411,7 @@ function WeekGrid({ days, tz, today, now, staffId, techName, linkState, onShowDa
   const y = (minute: number) => ((Math.min(Math.max(minute, startHour * 60), endHour * 60) - startHour * 60) / 60) * HOUR_PX;
 
   // Days with nothing on them (closed, no bookings) shrink to a narrow column, unless the whole week is empty.
-  const active = days.map((d) => d.slots.length > 0 || d.reservations.length > 0);
+  const active = days.map((d) => d.slots.length > 0 || d.items.length > 0);
   const anyActive = active.some(Boolean);
   const cols = `3.5rem ${days.map((_, i) => (active[i] || !anyActive ? "minmax(0,1fr)" : "2.75rem")).join(" ")}`;
   const nowMinute = minuteIn(now, tz, today);
@@ -436,7 +460,7 @@ function WeekGrid({ days, tz, today, now, staffId, techName, linkState, onShowDa
         </div>
 
         {days.map((d, i) => {
-          const lanes = layoutLanes(d.reservations);
+          const lanes = layoutLanes(d.items);
           const wide = active[i] || !anyActive;
           const lines: CSSProperties = {
             backgroundImage: `repeating-linear-gradient(to bottom, transparent 0, transparent ${HOUR_PX - 1}px, var(--hour-line) ${HOUR_PX - 1}px, var(--hour-line) ${HOUR_PX}px)`,
@@ -486,14 +510,14 @@ function WeekGrid({ days, tz, today, now, staffId, techName, linkState, onShowDa
 
               {!wide ? null : (
                 <ol className="absolute inset-y-0 right-1 left-7">
-                  {d.reservations.map((r) => {
+                  {d.items.map((r) => {
                     const top = y(minuteIn(r.startAt, tz, d.date));
                     const h = Math.max(y(minuteIn(r.endAt, tz, d.date)) - top, MIN_BLOCK_PX + 2);
                     const { lane, lanes: n, group } = lanes.get(r.id)!;
                     const crowded = n > MAX_LANES;
                     if (crowded && lane >= MAX_LANES - 1) {
                       // Hidden in a crowded group: the group's first hidden booking carries the "+N more" button.
-                      const hidden = d.reservations.filter((x) => lanes.get(x.id)!.group === group && lanes.get(x.id)!.lane >= MAX_LANES - 1);
+                      const hidden = d.items.filter((x) => lanes.get(x.id)!.group === group && lanes.get(x.id)!.lane >= MAX_LANES - 1);
                       if (hidden[0]!.id !== r.id) return null;
                       const from = Math.min(...hidden.map((x) => x.startAt));
                       const to = Math.max(...hidden.map((x) => x.endAt));
@@ -514,23 +538,46 @@ function WeekGrid({ days, tz, today, now, staffId, techName, linkState, onShowDa
                       );
                     }
                     const shown = crowded ? MAX_LANES : n;
-                    const label = blockLabel(r, tz, techName);
+                    const style = { top: top + 1, height: h - 2, left: `${(lane / shown) * 100}%`, width: `calc(${100 / shown}% - 2px)` };
+                    if (r.kind === "hold") {
+                      const label = holdLabel(r.h, tz);
+                      return (
+                        <li key={r.id} className="absolute" style={style}>
+                          <Link
+                            to={`/staff/r/${encodeURIComponent(r.h.reservationId)}`}
+                            state={linkState}
+                            title={label}
+                            className={`@container block h-full overflow-hidden rounded-md px-1 py-0.5 text-xs leading-4 shadow-xs focus-visible:z-10 ${blockTone.hold}`}
+                          >
+                            <span className="hidden truncate @min-[6rem]:block">
+                              <span className="font-semibold tabular-nums">{fmtTime(r.startAt, tz)}</span> <span className="font-mono">{r.h.ref}</span>
+                            </span>
+                            <span className="hidden truncate opacity-80 @min-[6rem]:block">{t("web.staff.lifecycle.calendar.holdWho", { tech: r.h.staffName })}</span>
+                            <span className="block truncate font-semibold @min-[6rem]:hidden">{initialsOf(r.h.staffName)}</span>
+                            <span className="block truncate text-[0.625rem] tracking-tight tabular-nums opacity-80 @min-[6rem]:hidden">{fmtTime(r.startAt, tz)}</span>
+                            <span className="sr-only">, {label}</span>
+                          </Link>
+                        </li>
+                      );
+                    }
+                    const res = r.r;
+                    const label = blockLabel(res, tz, techName);
                     return (
-                      <li key={r.id} className="absolute" style={{ top: top + 1, height: h - 2, left: `${(lane / shown) * 100}%`, width: `calc(${100 / shown}% - 2px)` }}>
+                      <li key={r.id} className="absolute" style={style}>
                         <Link
-                          to={`/staff/r/${encodeURIComponent(r.id)}`}
+                          to={`/staff/r/${encodeURIComponent(res.id)}`}
                           state={linkState}
                           title={label}
-                          className={`@container block h-full overflow-hidden rounded-md px-1 py-0.5 text-xs leading-4 shadow-xs focus-visible:z-10 ${blockTone[r.status === "pending" ? "pending" : "confirmed"]}`}
+                          className={`@container block h-full overflow-hidden rounded-md px-1 py-0.5 text-xs leading-4 shadow-xs focus-visible:z-10 ${blockTone[res.status === "pending" ? "pending" : "confirmed"]}`}
                         >
                           {/* The name starts with the visible text; the rest is read after it. Narrow blocks show the
                               technician's initials and a small time instead. */}
                           <span className="hidden truncate @min-[6rem]:block">
-                            <span className="font-semibold tabular-nums">{fmtTime(r.startAt, tz)}</span> {r.customer.name}
+                            <span className="font-semibold tabular-nums">{fmtTime(res.startAt, tz)}</span> {res.customer.name}
                           </span>
-                          <span className="hidden truncate opacity-80 @min-[6rem]:block">{whoText(r, techName)}</span>
-                          <span className="block truncate font-semibold @min-[6rem]:hidden">{r.assignedStaff ? initialsOf(r.assignedStaff.name) : "–"}</span>
-                          <span className="block truncate text-[0.625rem] tracking-tight tabular-nums opacity-80 @min-[6rem]:hidden">{fmtTime(r.startAt, tz)}</span>
+                          <span className="hidden truncate opacity-80 @min-[6rem]:block">{whoText(res, techName)}</span>
+                          <span className="block truncate font-semibold @min-[6rem]:hidden">{res.assignedStaff ? initialsOf(res.assignedStaff.name) : "–"}</span>
+                          <span className="block truncate text-[0.625rem] tracking-tight tabular-nums opacity-80 @min-[6rem]:hidden">{fmtTime(res.startAt, tz)}</span>
                           <span className="sr-only">, {label}</span>
                         </Link>
                       </li>
@@ -552,7 +599,7 @@ function Agenda({ days, tz, today, staffId, techName, linkState }: ViewProps) {
       {days.map((d) => {
         const { open, total } = openCount(d, staffId);
         const isToday = d.date === today;
-        const empty = d.reservations.length === 0;
+        const empty = d.items.length === 0;
         return (
           <section key={d.date} aria-labelledby={`agenda-${d.date}`} className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
@@ -574,9 +621,9 @@ function Agenda({ days, tz, today, staffId, techName, linkState }: ViewProps) {
               </p>
             ) : (
               <ul className="space-y-2">
-                {d.reservations.map((r) => (
-                  <li key={r.id}>
-                    <AgendaRow r={r} tz={tz} techName={techName} linkState={linkState} />
+                {d.items.map((item) => (
+                  <li key={item.id}>
+                    <ItemRow item={item} tz={tz} techName={techName} linkState={linkState} />
                   </li>
                 ))}
               </ul>
@@ -619,13 +666,40 @@ function DayPanel({
         </Button>
       </div>
       <ul className="grid gap-2 sm:grid-cols-2">
-        {day.reservations.map((r) => (
-          <li key={r.id}>
-            <AgendaRow r={r} tz={tz} techName={techName} linkState={linkState} />
+        {day.items.map((item) => (
+          <li key={item.id}>
+            <ItemRow item={item} tz={tz} techName={techName} linkState={linkState} />
           </li>
         ))}
       </ul>
     </Card>
+  );
+}
+
+function ItemRow({ item, ...rest }: { item: CalItem; tz: string; techName: string | null; linkState: object }) {
+  return item.kind === "hold" ? <HoldRow h={item.h} tz={rest.tz} linkState={rest.linkState} /> : <AgendaRow r={item.r} {...rest} />;
+}
+
+/** A time held for an open proposal, in the agenda / day list: it opens the reservation the proposal belongs to. */
+function HoldRow({ h, tz, linkState }: { h: CalendarProposalHoldDTO; tz: string; linkState: object }) {
+  return (
+    <Link to={`/staff/r/${encodeURIComponent(h.reservationId)}`} state={linkState} className={`flex items-start gap-3 rounded-xl px-4 py-3 ${agendaTone.hold}`}>
+      <p className="w-12 shrink-0 tabular-nums">
+        <span className="block font-semibold">{fmtTime(h.startAt, tz)}</span>
+        <span className="block text-sm opacity-80">{fmtTime(h.endAt, tz)}</span>
+      </p>
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="font-medium break-words">{t("web.staff.lifecycle.calendar.hold", { ref: h.ref })}</p>
+        <p className="text-sm break-words opacity-90">{h.customerName}</p>
+        <p className="text-sm break-words opacity-90">
+          <span className="sr-only">{t("common.technician")}: </span>
+          {h.staffName}
+        </p>
+      </div>
+      <span className="shrink-0 rounded-full bg-violet-100 px-2.5 py-1 text-sm font-medium text-violet-900 ring-1 ring-violet-300 ring-inset dark:bg-violet-400/15 dark:text-violet-200 dark:ring-violet-400/40">
+        {t("web.staff.schedule.impact.option")}
+      </span>
+    </Link>
   );
 }
 
@@ -665,13 +739,14 @@ function Swatch({ className, children }: { className: string; children: ReactNod
   );
 }
 
-function Legend({ filtered }: { filtered: boolean }) {
+function Legend({ filtered, holds }: { filtered: boolean; holds: boolean }) {
   return (
     <div className="space-y-2 text-sm text-slate-600 dark:text-slate-400">
       <h2 className="sr-only">{k("legend")}</h2>
       <ul className="flex flex-wrap gap-x-5 gap-y-2">
         <Swatch className={blockTone.pending}>{k("legendPending")}</Swatch>
         <Swatch className={blockTone.confirmed}>{k("legendConfirmed")}</Swatch>
+        {holds && <Swatch className={blockTone.hold}>{t("web.staff.lifecycle.calendar.legendHold")}</Swatch>}
         <li className="hidden items-center gap-2 lg:flex">
           <span className="inline-grid h-4 w-6 shrink-0 place-items-center rounded border border-green-600 bg-green-50 text-[0.6rem] font-semibold text-green-950 dark:border-green-500 dark:bg-green-950 dark:text-green-100" aria-hidden="true">
             BT

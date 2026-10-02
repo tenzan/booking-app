@@ -9,11 +9,13 @@ import { Card, Notice } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
 import { PageHeading, usePageTitle } from "../../components/Layout";
 import { Skeleton } from "../../components/Spinner";
+import { StatusBadge } from "../../components/StatusBadge";
 import { TimezoneNote } from "../../components/TimezoneNote";
 import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtTime, fmtTimeRange, todayIn } from "../../format";
 import { t } from "../../i18n";
 import { BookingCard } from "./BookingCard";
 import { Countdown, useNow } from "./Countdown";
+import { EXPIRING_SOON_MS, ExpiryPill } from "./detail/ProposalCard";
 
 /** Every page of a reservation query (pages are capped server-side), so the dashboard never silently drops rows. */
 async function fetchAllReservations(query: string): Promise<ReservationDTO[]> {
@@ -30,10 +32,11 @@ async function fetchAllReservations(query: string): Promise<ReservationDTO[]> {
 }
 
 /** Staff reservation list; refetched on window focus and every minute so a dashboard left open stays current. */
-function useReservations(query: string) {
+function useReservations(query: string, select?: (rows: ReservationDTO[]) => ReservationDTO[]) {
   return useQuery({
     queryKey: queryKeys.staffReservationList(query),
     queryFn: () => fetchAllReservations(query),
+    select,
     refetchOnWindowFocus: "always",
     refetchInterval: 60_000,
   });
@@ -41,6 +44,10 @@ function useReservations(query: string) {
 
 const byDeadline = (a: ReservationDTO, b: ReservationDTO) =>
   (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.startAt - b.startAt;
+const byProposalExpiry = (a: ReservationDTO, b: ReservationDTO) =>
+  (a.proposal?.expiresAt ?? Infinity) - (b.proposal?.expiresAt ?? Infinity) || a.startAt - b.startAt;
+/** A pending request with an open proposal waits for the customer, not for approval: it is listed there instead. */
+const notWaitingForCustomer = (rows: ReservationDTO[]) => rows.filter((r) => r.proposal?.status !== "open");
 
 export default function Dashboard() {
   usePageTitle(t("web.staff.dashboard.heading"));
@@ -50,7 +57,8 @@ export default function Dashboard() {
   const now = useNow();
   const today = todayIn(tz, now);
 
-  const pending = useReservations("status=pending&limit=200");
+  const pending = useReservations("status=pending&limit=200", notWaitingForCustomer);
+  const waiting = useReservations("proposal=open&limit=200");
   const confirmed = useReservations(
     `status=confirmed&limit=200&from=${wallToUtc(today, 0, tz)}&to=${wallToUtc(addDays(today, 1), 0, tz)}`,
   );
@@ -68,20 +76,42 @@ export default function Dashboard() {
       {me.data?.staff && <BookingCard enabled={me.data.bookingEnabled} isAdmin={me.data.staff.role === "admin"} />}
 
       <div className="grid items-start gap-8 lg:grid-cols-5">
-        <Section title={t("web.staff.dashboard.pendingHeading")} count={pending.data?.length} className="lg:col-span-3">
-          <ListBody
-            q={pending}
-            empty={<EmptyState title={t("web.staff.dashboard.pendingEmpty")} body={t("web.staff.dashboard.pendingEmptyBody")} />}
-          >
-            {(items) =>
-              [...items].sort(byDeadline).map((r) => (
-                <li key={r.id}>
-                  <PendingRow r={r} tz={tz} now={now} />
-                </li>
-              ))
-            }
-          </ListBody>
-        </Section>
+        <div className="min-w-0 space-y-8 lg:col-span-3">
+          <Section title={t("web.staff.dashboard.pendingHeading")} count={pending.data?.length}>
+            <ListBody
+              q={pending}
+              empty={<EmptyState title={t("web.staff.dashboard.pendingEmpty")} body={t("web.staff.dashboard.pendingEmptyBody")} />}
+            >
+              {(items) =>
+                [...items].sort(byDeadline).map((r) => (
+                  <li key={r.id}>
+                    <PendingRow r={r} tz={tz} now={now} />
+                  </li>
+                ))
+              }
+            </ListBody>
+          </Section>
+
+          <Section title={t("web.staff.lifecycle.waiting.heading")} count={waiting.data?.length}>
+            <ListBody
+              q={waiting}
+              empty={
+                <p className="rounded-2xl border border-dashed border-slate-300 px-4 py-3 text-slate-600 dark:border-slate-700 dark:text-slate-400">
+                  <span className="font-medium text-slate-800 dark:text-slate-200">{t("web.staff.lifecycle.waiting.empty")}</span>
+                  <span className="block text-sm">{t("web.staff.lifecycle.waiting.emptyBody")}</span>
+                </p>
+              }
+            >
+              {(items) =>
+                [...items].sort(byProposalExpiry).map((r) => (
+                  <li key={r.id}>
+                    <WaitingRow r={r} tz={tz} now={now} />
+                  </li>
+                ))
+              }
+            </ListBody>
+          </Section>
+        </div>
 
         <Section title={t("web.staff.dashboard.todayHeading")} count={confirmed.data?.length} className="lg:col-span-2">
           <ListBody q={confirmed} empty={<EmptyState title={t("web.staff.dashboard.todayEmpty")} />}>
@@ -209,6 +239,44 @@ function PendingRow({ r, tz, now }: { r: ReservationDTO; tz: string; now: number
         </p>
         <p className="line-clamp-1 text-sm text-slate-600 dark:text-slate-400">
           {r.contactName} — {r.issue}
+        </p>
+      </div>
+      <Chevron />
+    </Link>
+  );
+}
+
+/** An open proposal: when it lapses (highlighted when soon), the current time, the customer and how many times were offered. */
+function WaitingRow({ r, tz, now }: { r: ReservationDTO; tz: string; now: number }) {
+  const p = r.proposal!;
+  const soon = p.expiresAt - now < EXPIRING_SOON_MS;
+  const n = p.options.length;
+  return (
+    <Link
+      to={`/staff/r/${encodeURIComponent(r.id)}`}
+      className={`${rowLink} ${soon ? "border-l-4 border-red-500 bg-red-50/40 dark:border-red-400 dark:bg-red-400/5" : ""}`}
+    >
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <span className="flex flex-wrap items-center gap-2">
+            <ExpiryPill expiresAt={p.expiresAt} now={now} />
+            {soon && (
+              <span className="rounded-full bg-red-700 px-2 py-0.5 text-xs font-bold text-white dark:bg-red-500 dark:text-red-950">
+                {t("web.staff.lifecycle.waiting.expiringSoon")}
+              </span>
+            )}
+          </span>
+          <span className="font-mono text-sm text-slate-500 dark:text-slate-400">{r.ref}</span>
+        </div>
+        <p className="break-words">
+          {r.customer.name} <span className="text-sm text-slate-500 dark:text-slate-400">· {r.customer.number}</span>
+        </p>
+        <p className="flex flex-wrap items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+          <StatusBadge status={r.status} />
+          <span className="tabular-nums">
+            {t("web.staff.lifecycle.waiting.now", { when: `${fmtShortDate(dateIn(r.startAt, tz))} · ${fmtTimeRange(r.startAt, r.endAt, tz)}` })}
+          </span>
+          <span>· {n === 1 ? t("web.staff.lifecycle.waiting.optionsOne") : t("web.staff.lifecycle.waiting.options", { n })}</span>
         </p>
       </div>
       <Chevron />

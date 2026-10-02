@@ -11,6 +11,7 @@ import { Skeleton, Spinner } from "../../components/Spinner";
 import { TimezoneNote } from "../../components/TimezoneNote";
 import { dateIn, fmtDateWithYear, fmtMinuteRange, fmtTime, fmtWeekday, todayIn, addDays } from "../../format";
 import { fmtDateTime, LOCALE, t, tNodes } from "../../i18n";
+import { auditReasonText } from "./detail/History";
 import { templateLabel } from "./emailLabels";
 
 const k = (key: string, params?: Record<string, string | number>) => t(`web.staff.activity.${key}`, params);
@@ -283,35 +284,50 @@ function describe(e: AuditEntryDTO, tz: string, names: Map<number, string>): { k
   switch (e.action) {
     case "reservation.requested": {
       const start = num(d.startAt);
-      return start === null ? { key: "reservation_requestedNoTime", params: { ref: refLink(e) } } : { key: "reservation_requested", params: { ref: refLink(e), when: fmtDateTime(start, tz, LOCALE) } };
+      if (start === null) return { key: "reservation_requestedNoTime", params: { ref: refLink(e) } };
+      const when = fmtDateTime(start, tz, LOCALE);
+      return { key: str(d.replacesId) ? "reservation_requestedReplacement" : "reservation_requested", params: { ref: refLink(e), when } };
     }
     case "reservation.approved":
       return { key: "reservation_approved", params: { ref: refLink(e), tech: staffName(d.assignedStaffId) } };
     case "reservation.declined":
       return { key: "reservation_declined", params: { ref: refLink(e) } };
     case "reservation.cancelled":
+      // Closed because another reservation took over (the customer's change request).
+      if (str(d.replacedBy) && d.reason === "rescheduled") return { key: "reservation_cancelledRescheduled", params: { ref: refLink(e) } };
+      if (str(d.replacedBy) && d.reason === "superseded") return { key: "reservation_cancelledSuperseded", params: { ref: refLink(e) } };
       return { key: "reservation_cancelled", params: { ref: refLink(e) } };
     case "reservation.expired":
       return { key: "reservation_expired", params: { ref: refLink(e) } };
     case "reservation.completed":
       return { key: "reservation_completed", params: { ref: refLink(e) } };
-    case "reservation.proposed":
-      return { key: "reservation_proposed", params: { ref: refLink(e) } };
+    case "reservation.proposed": {
+      const n = Array.isArray(d.options) ? d.options.length : 0;
+      return { key: n === 1 ? "reservation_proposedOne" : n > 1 ? "reservation_proposedN" : "reservation_proposed", params: { ref: refLink(e), n } };
+    }
     case "reservation.proposal_withdrawn":
       return { key: "reservation_proposal_withdrawn", params: { ref: refLink(e) } };
     case "reservation.proposal_rejected":
-      return { key: "reservation_proposal_rejected", params: { ref: refLink(e) } };
+      return { key: d.via === "replacement" ? "reservation_proposal_rejectedReplacement" : "reservation_proposal_rejected", params: { ref: refLink(e) } };
     case "reservation.proposal_expired":
       return { key: "reservation_proposal_expired", params: { ref: refLink(e) } };
     case "reservation.rescheduled": {
       const start = num(asObj(d.to).startAt);
-      return start === null ? null : { key: "reservation_rescheduled", params: { ref: refLink(e), when: fmtDateTime(start, tz, LOCALE) } };
+      return start === null
+        ? { key: "reservation_rescheduledNoTime", params: { ref: refLink(e) } }
+        : { key: "reservation_rescheduled", params: { ref: refLink(e), when: fmtDateTime(start, tz, LOCALE) } };
     }
     case "reservation.reassigned":
       return { key: "reservation_reassigned", params: { ref: refLink(e), from: staffName(d.from), to: staffName(d.to) } };
     case "email.retry": {
       const template = templateLabel(str(d.template) ?? "");
       return e.reservationId ? { key: "email_retryFor", params: { template, ref: refLink(e) } } : { key: "email_retry", params: { template } };
+    }
+    case "email.inbound_relayed": {
+      const from = str(d.from) ?? "—";
+      return e.reservationId || str(d.ref)
+        ? { key: "email_inbound_relayed", params: { from, ref: e.reservationId ? refLink(e) : str(d.ref)! } }
+        : { key: "email_inbound_relayedNoRef", params: { from } };
     }
     case "auth.staff_signin":
       return { key: "auth_staff_signin", params: p };
@@ -387,7 +403,9 @@ function Entry({ e, tz, names, byEmail }: { e: AuditEntryDTO; tz: string; names:
     ? tNodes(`web.staff.activity.events.${described.key}`, { actor, ...described.params })
     : tNodes("web.staff.activity.events.fallback", { actor, action: <code className="font-mono text-sm">{e.action}</code> });
   const d = asObj(e.details);
-  const reason = str(d.reason);
+  // A reason the system set (a replaced reservation) is already in the sentence: only typed reasons are quoted.
+  const typed = str(d.reason);
+  const reason = typed !== null && auditReasonText(e.action, d, typed) === typed ? typed : null;
   const moved = Array.isArray(d.moved) ? d.moved.length : 0;
   const hasDetails = Object.keys(d).length > 0;
 

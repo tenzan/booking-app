@@ -22,11 +22,21 @@ export interface ReservationDTO {
   closedAt: number | null;
   /** Display name for staff closures; the raw actor otherwise. */
   closedBy: string | null;
+  /** Who closed it: a team member (`closedBy` is their name), the customer (`closedBy` is the contact's email) or the system. */
+  closedByKind: "staff" | "customer" | "system" | null;
   closeReason: string | null;
   confirmedAt: number | null;
   confirmedBy: { id: number; name: string } | null;
   /** The open rescheduling proposal, else the latest one closed within the last 7 days; null otherwise. */
   proposal: ProposalDTO | null;
+  /** The reservation this one asks to replace (a customer's "choose another time" request), with its status now. */
+  replacesId: string | null;
+  replacesRef: string | null;
+  replacesStatus: ReservationStatus | null;
+  /** The newest replacement request made for this reservation, with its status now. */
+  replacedById: string | null;
+  replacedByRef: string | null;
+  replacedByStatus: ReservationStatus | null;
 }
 
 export type ProposalStatus = "open" | "accepted" | "rejected" | "expired" | "superseded" | "withdrawn";
@@ -278,9 +288,26 @@ export interface CalendarSlotDTO {
   pendingCount: number;
 }
 
+/** A time held for an open rescheduling proposal (one option), on the technician it would go to. */
+export interface CalendarProposalHoldDTO {
+  reservationId: string;
+  ref: string;
+  proposalId: string;
+  optionId: string;
+  startAt: number;
+  endAt: number;
+  staffId: number;
+  staffName: string;
+  customerName: string;
+  /** When the proposal (and so this hold) lapses unless the customer answers. */
+  expiresAt: number;
+}
+
 export interface CalendarDTO {
   timezone: string;
   reservations: CalendarReservationDTO[];
+  /** Open proposals' options starting in the range (filtered to the technician when the feed is). */
+  proposalHolds: CalendarProposalHoldDTO[];
   /** More reservations matched than the feed carries; narrow the range or filters. */
   truncated: boolean;
   slots: Array<{ date: string; slots: CalendarSlotDTO[] }>;

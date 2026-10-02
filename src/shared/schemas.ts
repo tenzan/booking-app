@@ -303,6 +303,8 @@ export const reservationListQuerySchema = z.object({
   from: optionalInt,
   to: optionalInt,
   staffId: optionalInt,
+  /** `open`: only reservations with an open rescheduling proposal (waiting for the customer). */
+  proposal: z.preprocess(blankToUndefined, z.literal("open").optional()),
   limit: z.preprocess(blankToUndefined, z.coerce.number().int().min(1).max(RESERVATIONS_PAGE_MAX).default(RESERVATIONS_PAGE_DEFAULT)),
   cursor: optionalText(300),
 });

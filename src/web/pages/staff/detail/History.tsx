@@ -11,6 +11,15 @@ const actionLabel = (action: string): string => {
   return label === key ? action : label;
 };
 
+/**
+ * A cancellation's reason as typed, or the words for one the system set when another reservation replaced it
+ * (`details.replacedBy`: reason "rescheduled" or "superseded").
+ */
+export function auditReasonText(action: string, details: unknown, reason: string): string {
+  const replaced = typeof details === "object" && details !== null && typeof (details as { replacedBy?: unknown }).replacedBy === "string";
+  return action === "reservation.cancelled" && replaced && (reason === "rescheduled" || reason === "superseded") ? t(`web.staff.lifecycle.reasons.${reason}`) : reason;
+}
+
 /** The reservation's audit trail, oldest first. */
 export function History({ audit, tz }: { audit: AuditRow[]; tz: string }) {
   const id = useId();
@@ -35,7 +44,7 @@ export function History({ audit, tz }: { audit: AuditRow[]; tz: string }) {
                   <p className="text-sm break-words text-slate-600 dark:text-slate-400">
                     {a.actor ?? t("web.staff.detail.system")} · {fmtDateTime(a.at, tz, LOCALE)}
                   </p>
-                  {typeof reason === "string" && <p className="mt-1 text-sm break-words whitespace-pre-wrap">{reason}</p>}
+                  {typeof reason === "string" && <p className="mt-1 text-sm break-words whitespace-pre-wrap">{auditReasonText(a.action, a.details, reason)}</p>}
                 </div>
               </li>
             );

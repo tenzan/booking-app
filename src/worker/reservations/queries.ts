@@ -89,12 +89,18 @@ const SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at,
     r.contact_name, r.contact_email, r.phone, r.issue,
     r.assigned_staff_id, asg.name AS assigned_name, r.provisional_staff_id,
     r.created_at, r.expires_at, r.closed_at, COALESCE(closer.name, r.closed_by) AS closed_by, r.close_reason,
-    r.confirmed_at, r.confirmed_by, cb.name AS confirmed_by_name
+    r.confirmed_at, r.confirmed_by, cb.name AS confirmed_by_name, r.closed_by_kind,
+    r.replaces_id, orig.ref AS replaces_ref, orig.status AS replaces_status,
+    nxt.id AS replaced_by_id, nxt.ref AS replaced_by_ref, nxt.status AS replaced_by_status
   FROM reservations r
   JOIN customers c ON c.id = r.customer_id
   LEFT JOIN staff asg ON asg.id = r.assigned_staff_id
   LEFT JOIN staff cb ON cb.id = r.confirmed_by
-  LEFT JOIN staff closer ON r.closed_by_kind = 'staff' AND CAST(closer.id AS TEXT) = r.closed_by`;
+  LEFT JOIN staff closer ON r.closed_by_kind = 'staff' AND CAST(closer.id AS TEXT) = r.closed_by
+  LEFT JOIN reservations orig ON orig.id = r.replaces_id
+  LEFT JOIN reservations nxt ON nxt.id = (
+    SELECT n.id FROM reservations n WHERE n.replaces_id = r.id ORDER BY n.created_at DESC, n.rowid DESC LIMIT 1
+  )`;
 
 interface Row {
   id: string;
@@ -122,6 +128,13 @@ interface Row {
   confirmed_at: number | null;
   confirmed_by: number | null;
   confirmed_by_name: string | null;
+  closed_by_kind: ReservationDTO["closedByKind"];
+  replaces_id: string | null;
+  replaces_ref: string | null;
+  replaces_status: ReservationStatus | null;
+  replaced_by_id: string | null;
+  replaced_by_ref: string | null;
+  replaced_by_status: ReservationStatus | null;
 }
 
 const toDTO = (r: Row, proposal: ProposalDTO | null): ReservationDTO => ({
@@ -142,10 +155,17 @@ const toDTO = (r: Row, proposal: ProposalDTO | null): ReservationDTO => ({
   expiresAt: r.expires_at,
   closedAt: r.closed_at,
   closedBy: r.closed_by,
+  closedByKind: r.closed_by_kind,
   closeReason: r.close_reason,
   confirmedAt: r.confirmed_at,
   confirmedBy: r.confirmed_by === null ? null : { id: r.confirmed_by, name: r.confirmed_by_name ?? "" },
   proposal,
+  replacesId: r.replaces_id,
+  replacesRef: r.replaces_ref,
+  replacesStatus: r.replaces_status,
+  replacedById: r.replaced_by_id,
+  replacedByRef: r.replaced_by_ref,
+  replacedByStatus: r.replaced_by_status,
 });
 
 /** Staff DTOs for `rows`, each with its proposal (one extra query for all of them). */
@@ -161,7 +181,8 @@ export async function getReservation(db: D1Database, id: string): Promise<Reserv
 
 /**
  * Filters: `from` inclusive / `to` exclusive on the start time; `staffId` matches the assigned technician only
- * (`orProvisionalStaffId` additionally matches pending requests provisionally on that technician: the calendar's view).
+ * (`orProvisionalStaffId` additionally matches pending requests provisionally on that technician: the calendar's view);
+ * `proposal: "open"` keeps only reservations with an open rescheduling proposal.
  * Soonest first (then creation time, then id), `limit` rows (default 50) after `cursor`.
  */
 export async function listReservations(
@@ -172,6 +193,7 @@ export async function listReservations(
     to?: number;
     staffId?: number;
     orProvisionalStaffId?: number;
+    proposal?: "open";
     limit?: number;
     cursor?: string;
   },
@@ -199,6 +221,7 @@ export async function listReservations(
     where.push("(r.assigned_staff_id = ? OR (r.status = 'pending' AND r.provisional_staff_id = ?))");
     binds.push(f.orProvisionalStaffId, f.orProvisionalStaffId);
   }
+  if (f.proposal === "open") where.push("EXISTS (SELECT 1 FROM proposals p WHERE p.reservation_id = r.id AND p.status = 'open')");
   if (f.cursor !== undefined) {
     const [startAt, createdAt, id] = decodeCursor(f.cursor, ["number", "number", "string"]);
     where.push("(r.start_at > ? OR (r.start_at = ? AND (r.created_at > ? OR (r.created_at = ? AND r.id > ?))))");
