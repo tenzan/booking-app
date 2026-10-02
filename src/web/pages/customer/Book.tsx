@@ -10,7 +10,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { PageHeading, usePageTitle } from "../../components/Layout";
 import { Skeleton } from "../../components/Spinner";
 import { TimezoneNote } from "../../components/TimezoneNote";
-import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtTimeRange, fmtTz, todayIn } from "../../format";
+import { addDays, dateIn, fmtLongDate, fmtShortDate, fmtTimeRange, fmtTz, fmtWhenTz, todayIn } from "../../format";
 import { t } from "../../i18n";
 import { AccountPicker } from "./book/AccountPicker";
 import { DateStrip } from "./book/DateStrip";
@@ -19,7 +19,6 @@ import { ReviewCard } from "./book/ReviewCard";
 import { SlotList } from "./book/SlotList";
 import { StickyBar } from "./book/StickyBar";
 import { Steps, stepFromName, stepName, type Step } from "./book/Steps";
-import { fmtWhenTz } from "./ReservationActions";
 
 const PAGE_DAYS = 14;
 
@@ -94,6 +93,27 @@ function ReplaceProblem({ text }: { text: string }) {
 
 /** Replacement mode: which reservation is being changed, its current time, and that it stays until the new one is confirmed. */
 function ReplaceBanner({ original, tz }: { original: CustomerReservationDTO; tz: string }) {
+  // A change of a change: when `original` is itself a pending change request whose own original is still to come, the
+  // server replaces that root original instead, and the new request supersedes `original`.
+  const maybeChain = original.status === "pending" && original.replacesRef !== null;
+  const list = useQuery({
+    queryKey: queryKeys.reservations,
+    queryFn: () => apiFetch<{ reservations: CustomerReservationDTO[] }>("/api/customer/reservations").then((r) => r.reservations),
+    enabled: maybeChain,
+  });
+  const root = list.data?.find((x) => x.ref === original.replacesRef);
+  // Until the list says otherwise, assume the root is still active (the usual case).
+  const chain = maybeChain && (!root || ((root.status === "pending" || root.status === "confirmed") && root.startAt > Date.now()));
+  if (chain) {
+    return (
+      <Notice tone="info" className="space-y-1">
+        <p className="font-semibold">{t("web.customer.replace.bannerHeading", { ref: original.replacesRef! })}</p>
+        {root && <p>{t("web.customer.replace.current", { when: fmtWhenTz(root.startAt, root.endAt, tz) })}</p>}
+        <p>{t("web.customer.replace.chainRequest", { pending: original.ref, when: fmtWhenTz(original.startAt, original.endAt, tz) })}</p>
+        <p>{t("web.customer.replace.chainKeeps", { ref: original.replacesRef! })}</p>
+      </Notice>
+    );
+  }
   return (
     <Notice tone="info" className="space-y-1">
       <p className="font-semibold">{t("web.customer.replace.bannerHeading", { ref: original.ref })}</p>

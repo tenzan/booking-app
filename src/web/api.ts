@@ -18,24 +18,37 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiFetch<T>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
+type ApiOpts = { method?: string; body?: unknown };
+
+/** A successful response to an API request; any failure is thrown as an ApiError (JSON error bodies decoded). */
+async function apiResponse(path: string, opts: ApiOpts, accept: string): Promise<Response> {
   let res: Response;
   try {
     res = await fetch(path, {
       method: opts.method ?? "GET",
       credentials: "same-origin",
-      headers: { "X-Requested-With": "fetch", "content-type": "application/json", accept: "application/json" },
+      headers: { "X-Requested-With": "fetch", "content-type": "application/json", accept },
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   } catch {
     throw new ApiError(0, "network");
   }
-  const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
   if (!res.ok) {
+    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     const code = typeof data?.error === "string" ? data.error : "http_error";
     throw new ApiError(res.status, code, data?.details, data ?? undefined);
   }
-  return data as T;
+  return res;
+}
+
+export async function apiFetch<T>(path: string, opts: ApiOpts = {}): Promise<T> {
+  const res = await apiResponse(path, opts, "application/json");
+  return (await res.json().catch(() => null)) as T;
+}
+
+/** An API request answered with a file (e.g. a calendar download), as a Blob. Errors as for apiFetch. */
+export async function apiFetchBlob(path: string, opts: ApiOpts = {}): Promise<Blob> {
+  return (await apiResponse(path, opts, "*/*")).blob();
 }
 
 export const isApiError = (e: unknown, status?: number, code?: string): e is ApiError =>

@@ -46,6 +46,9 @@ export const fmtShortDate = (date: string): string => fmtDate(date, { weekday: "
 /** "Thu, Oct 1, 2026, 10:00 Asia/Tokyo (GMT+9)" — an instant with its time-zone label, for standalone mentions. */
 export const fmtStamp = (ms: number, tz: string): string => `${fmtDateTime(ms, tz, LOCALE)} ${fmtTz(tz, ms)}`;
 
+/** "Fri, Oct 2, 2026, 11:00 – 11:30 Asia/Tokyo (GMT+9)": a time range with its time-zone label, for standalone mentions. */
+export const fmtWhenTz = (start: number, end: number, tz: string): string => `${fmtWhen(start, end, tz)} ${fmtTz(tz, start)}`;
+
 /** "09:05" for a minute of the day; 1440 is "24:00" (the end of the day). */
 export const fmtMinutes = (m: number): string => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 
