@@ -330,6 +330,30 @@ describe("i18n", () => {
     expect(t("email")).toBe("email");
     expect(t("email.assigned.subject", { ref: "R" })).toBe("R confirmed — assigned to {tech}");
   });
+  it("every email template has a label for the Emails page and Activity (the record must name each template)", () => {
+    const all: Record<TemplateName, true> = {
+      customer_login: true,
+      staff_login: true,
+      request_received: true,
+      new_request: true,
+      confirmed: true,
+      assigned: true,
+      declined: true,
+      cancelled: true,
+      reassigned: true,
+      expired: true,
+      approval_reminder: true,
+      approval_escalation: true,
+      appointment_reminder: true,
+      proposal: true,
+      proposal_outcome: true,
+      rescheduled: true,
+      reply_relay: true,
+    };
+    const missing = Object.keys(all).filter((name) => t(`web.staff.emails.templates.${name}`) === `web.staff.emails.templates.${name}`);
+    expect(missing).toEqual([]);
+    expect(t("web.staff.emails.templates.reply_relay")).toBe("Customer reply (relayed)");
+  });
   it("formats date-times and zone labels in the target zone", () => {
     expect(fmtDateTime(Date.UTC(2026, 9, 1, 1, 0), "Asia/Tokyo", "en-US")).toBe("Thu, Oct 1, 2026, 10:00");
     expect(tzLabel("Asia/Tokyo", Date.UTC(2026, 9, 1), "en-US")).toBe("Asia/Tokyo (GMT+9)");

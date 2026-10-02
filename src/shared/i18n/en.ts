@@ -875,6 +875,7 @@ export const en = {
           proposal: "Proposed new times",
           proposal_outcome: "Proposal update",
           rescheduled: "Appointment rescheduled",
+          reply_relay: "Customer reply (relayed)",
         },
       },
       schedule: {
