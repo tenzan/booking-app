@@ -358,9 +358,11 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
             t("email.declined.intro"),
             ...(r.close_reason ? [t("email.declined.reason", { reason: r.close_reason })] : []),
             ...originalStays,
+            ...(r.pending_replacement_ref ? [t("email.declined.replacementPending", { ref: r.pending_replacement_ref })] : []),
           ],
           facts: common,
-          actions: [{ label: t("email.declined.rebook"), url: env.APP_BASE_URL, primary: true }],
+          // With a change request of its own still waiting, rebooking would be refused: that request is what happens next.
+          actions: r.pending_replacement_ref ? [] : [{ label: t("email.declined.rebook"), url: env.APP_BASE_URL, primary: true }],
           footer: customerFooter,
         }),
       };

@@ -94,6 +94,7 @@ export const en = {
       subject: "We couldn't confirm your request ({ref})",
       intro: "Unfortunately we couldn't confirm your requested time.",
       reason: "Reason: {reason}",
+      replacementPending: "Your change request {ref} is still being reviewed by our team. We'll email you once it's decided.",
       rebook: "Choose another time",
     },
     cancelled: {

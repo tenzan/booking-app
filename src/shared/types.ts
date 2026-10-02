@@ -94,6 +94,9 @@ export interface CustomerReservationDTO {
    * this request is confirmed. False when there is none.
    */
   replacesActive: boolean;
+  /** That reservation's own times (times only, nothing else of it), so a change of a change can still show what stands. Null when there is none. */
+  replacesStartAt: number | null;
+  replacesEndAt: number | null;
   /** The latest request to replace this one that is pending or went through (declined or expired ones don't count). */
   replacedByRef: string | null;
 }

@@ -99,6 +99,9 @@ function ReplaceBanner({ original, tz }: { original: CustomerReservationDTO; tz:
     return (
       <Notice tone="info" className="space-y-1">
         <p className="font-semibold">{t("web.customer.replace.bannerHeading", { ref: original.replacesRef })}</p>
+        {original.replacesStartAt !== null && original.replacesEndAt !== null && (
+          <p>{t("web.customer.replace.current", { when: fmtWhenTz(original.replacesStartAt, original.replacesEndAt, tz) })}</p>
+        )}
         <p>{t("web.customer.replace.chainRequest", { pending: original.ref, when: fmtWhenTz(original.startAt, original.endAt, tz) })}</p>
         <p>{t("web.customer.replace.chainKeeps", { ref: original.replacesRef })}</p>
       </Notice>

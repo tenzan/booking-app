@@ -21,8 +21,9 @@ export const customerCancelBody = z.object({ reason: z.string().max(REASON_MAX).
 /**
  * Cancel a pending or confirmed reservation: frees its blocks and any open proposal's option holds, closes the
  * reservation, cancels its obsolete queued mail and tells the customer and the team. A change request still pending on
- * it goes with it in the same batch (closed as 'original_cancelled'), and the one cancellation email covers both. Staff need a reason and may
- * cancel until the appointment ends; customers may give one and cancel before the start (confirmed appointments only
+ * it goes with it in the same batch (closed as 'original_cancelled'), and the one cancellation email covers both. Once the
+ * original has started (staff may still cancel it) that request is no longer a change of it but a request of its own
+ * (approval treats it so), and is left pending. Staff need a reason and may cancel until the appointment ends; customers may give one and cancel before the start (confirmed appointments only
  * until `cancelCutoffMin` before it). Ownership is the caller's job. An already-cancelled reservation is returned
  * unchanged when asked at its current version or by a retry of the cancelling request itself (same actor, reason and
  * version); any other version that moved (a racing approval, or a second canceller) is 409 stale.
@@ -80,17 +81,23 @@ async function attempt(env: Env, actor: CancelActor, id: string, reason: string 
   // A staff actor already knows.
   const involved = current.assignedStaff ? await activeStaffByIds(db, [current.assignedStaff.id]) : [];
   const team = noticeRecipients(await notifyStaff(db), involved, actor.kind === "staff" ? actor.staff.id : undefined);
-  // The customer's change request for it, if one is waiting: nothing would be left for it to change.
-  const replacement = await db
-    .prepare("SELECT id, ref, version FROM reservations WHERE replaces_id = ? AND status = 'pending'")
-    .bind(id)
-    .first<{ id: string; ref: string; version: number }>();
+  // The customer's change request for it, if one is waiting: nothing would be left for it to change. Not once the
+  // original has started: the request then stands as the customer's own (the same "active" notion approve uses).
+  const takesReplacement = current.startAt > now;
+  const replacement = takesReplacement
+    ? await db
+        .prepare("SELECT id, ref, version FROM reservations WHERE replaces_id = ? AND status = 'pending'")
+        .bind(id)
+        .first<{ id: string; ref: string; version: number }>()
+    : null;
   const mailPayload = replacement ? { alsoCancelledRef: replacement.ref } : {};
 
   await capacityBatch(db, scheduleVersion, [
     assertSql(db, "SELECT 1 FROM reservations WHERE id = ? AND status = ? AND version = ?", id, current.status, version),
     // No change request other than the one read (a racing one is caught here and the retry takes it along).
-    assertSql(db, "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM reservations WHERE replaces_id = ? AND status = 'pending' AND id IS NOT ?)", id, replacement?.id ?? null),
+    ...(takesReplacement
+      ? [assertSql(db, "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM reservations WHERE replaces_id = ? AND status = 'pending' AND id IS NOT ?)", id, replacement?.id ?? null)]
+      : []),
     ...releaseHoldStatements(db, id, now),
     db
       .prepare(
