@@ -15,6 +15,8 @@ export interface Rendered {
   text: string;
   /** Where a reply to this message goes (set for relayed customer replies). */
   replyTo?: string;
+  /** Extra headers asked of the mail adapter (relayed replies: suppress automatic answers). */
+  headers?: Record<string, string>;
 }
 
 interface ReservationData {
@@ -207,6 +209,7 @@ function renderReplyRelay(env: Env, job: EmailJobRow, s: Settings): Rendered {
   const from = typeof p.from === "object" && p.from !== null ? (p.from as { address?: unknown; name?: unknown }) : {};
   const address = typeof from.address === "string" ? from.address : "";
   const name = typeof from.name === "string" ? from.name : "";
+  const envelopeFrom = typeof p.envelopeFrom === "string" ? p.envelopeFrom : null;
   const subject = typeof p.subject === "string" && p.subject !== "" ? p.subject : t("email.replyRelay.noSubject");
   const excerpt = typeof p.textExcerpt === "string" && p.textExcerpt !== "" ? p.textExcerpt : t("email.replyRelay.noText");
   const count = typeof p.attachmentsCount === "number" ? p.attachmentsCount : 0;
@@ -216,18 +219,22 @@ function renderReplyRelay(env: Env, job: EmailJobRow, s: Settings): Rendered {
   const ref = typeof p.ref === "string" ? p.ref : null;
   const reservationId = typeof p.reservationId === "string" ? p.reservationId : null;
   const facts: Array<[string, string]> = [
-    [t("email.replyRelay.from"), name ? `${name} <${address}>` : address],
+    // The address first: a display name is whatever the sender chose to write.
+    [t("email.replyRelay.from"), name ? `${address} (${name})` : address],
+    ...(envelopeFrom ? [[t("email.replyRelay.envelopeFrom"), envelopeFrom] as [string, string]] : []),
     [t("email.replyRelay.received"), received],
     ...(ref ? [[t("email.replyRelay.reference"), ref] as [string, string]] : []),
   ];
   return {
     subject: t("email.replyRelay.subject", { subject }),
     replyTo: address || undefined,
+    headers: { "Auto-Submitted": "auto-generated", "X-Auto-Response-Suppress": "All" },
     ...renderEmail({
       orgName: s.orgName,
-      paragraphs: [t("email.replyRelay.intro")],
+      paragraphs: [t("email.replyRelay.intro", { address: env.MAIL_FROM }), t("email.replyRelay.replyHint")],
       facts,
-      quote: excerpt,
+      // Quoted, so it cannot be mistaken for text of ours.
+      quote: excerpt.split("\n").map((l) => `> ${l}`.trimEnd()).join("\n"),
       actions: reservationId
         ? [{ label: t("common.viewReservation"), url: `${env.APP_BASE_URL}/staff/r/${encodeURIComponent(reservationId)}`, primary: true }]
         : [],

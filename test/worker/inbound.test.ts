@@ -2,6 +2,8 @@ import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/worker/index";
 import { setNow } from "../../src/worker/lib/clock";
+import { htmlToText, excerptOf } from "../../src/worker/mail/inbound";
+import { mailerFor } from "../../src/worker/mail/adapters";
 import { processOutbox } from "../../src/worker/mail/outbox";
 import { seedStaff } from "../fixtures";
 
@@ -93,7 +95,7 @@ describe("inbound relay", () => {
 
     const rows = await jobs();
     expect(rows.map((r) => r.to_email).sort()).toEqual(["ada@example.test", "tom@example.test"]);
-    expect(rows[0].dedupe_key).toMatch(/^reply:<m\d+@mail\.example\.test>:\d+$/);
+    expect(rows[0].dedupe_key).toMatch(/^reply:[0-9a-f]{64}:\d+$/);
     expect(rows.map((r) => r.dedupe_key.split(":").pop()).sort()).toEqual([String(a), String(b)].sort());
     const payload = JSON.parse(rows[0].payload);
     expect(payload).toMatchObject({
@@ -110,7 +112,9 @@ describe("inbound relay", () => {
     expect(sent).toHaveLength(2);
     expect(sent[0].subject).toBe("Customer reply: Re: Your booking");
     expect(sent[0].reply_to).toBe("pat@example.test");
-    expect(sent[0].text).toContain("Pat Contact <pat@example.test>");
+    expect(sent[0].text).toContain("From: pat@example.test (Pat Contact)");
+    expect(sent[0].text).toContain("Message received at no-reply@example.com. The sender address is not verified.");
+    expect(sent[0].text).toContain("> Hello, can we move the appointment?");
     expect(sent[0].text).toContain("Hello, can we move the appointment?");
     expect(sent[0].text).toContain("Asia/Tokyo (GMT+9)");
     expect(sent[0].text).not.toContain("not forwarded");
@@ -247,7 +251,109 @@ describe("inbound relay", () => {
     await deliver(noId);
     const rows = await jobs();
     expect(rows).toHaveLength(4);
-    expect(rows.some((r) => /^reply:[0-9a-f]{64}:\d+$/.test(r.dedupe_key))).toBe(true);
+    expect(rows.every((r) => /^reply:[0-9a-f]{64}:\d+$/.test(r.dedupe_key))).toBe(true);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'email.inbound_relayed'").first<any>()).n).toBe(2);
+  });
+
+  it("keeps the dedupe key bounded however long the Message-ID is, and a redelivery is not audited again", async () => {
+    await seedTeam();
+    const huge = mail({ id: `<${"a".repeat(200_000)}@mail.example.test>` });
+    await deliver(huge);
+    await deliver(huge);
+    const rows = await jobs();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.dedupe_key.length < 100)).toBe(true);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'email.inbound_relayed'").first<any>()).n).toBe(1);
+  });
+
+  it("keys by sender as well: the same Message-ID from two senders is two relays", async () => {
+    await seedTeam();
+    const m = mail({ id: "<shared@mail.example.test>" });
+    await deliver(m, { from: "pat@example.test" });
+    await deliver(m, { from: "sam@example.test" });
+    expect(await jobs()).toHaveLength(4);
+  });
+});
+
+describe("spoofing aids", () => {
+  it("shows the address first, drops a display name that looks like an address, and shows a differing envelope sender", async () => {
+    await seedTeam();
+    await deliver(mail({ from: '"billing@example.test" <pat@example.test>' }), { from: "bounce-me@other.example.test" });
+    const payload = JSON.parse((await jobs())[0].payload);
+    expect(payload.from).toEqual({ address: "pat@example.test", name: "" });
+    expect(payload.envelopeFrom).toBe("bounce-me@other.example.test");
+    await processOutbox(env, 50);
+    const sent = (await mailbox())[0];
+    expect(sent.text).toContain("From: pat@example.test\n");
+    expect(sent.text).toContain("Envelope sender: bounce-me@other.example.test");
+    expect(sent.text).not.toContain("billing@example.test");
+  });
+
+  it("omits the envelope sender when it is on the From domain", async () => {
+    await seedTeam();
+    await deliver(mail(), { from: "mailer@example.test" });
+    expect(JSON.parse((await jobs())[0].payload).envelopeFrom).toBeUndefined();
+  });
+
+  it("quotes every line of the customer's text, so it cannot pass for ours", async () => {
+    await seedTeam();
+    await deliver(mail({ body: "line one\n\nApproved. Call 555-0100.\nline four" }));
+    await processOutbox(env, 50);
+    expect((await mailbox())[0].text).toContain("> line one\n>\n> Approved. Call 555-0100.\n> line four");
+  });
+
+  it("strips hidden and bidi control characters from the excerpt, and does not split a surrogate pair", () => {
+    expect(excerptOf("a\u202eb\u2066c\u2069d\u0007e\u200bf\tg\r\nh")).toBe("abcdef\tg\nh");
+    expect(excerptOf("😀".repeat(2500)).length).toBeLessThanOrEqual(4000);
+    expect(excerptOf("😀".repeat(2500)).endsWith("…")).toBe(true);
+    expect(/[\ud800-\udbff]…$/.test(excerptOf("😀".repeat(2500)))).toBe(false);
+  });
+});
+
+describe("hostile input stays cheap", () => {
+  const MB = 1_000_000;
+  const cases: Array<[string, string]> = [
+    ["space runs between newlines", ("x" + " ".repeat(5000) + "y\n").repeat(190)],
+    ["spaces then no newline", " ".repeat(MB)],
+    ["unclosed comments", "<!--".repeat(MB / 4)],
+    ["unclosed script openers", "<script>".repeat(MB / 8)],
+    ["unclosed style then text", "<style>" + "a".repeat(MB)],
+    ["tag openers without a close", "<a ".repeat(MB / 3)],
+    ["bare less-than signs", "<".repeat(MB)],
+    ["less-than then greater-than far away", "<a".repeat(MB / 4) + ">"],
+    ["nested openers before one close", "<b".repeat(MB / 4) + ">x"],
+    ["ampersand runs", "&#x".repeat(MB / 3)],
+    ["doctype openers", "<!x".repeat(MB / 3)],
+    ["closing script tags", "</script ".repeat(MB / 9)],
+  ];
+  it.each(cases)("htmlToText: %s", (_name, html) => {
+    const t0 = Date.now();
+    const out = htmlToText(html);
+    excerptOf(out);
+    expect(Date.now() - t0).toBeLessThan(200);
+  });
+
+  it.each(cases)("excerptOf: %s", (_name, text) => {
+    const t0 = Date.now();
+    expect(excerptOf(text).length).toBeLessThanOrEqual(4000);
+    expect(Date.now() - t0).toBeLessThan(200);
+  });
+
+  it("relays a 1 MB adversarial HTML-only message promptly", async () => {
+    await seedTeam();
+    const t0 = Date.now();
+    await deliver(mail({ contentType: "text/html", body: "<!--".repeat(230_000) + " ".repeat(50_000) + "<b" }));
+    await deliver(mail({ contentType: "text/html", body: ("x" + " ".repeat(2000) + "\n").repeat(400) }));
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(await jobs()).toHaveLength(4);
+  });
+
+  it("converts ordinary markup correctly (script/style/title/comments out, block tags break lines, bad entities kept)", () => {
+    expect(htmlToText("<title>T</title><!-- c --><style>x{}</style><p>One</p><P>Two<BR/>Three</P><b>&amp;&#65;&#x42;&bogus;&#0;</b> a < b")).toBe(
+      "One\nTwo\nThree\n&AB&bogus;&#0; a < b",
+    );
+    expect(htmlToText("before<script>never")).toBe("before");
+    expect(htmlToText("before<!-- never")).toBe("before");
   });
 });
 
@@ -300,7 +406,7 @@ describe("reservation reference", () => {
 });
 
 describe("what is not relayed", () => {
-  const dropped: Array<[string, { headers?: string[]; from?: string; headerFrom?: string }]> = [
+  const dropped: Array<[string, { headers?: string[]; from?: string; headerFrom?: string; contentType?: string }]> = [
     ["Auto-Submitted: auto-replied", { headers: ["Auto-Submitted: auto-replied"] }],
     ["Auto-Submitted: auto-generated", { headers: ["Auto-Submitted: auto-generated"] }],
     ["Precedence: bulk", { headers: ["Precedence: bulk"] }],
@@ -318,11 +424,20 @@ describe("what is not relayed", () => {
     ["null envelope sender", { from: "<>" }],
     ["our own address", { from: "No-Reply@Example.com" }],
     ["our own address in the From header", { headerFrom: "Us <no-reply@example.com>" }],
+    ["another address at our own domain", { from: "someone@example.com" }],
+    ["a +tag variant of an automated local part", { from: "no-reply+abc@example.test" }],
+    ["bounce sender", { from: "bounces@example.test" }],
+    ["do-not-reply sender", { from: "Do-Not-Reply@example.test" }],
+    ["donotreply sender", { from: "donotreply@example.test" }],
+    ["no_reply sender", { from: "no_reply@example.test" }],
+    ["multipart/report (a bounce)", { contentType: "multipart/report; report-type=delivery-status; boundary=b" }],
+    ["X-Failed-Recipients", { headers: ["X-Failed-Recipients: someone@example.test"] }],
+    ["X-Auto-Response-Suppress", { headers: ["X-Auto-Response-Suppress: All"] }],
     ["automation in the From header", { headerFrom: "Daemon <mailer-daemon@example.test>" }],
   ];
   it.each(dropped)("drops %s silently", async (_name, c) => {
     await seedTeam();
-    const spies = await deliver(mail({ headers: c.headers, from: c.headerFrom }), { from: c.from });
+    const spies = await deliver(mail({ headers: c.headers, from: c.headerFrom, contentType: c.contentType }), { from: c.from });
     expect(spies.setReject).not.toHaveBeenCalled();
     expect(spies.forward).not.toHaveBeenCalled();
     expect(spies.reply).not.toHaveBeenCalled();
@@ -387,6 +502,79 @@ describe("recipient and size", () => {
     const spies = await deliver(big, { rawSize: 100 });
     expect(spies.setReject).toHaveBeenCalledWith("Message too large");
     expect(await jobs()).toHaveLength(0);
+  });
+});
+
+describe("global ceiling", () => {
+  it("drops everything over 200 messages an hour across all senders, logging only a count", async () => {
+    await seedTeam();
+    await env.DB.prepare("INSERT INTO rate_limits(key, window_start, count) VALUES ('inbound:all', ?, 199)").bind(T0).run();
+    await deliver(mail(), { from: "one@example.test" }); // the 200th
+    expect(await jobs()).toHaveLength(2);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const spies = await deliver(mail(), { from: "two@example.test" });
+    expect(spies.setReject).not.toHaveBeenCalled();
+    expect(await jobs()).toHaveLength(2);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0]!.join(" "))).toContain("200");
+    expect(String(warn.mock.calls[0]!.join(" "))).not.toContain("two@");
+    warn.mockRestore();
+    setNow(T0 + 61 * 60_000);
+    await deliver(mail(), { from: "two@example.test" });
+    expect(await jobs()).toHaveLength(4);
+  });
+
+  it("does not spend the global allowance on mail that is dropped earlier", async () => {
+    await seedTeam();
+    await deliver(mail({ headers: ["Precedence: bulk"] }));
+    await deliver(mail(), { from: "no-reply@example.test" });
+    expect(await env.DB.prepare("SELECT count FROM rate_limits WHERE key = 'inbound:all'").first()).toBeNull();
+  });
+});
+
+describe("relay sends", () => {
+  async function relayJob(): Promise<void> {
+    await seedTeam();
+    await deliver(mail());
+    // The relay's own outbox kick has already delivered to the dev mailbox: put the jobs back to send them through a mock binding.
+    await env.DB.prepare("UPDATE email_jobs SET status = 'queued', sent_at = NULL").run();
+    await env.DB.prepare("DELETE FROM dev_mailbox").run();
+  }
+  const cfEnv = (send: (m: any) => Promise<void>) => ({ ...env, MAIL_MODE: "cloudflare", EMAIL: { send } }) as any;
+
+  it("asks the Cloudflare binding for Reply-To and auto-response-suppressing headers", async () => {
+    await relayJob();
+    const sent: any[] = [];
+    await processOutbox(env, 50, mailerFor(cfEnv(async (m) => void sent.push(m))));
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toMatchObject({ replyTo: "pat@example.test", headers: { "Auto-Submitted": "auto-generated", "X-Auto-Response-Suppress": "All" } });
+  });
+
+  it("retries without the headers when the binding refuses them, keeping Reply-To", async () => {
+    await relayJob();
+    const sent: any[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const out = await processOutbox(
+      env,
+      50,
+      mailerFor(
+        cfEnv(async (m) => {
+          if (m.headers) throw new Error("headers not allowed");
+          sent.push(m);
+        }),
+      ),
+    );
+    warn.mockRestore();
+    expect(out).toEqual({ sent: 2, failed: 0, skipped: 0 });
+    expect(sent).toHaveLength(2);
+    expect(sent[0].headers).toBeUndefined();
+    expect(sent[0].replyTo).toBe("pat@example.test");
+  });
+
+  it("other mail is sent without extra headers", async () => {
+    const sent: any[] = [];
+    await mailerFor(cfEnv(async (m) => void sent.push(m))).send({ to: "a@example.test", subject: "s", html: "h", text: "t" });
+    expect(sent[0].headers).toBeUndefined();
   });
 });
 

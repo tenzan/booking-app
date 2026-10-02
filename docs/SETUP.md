@@ -17,16 +17,14 @@ Create a dedicated token for this app: **Cloudflare dashboard → My Profile →
 | Account | Account Settings | Read | Wrangler account lookups |
 | Account | Workers Tail | Read | Live logs (optional) |
 | Zone | Zone | Read | Look up the zone |
-| Zone | Zone Settings | Edit | Email Routing setup for the app hostname |
 | Zone | DNS | Edit | App hostname and email DNS records |
 | Zone | Workers Routes | Edit | Attach the custom domain to the Worker |
-| Zone | Email Routing Rules | Edit | Route inbound replies on the app hostname |
 
 - **Account Resources:** include only your account.
 - **Zone Resources:** *Specific zone* → the zone that will host the app hostname.
 - **Client IP filtering:** leave off if you deploy from CI (GitHub Actions IPs change).
 
-If you prefer not to grant the email permissions, you can instead onboard the app hostname for Email Sending and Email Routing by hand in the dashboard (Email section) before the first deploy.
+If you prefer not to grant the Email Sending permission, you can instead onboard the app hostname for sending by hand in the dashboard (Email section) before the first deploy. Inbound routing ("Receiving replies" in section 4) is always configured by hand; the token needs no Email Routing permission.
 
 > **Mail on your apex domain is not touched.** Sending and inbound routing are configured on the app hostname (e.g. `booking.example.com`) only. Never run the zone-level Email Routing wizard on the apex of a domain whose mail is hosted elsewhere — it proposes replacing the apex MX/SPF records.
 
@@ -82,7 +80,7 @@ doppler run -- npm run deploy
 1. Open **Email → Email Routing** for the zone and enable it **for the app hostname only** (e.g. `booking.example.com`, added as a subdomain), not for the apex.
 2. Add a routing rule for the sender address (`MAIL_FROM`, e.g. `no-reply@booking.example.com`), or a catch-all for that hostname, with the action **Send to a Worker** and this Worker as the destination.
 
-The Worker accepts mail only for addresses at `MAIL_FROM`'s domain, rejects messages over 1 MB, silently drops automatic mail (auto-replies, bounces, mailing-list and bulk mail, `no-reply`/`mailer-daemon` senders, anything from `MAIL_FROM` itself) and accepts at most 20 messages an hour per sender. It never replies to the sender and never forwards attachments (the staff email says how many there were). If the reply mentions a reservation reference (`R-XXXX-XXXX`), the staff email links to that reservation. Until a rule is in place, replies to the app's emails bounce or go nowhere.
+The Worker accepts mail only for addresses at `MAIL_FROM`'s domain, rejects messages over 1 MB, silently drops automatic mail (auto-replies, bounces and delivery reports, mailing-list and bulk mail, `no-reply`/`mailer-daemon`/`bounce` style senders, anything from an address at your own domain) and accepts at most 20 messages an hour per sender and 200 an hour in total. The relayed email shows the sender's address (not verified) and quotes their text; it is sent with `Auto-Submitted: auto-generated` and `X-Auto-Response-Suppress: All` when the Cloudflare binding accepts custom headers (otherwise it is sent without them). It never replies to the sender and never forwards attachments (the staff email says how many there were). If the reply mentions a reservation reference (`R-XXXX-XXXX`), the staff email links to that reservation. Until a rule is in place, replies to the app's emails bounce or go nowhere.
 
 > **Do not run the Email Routing wizard on the apex.** For a domain whose mail is hosted elsewhere, the zone-level wizard proposes replacing the apex MX and SPF records and would break that mail. Only the app hostname is configured here.
 

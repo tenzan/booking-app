@@ -62,8 +62,10 @@ export const en = {
     replyRelay: {
       subject: "Customer reply: {subject}",
       noSubject: "(no subject)",
-      intro: "A customer replied to one of our emails. Reply to this message to answer them directly.",
+      intro: "Message received at {address}. The sender address is not verified.",
+      replyHint: "Reply to this email to answer the sender; attachments are not included.",
       from: "From",
+      envelopeFrom: "Envelope sender",
       received: "Received",
       reference: "Reservation",
       noText: "(the reply has no text)",
