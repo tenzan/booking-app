@@ -97,11 +97,23 @@ describe("staff reservation DTO: replacement links and who closed it", () => {
     expect(await detail(byCustomer)).toMatchObject({ status: "cancelled", closedByKind: "customer", closedBy: "sam@example.test" });
   });
 
-  it("never adds the new fields to the customer's view", async () => {
-    const id = await submit(pat, at(FRI, 10));
-    const mine = await api("GET", `/api/customer/reservations/${id}`, { cookie: pat.cookie });
-    expect(mine.status).toBe(200);
-    for (const key of ["replacesId", "replacesRef", "replacedById", "replacedByRef", "closedByKind", "closedBy"]) expect(mine.json.reservation).not.toHaveProperty(key);
+  it("never adds the staff-only fields to the customer's view (references only)", async () => {
+    const original = await submit(pat, at(FRI, 10));
+    await approve(original, team.a);
+    const replacement = await submit(pat, at(FRI, 11), { replacesId: original });
+    for (const id of [original, replacement]) {
+      const mine = await api("GET", `/api/customer/reservations/${id}`, { cookie: pat.cookie });
+      expect(mine.status).toBe(200);
+      const view = mine.json.reservation;
+      for (const key of ["replacesId", "replacesStatus", "replacedById", "replacedByStatus", "closedByKind", "closedBy", "assignedStaff", "provisionalStaffId", "confirmedBy"]) {
+        expect(view).not.toHaveProperty(key);
+      }
+      expect(JSON.stringify(view)).not.toMatch(/Tim Tech|Una Tech|Ada Admin/);
+    }
+    // The customer-safe references are there.
+    const mine = (id: string) => api("GET", `/api/customer/reservations/${id}`, { cookie: pat.cookie }).then((r) => r.json.reservation);
+    expect(await mine(original)).toMatchObject({ replacedByRef: await refOf(replacement) });
+    expect(await mine(replacement)).toMatchObject({ replacesRef: await refOf(original) });
   });
 });
 
