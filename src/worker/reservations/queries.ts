@@ -240,6 +240,7 @@ export async function listReservations(
  */
 const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
     r.contact_name, r.phone, r.issue, r.created_at, r.close_reason, orig.ref AS replaces_ref,
+    orig.status AS replaces_status, orig.start_at AS replaces_start_at,
     (SELECT n.ref FROM reservations n WHERE n.replaces_id = r.id AND n.status IN ('pending','confirmed','completed')
       ORDER BY n.created_at DESC, n.id DESC LIMIT 1) AS replaced_by_ref
   FROM reservations r JOIN customers c ON c.id = r.customer_id LEFT JOIN reservations orig ON orig.id = r.replaces_id`;
@@ -259,10 +260,12 @@ interface CustomerRow {
   created_at: number;
   close_reason: string | null;
   replaces_ref: string | null;
+  replaces_status: ReservationStatus | null;
+  replaces_start_at: number | null;
   replaced_by_ref: string | null;
 }
 
-const toCustomerDTO = (r: CustomerRow, proposal: CustomerProposalDTO | null): CustomerReservationDTO => ({
+const toCustomerDTO = (r: CustomerRow, proposal: CustomerProposalDTO | null, now: number): CustomerReservationDTO => ({
   id: r.id,
   ref: r.ref,
   status: r.status,
@@ -278,12 +281,15 @@ const toCustomerDTO = (r: CustomerRow, proposal: CustomerProposalDTO | null): Cu
   closeReason: r.close_reason,
   proposal,
   replacesRef: r.replaces_ref,
+  // The same notion of "still active" submit and approve use for the original.
+  replacesActive: (r.replaces_status === "pending" || r.replaces_status === "confirmed") && r.replaces_start_at !== null && r.replaces_start_at > now,
   replacedByRef: r.replaced_by_ref,
 });
 
 async function customerDTOs(db: D1Database, rows: CustomerRow[]): Promise<CustomerReservationDTO[]> {
-  const proposals = await loadProposals(db, rows.map((r) => r.id), clock.now());
-  return rows.map((r) => toCustomerDTO(r, toCustomerProposal(proposals.get(r.id) ?? null)));
+  const now = clock.now();
+  const proposals = await loadProposals(db, rows.map((r) => r.id), now);
+  return rows.map((r) => toCustomerDTO(r, toCustomerProposal(proposals.get(r.id) ?? null), now));
 }
 
 /**

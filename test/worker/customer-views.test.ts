@@ -79,6 +79,7 @@ describe("GET /api/customer/reservations", () => {
       version: 1,
       proposal: null,
       replacesRef: null,
+      replacesActive: false,
       replacedByRef: null,
     });
   });
@@ -176,6 +177,7 @@ describe("GET /api/customer/reservations/:id", () => {
         "proposal",
         "ref",
         "replacedByRef",
+        "replacesActive",
         "replacesRef",
         "startAt",
         "status",

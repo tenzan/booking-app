@@ -85,6 +85,7 @@ const CUSTOMER_KEYS = [
   "proposal",
   "ref",
   "replacedByRef",
+  "replacesActive",
   "replacesRef",
   "startAt",
   "status",

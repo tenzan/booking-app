@@ -89,6 +89,11 @@ export interface CustomerReservationDTO {
   proposal: CustomerProposalDTO | null;
   /** The reservation this one asks to replace ("choose another time"), if any. */
   replacesRef: string | null;
+  /**
+   * Whether that reservation is still active (pending or confirmed, not started): only then does it stay as it is until
+   * this request is confirmed. False when there is none.
+   */
+  replacesActive: boolean;
   /** The latest request to replace this one that is pending or went through (declined or expired ones don't count). */
   replacedByRef: string | null;
 }

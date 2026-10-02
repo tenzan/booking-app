@@ -325,7 +325,9 @@ export function ReplacementNote({ r }: { r: CustomerReservationDTO }) {
   // Moved only when the replacement's approval closed it; closed any other way, the request is a separate one.
   else if (r.replacedByRef && r.status === "cancelled" && r.closeReason === "rescheduled") text = t("web.customer.link.replacedBy", { ref: r.replacedByRef });
   else if (r.replacedByRef) text = t("web.customer.link.replacedByOther", { ref: r.replacedByRef });
-  else if (r.replacesRef && r.status === "pending") text = t("web.customer.link.replacesPending", { ref: r.replacesRef });
+  // A pending change request: its original stays only while that is still active; otherwise it is a request of its own.
+  else if (r.replacesRef && r.status === "pending")
+    text = t(r.replacesActive ? "web.customer.link.replacesPending" : "web.customer.link.replacesInactive", { ref: r.replacesRef });
   else if (r.replacesRef && r.status !== "declined" && r.status !== "expired" && r.status !== "cancelled") text = t("web.customer.link.replaces", { ref: r.replacesRef });
   return text ? <Notice tone="info">{text}</Notice> : null;
 }

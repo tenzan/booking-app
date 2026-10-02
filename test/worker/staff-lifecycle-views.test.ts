@@ -112,7 +112,22 @@ describe("staff reservation DTO: replacement links and who closed it", () => {
     // The customer-safe references are there.
     const mine = (id: string) => api("GET", `/api/customer/reservations/${id}`, { cookie: pat.cookie }).then((r) => r.json.reservation);
     expect(await mine(original)).toMatchObject({ replacedByRef: await refOf(replacement) });
-    expect(await mine(replacement)).toMatchObject({ replacesRef: await refOf(original) });
+    expect(await mine(replacement)).toMatchObject({ replacesRef: await refOf(original), replacesActive: true });
+    expect(await mine(original)).toMatchObject({ replacesRef: null, replacesActive: false });
+  });
+
+  it("replacesActive: whether the reservation a change request asks to change is still to come and open", async () => {
+    const original = await submit(pat, at(FRI, 10));
+    const replacement = await submit(pat, at(FRI, 11), { replacesId: original });
+    const mine = (id: string, cookie = pat.cookie) => api("GET", `/api/customer/reservations/${id}`, { cookie }).then((r) => r.json.reservation);
+    expect(await mine(replacement)).toMatchObject({ replacesActive: true });
+    // Started: no longer active, though still pending (signed in afresh: the first session has lapsed by then).
+    setNow(at(FRI, 10, 5));
+    expect(await mine(replacement, await loginCustomer("pat@example.test"))).toMatchObject({ status: "pending", replacesActive: false });
+    setNow(at(THU, 8));
+    // Declined: closed.
+    expect((await api("POST", `/api/staff/reservations/${original}/decline`, { cookie: adminCookie, body: { reason: "Full", version: 1 } })).status).toBe(200);
+    expect(await mine(replacement)).toMatchObject({ status: "pending", replacesActive: false });
   });
 });
 

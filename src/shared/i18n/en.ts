@@ -487,6 +487,7 @@ export const en = {
       },
       link: {
         replacesPending: "This request asks to change {ref}. Until it's confirmed, {ref} stays as it is.",
+        replacesInactive: "This request was made to change {ref}, which is no longer active. It's handled as a request of its own.",
         replaces: "Replaces {ref}.",
         replacedByPending: "You've asked to move this to another time ({ref}). This time stays until the new one is confirmed.",
         replacedBy: "Moved to a new time: {ref}.",

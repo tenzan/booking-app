@@ -119,8 +119,9 @@ function Respond({ r, tz, transport, supportPhone, intent = {}, onChanged, other
     if (intent.choice === "other") return { kind: "other" };
     return { kind: "choose" };
   });
-  // The email offered a time this proposal no longer has (a newer proposal replaced the one the email was about).
-  const [staleOption] = useState(() => Boolean(intent.option) && !p.options.some((o) => o.id === intent.option));
+  // The email offered a time this proposal no longer has (a newer proposal replaced the one the email was about). Said
+  // until the customer picks something here.
+  const [staleOption, setStaleOption] = useState(() => Boolean(intent.option) && !p.options.some((o) => o.id === intent.option));
 
   // Opened from an email button: land on the step it asked for (still only a question until confirmed).
   useEffect(() => {
@@ -130,6 +131,7 @@ function Respond({ r, tz, transport, supportPhone, intent = {}, onChanged, other
   const go = (s: Stage, focusStep = true) => {
     setStage(s);
     setProblem(null);
+    setStaleOption(false);
     if (s.kind === "choose") onIntentDone?.();
     else if (focusStep) focusWhenReady(() => stepHeading.current);
   };
@@ -226,7 +228,9 @@ function Respond({ r, tz, transport, supportPhone, intent = {}, onChanged, other
       </button>
     );
   };
-  const chain = r.status === "pending" && r.replacesRef !== null;
+  // A pending change request whose original is still to come: a new request replaces that original instead (only
+  // then does the original "stay as it is").
+  const chain = r.status === "pending" && r.replacesRef !== null && r.replacesActive;
 
   return (
     <section aria-labelledby={headingId} className="space-y-5 rounded-2xl border border-amber-300 bg-amber-50 p-5 text-amber-950 sm:p-6 dark:border-amber-400/40 dark:bg-amber-400/10 dark:text-amber-50">
