@@ -99,7 +99,7 @@ doppler configs tokens create github-actions --project <your-project> --config p
 
 Without that secret both jobs (`deploy` and `smoke`) are skipped, so forks of this repository stay green.
 
-After the `deploy` job, a separate `smoke` job runs the smoke test (`node scripts/smoke.mjs "https://$APP_DOMAIN" --wait 60`, with `APP_DOMAIN` from Doppler; see section 11) and fails if a check fails. It is limited to 5 minutes. **The new version is already live when the smoke test runs, and a failure does not roll it back:** check the table in the job's log, and if the site is broken use the rollback in section 11.
+After the `deploy` job, a separate `smoke` job runs the smoke test (`node scripts/smoke.mjs "https://$APP_DOMAIN" --wait 60`, with `APP_DOMAIN` from Doppler; see section 11) and fails if a check fails. It is limited to 8 minutes. **The new version is already live when the smoke test runs, and a failure does not roll it back:** check the table in the job's log, and if the site is broken use the rollback in section 11.
 
 On the very first deployment the custom domain's DNS record and certificate can take a few minutes: `--wait 60` makes the script poll `/api/health` (6 tries, 10 seconds apart) before checking. If the site is still not up after that, the smoke job fails. Once the site loads, either choose **Re-run failed jobs** on that run (this repeats only the `smoke` job, not the deployment) or run `npm run smoke -- https://<APP_DOMAIN>` from your own machine. Never re-run an older deploy run, or its `deploy` job: that deploys the older commit again over whatever is live now.
 

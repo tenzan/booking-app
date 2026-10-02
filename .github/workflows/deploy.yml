@@ -50,7 +50,7 @@ jobs:
     needs: deploy
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 5
+    timeout-minutes: 8
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
     steps:
