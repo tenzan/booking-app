@@ -14,6 +14,7 @@ import { settingsRoutes } from "./admin/settings-routes";
 import { staffRoutes } from "./admin/staff-routes";
 import { authRoutes } from "./auth/routes";
 import { accessRoutes } from "./reservations/access-routes";
+import { calendarRoutes } from "./reservations/calendar-routes";
 import { customerRoutes } from "./reservations/customer-routes";
 import { staffReservationRoutes } from "./reservations/staff-routes";
 
@@ -36,6 +37,7 @@ app.route("/dev", devRoutes);
 app.route("/", authRoutes);
 app.route("/customer", customerRoutes);
 app.route("/access", accessRoutes);
+app.route("/cal", calendarRoutes);
 app.route("/staff", staffReservationRoutes);
 app.route("/staff", bookingToggleRoutes);
 app.route("/staff", settingsRoutes);

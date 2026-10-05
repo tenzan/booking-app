@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useParams, useSearchParams } from "react-router";
-import type { ReservationDTO, TechOption } from "../../../shared/types";
+import type { CalendarLinks, ReservationDTO, TechOption } from "../../../shared/types";
 import { apiFetch, isApiError, queryKeys, safePath, useMe, type StaffReservationView } from "../../api";
+import { AddToCalendar } from "../../components/AddToCalendar";
 import { Button, ButtonLink } from "../../components/Button";
 import { Card, Notice } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
@@ -376,11 +377,25 @@ function ReservationLink({ id, refText, status }: { id: string; refText: string;
   );
 }
 
-/** Staff download of the appointment as a calendar file: confirmed, or cancelled after it was confirmed (to remove it). */
+/**
+ * Staff "Add to calendar": the choices for a confirmed appointment; for one cancelled after it was confirmed, the
+ * cancelled .ics only (it removes the event from calendars that read files; web calendars can't be updated by a link).
+ */
 function IcsDownload({ r }: { r: ReservationDTO }) {
   const cancelled = r.status === "cancelled" && r.confirmedAt !== null;
-  if (r.status !== "confirmed" && !cancelled) return null;
   const noteId = `ics-note-${r.id}`;
+  if (r.status === "confirmed") {
+    return (
+      <div className="mt-3 sm:max-w-sm">
+        <AddToCalendar
+          queryKey={["staff", "reservations", "calendar-links", r.id, r.version]}
+          load={() => apiFetch<{ links: CalendarLinks }>(`/api/staff/reservations/${encodeURIComponent(r.id)}/calendar`).then((x) => x.links)}
+          note={t("web.staff.lifecycle.ics.note")}
+        />
+      </div>
+    );
+  }
+  if (!cancelled) return null;
   return (
     <div className="mt-3 space-y-1.5">
       {/* A plain GET with the staff session: the browser saves the attachment, no token involved. */}
@@ -394,10 +409,10 @@ function IcsDownload({ r }: { r: ReservationDTO }) {
           <rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.75" />
           <path d="M3 10h18M8 3v4M16 3v4M12 13v5m-2.5-2.5L12 18l2.5-2.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-        {cancelled ? t("web.staff.lifecycle.ics.addCancelled") : t("web.staff.lifecycle.ics.add")}
+        {t("web.staff.lifecycle.ics.addCancelled")}
       </a>
       <p id={noteId} className="text-sm text-slate-600 dark:text-slate-400">
-        {t("web.staff.lifecycle.ics.note")}
+        {t("web.staff.lifecycle.ics.noteCancelled")}
       </p>
     </div>
   );

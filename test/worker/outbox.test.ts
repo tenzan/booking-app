@@ -71,6 +71,31 @@ describe("send-time status re-check", () => {
     expect((await job()).status).toBe("skipped");
   });
 
+  it("also skips when the cancellation lands while the calendar links are being made", async () => {
+    await seedReservation({ status: "confirmed", staff: true });
+    await enqueue("confirmed", "pat@example.test");
+    const real = env.DB;
+    const racing = {
+      prepare: (q: string) => {
+        const stmt = real.prepare(q);
+        if (!q.includes("INSERT INTO access_tokens")) return stmt;
+        return {
+          bind: (...args: unknown[]) => ({
+            run: async () => {
+              const r = await stmt.bind(...args).run();
+              await real.prepare("UPDATE reservations SET status = 'cancelled', confirmed_at = 1 WHERE id = 'res-1'").run();
+              return r;
+            },
+          }),
+        };
+      },
+      batch: (stmts: D1PreparedStatement[]) => real.batch(stmts),
+    } as unknown as D1Database;
+    expect(await processOutbox({ ...env, DB: racing } as typeof env)).toEqual({ sent: 0, failed: 0, skipped: 1 });
+    expect(await mailbox()).toEqual([]);
+    expect(await real.prepare("SELECT COUNT(*) AS n FROM calendar_tokens").first("n")).toBe(0);
+  });
+
   it("still sends when the reservation stays valid", async () => {
     await seedReservation({ status: "confirmed", staff: true });
     await enqueue("confirmed", "pat@example.test");

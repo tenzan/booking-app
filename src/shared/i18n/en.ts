@@ -82,7 +82,6 @@ export const en = {
       intro: "This is a reminder of your upcoming remote support appointment.",
       noCancel: "It is now too close to the start to cancel online.",
       noCancelPhone: "It is now too close to the start to cancel online. To cancel, please call {phone}.",
-      addToCalendar: "Add to calendar",
     },
     assigned: {
       subject: "{ref} confirmed — assigned to {tech}",
@@ -104,6 +103,7 @@ export const en = {
       reason: "Reason: {reason}",
       alsoReplacement: "Your change request {ref} has been cancelled too.",
       replacementPending: "Your change request {ref} is still being reviewed by our team. We'll email you once it's decided.",
+      removeFromCalendar: "If you added this appointment to your calendar, please delete it there.",
       rebook: "Book another time",
     },
     cancelledTeam: {
@@ -231,7 +231,27 @@ export const en = {
     issue: "Issue: {issue}",
     technician: "Technician: {name}",
   },
+  /** "Add to calendar" choices, the same in emails and in the app. Apple and "Other" both open the .ics file. */
+  calendar: {
+    heading: "Add to calendar",
+    apple: "Apple Calendar",
+    google: "Google Calendar",
+    outlook: "Outlook.com",
+    office365: "Microsoft 365",
+    other: "Other calendar (.ics)",
+  },
+  /** Plain-text pages for an "Add to calendar" file link that can no longer be served. */
+  calendarLink: {
+    invalid: "This calendar link has expired or is not valid. Open your reservation from a recent email, or sign in at {url}",
+    unavailable: "This appointment is no longer available as a calendar file. Sign in to see your reservations: {url}",
+  },
   web: {
+    /** The "Add to calendar" choices (customer and staff pages). */
+    calendar: {
+      loading: "Loading calendar choices…",
+      notConfirmed: "Calendar links are available once the appointment is confirmed.",
+      newTab: "(opens in a new tab)",
+    },
     common: {
       loading: "Loading…",
       back: "Back",
@@ -429,12 +449,8 @@ export const en = {
         changed: "This reservation changed since you opened it. Please check the details below and try again.",
       },
       calendar: {
-        button: "Add to calendar",
-        preparing: "Preparing…",
-        note: "The calendar file is a snapshot of the appointment now. If the time changes, we'll email you — add the new file then.",
-        prompt: "Download the calendar file to add this appointment to your calendar.",
-        downloaded: "Calendar file downloaded. Open it to add the appointment to your calendar.",
-        notConfirmed: "A calendar file is available once your appointment is confirmed.",
+        note: "Adds the appointment as it is now. If the time changes, we'll email you — add the new time then.",
+        prompt: "Choose your calendar to add this appointment.",
       },
       proposal: {
         badge: "Action needed",
@@ -1776,9 +1792,9 @@ export const en = {
           original_cancelled: "Cancelled together with the reservation it asked to change",
         },
         ics: {
-          add: "Add to my calendar",
           addCancelled: "Update my calendar (cancelled)",
-          note: "Downloads a calendar file (.ics) of the appointment as it is now. If it changes later, the team is emailed — download it again then.",
+          note: "Adds the appointment as it is now. If it changes later, the team is emailed — add it again then.",
+          noteCancelled: "Downloads the cancelled event (.ics): opening it removes the appointment from calendars that imported the file. Remove it by hand from Google or Outlook on the web.",
         },
         waiting: {
           heading: "Waiting for customer",

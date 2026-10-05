@@ -1,12 +1,15 @@
 import type { Env } from "../env";
 import { clock } from "../lib/clock";
 import { randomToken, sha256Hex } from "../lib/crypto";
+import { HttpError } from "../lib/http";
 import { safeRedirect } from "../lib/redirect";
 import { getSettings } from "../repos/settings";
 import { fmtDateTime, t, tzLabel } from "../../shared/i18n/i18n";
 import type { Settings } from "../../domain/settings";
+import type { CalendarLinks } from "../../shared/types";
 import { MIN } from "../../domain/time";
-import { renderEmail } from "./layout";
+import { calendarFileUrl, calendarLinks, mintCalendarToken, type CalendarAudience } from "../reservations/ics";
+import { renderEmail, type EmailSpec } from "./layout";
 import type { EmailJobRow } from "./outbox";
 
 export interface Rendered {
@@ -29,11 +32,13 @@ interface ReservationData {
   start_at: number;
   end_at: number;
   status: string;
+  confirmed_at: number | null;
   close_reason: string | null;
   account_name: string;
   customer_number: string;
   approver_name: string | null;
   tech_name: string | null;
+  tech_email: string | null;
   assigned_staff_id: number | null;
   closed_by_kind: string | null;
   /** Staff closer's name, or the raw closer (customer email). */
@@ -111,9 +116,9 @@ export async function jobStillValid(env: Env, job: EmailJobRow): Promise<boolean
 
 function loadReservation(env: Env, id: string): Promise<ReservationData | null> {
   return env.DB.prepare(
-    `SELECT r.id, r.ref, r.contact_email, r.contact_name, r.phone, r.issue, r.start_at, r.end_at, r.status, r.close_reason,
+    `SELECT r.id, r.ref, r.contact_email, r.contact_name, r.phone, r.issue, r.start_at, r.end_at, r.status, r.confirmed_at, r.close_reason,
             c.name AS account_name, c.customer_number,
-            approver.name AS approver_name, tech.name AS tech_name, r.assigned_staff_id, r.closed_by_kind,
+            approver.name AS approver_name, tech.name AS tech_name, tech.email AS tech_email, r.assigned_staff_id, r.closed_by_kind,
             COALESCE(closer.name, r.closed_by) AS closer_name, r.replaces_id, orig.ref AS replaces_ref, orig.status AS replaces_status,
             r.expires_at, ${OPEN_PROPOSAL_SQL},
             (SELECT n.ref FROM reservations n WHERE n.replaces_id = r.id AND n.status = 'pending') AS pending_replacement_ref
@@ -148,6 +153,37 @@ async function mintAccessToken(env: Env, r: ReservationData): Promise<string> {
     .run();
   return token;
 }
+
+/**
+ * "Add to calendar" for a confirmed appointment: the audience's .ics behind a read-only calendar token (valid as long as
+ * the email's access link) and the Google / Outlook.com / Microsoft 365 forms with the same text. Nothing if the
+ * reservation stopped being confirmed while the job was rendering: the send-time re-check then skips the email.
+ */
+async function calendarSection(env: Env, r: ReservationData, audience: CalendarAudience): Promise<EmailSpec["calendar"]> {
+  let links: CalendarLinks;
+  try {
+    links = await calendarLinks(env, r.id, audience, async () =>
+      calendarFileUrl(env, await mintCalendarToken(env.DB, r.id, audience, r.end_at + ACCESS_GRACE_MS)),
+    );
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 409) return undefined;
+    throw e;
+  }
+  return {
+    heading: t("calendar.heading"),
+    links: [
+      { label: t("calendar.apple"), url: links.ics },
+      { label: t("calendar.google"), url: links.google },
+      { label: t("calendar.outlook"), url: links.outlook },
+      { label: t("calendar.office365"), url: links.office365 },
+      { label: t("calendar.other"), url: links.ics },
+    ],
+  };
+}
+
+/** A staff copy goes to the whole team; only the technician doing the session gets calendar links. */
+const isAssignedTech = (job: EmailJobRow, r: ReservationData) =>
+  r.tech_email !== null && r.tech_email.toLowerCase() === job.to_email.toLowerCase();
 
 async function staffNames(env: Env, ids: unknown[]): Promise<Map<number, string>> {
   const wanted = ids.filter((id): id is number => typeof id === "number");
@@ -319,6 +355,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           ],
           facts: common,
           actions,
+          calendar: await calendarSection(env, r, "customer"),
           footer: customerFooter,
         }),
       };
@@ -342,8 +379,8 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           actions: [
             { label: t("common.viewReservation"), url: viewUrl, primary: true },
             ...(canCancel ? [{ label: t("common.cancelReservation"), url: `${viewUrl}&action=cancel` }] : []),
-            { label: t("email.reminder.addToCalendar"), url: `${viewUrl}&action=ics` },
           ],
+          calendar: await calendarSection(env, r, "customer"),
           footer: customerFooter,
         }),
       };
@@ -406,6 +443,8 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
             ...(typeof payload.alsoCancelledRef === "string" ? [t("email.cancelled.alsoReplacement", { ref: payload.alsoCancelledRef })] : []),
             // Or one left pending (the original had started): as for declined, that request is what happens next.
             ...(r.pending_replacement_ref ? [t("email.cancelled.replacementPending", { ref: r.pending_replacement_ref })] : []),
+            // Only a confirmed appointment was ever offered for a calendar; a web calendar can't be updated from here.
+            ...(r.confirmed_at !== null ? [t("email.cancelled.removeFromCalendar")] : []),
           ],
           facts: common,
           // Rebooking would be refused while that change request waits.
@@ -508,6 +547,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           paragraphs: [t("email.reassigned.intro", params), t("email.reassigned.unchanged")],
           facts: [...common, [t("common.technician"), params.to]],
           actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
+          ...(isAssignedTech(job, r) ? { calendar: await calendarSection(env, r, "staff") } : {}),
           footer: staffFooter,
         }),
       };
@@ -654,8 +694,8 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           actions: [
             { label: t("common.viewReservation"), url: viewUrl, primary: true },
             ...(canCancel ? [{ label: t("common.cancelReservation"), url: `${viewUrl}&action=cancel` }] : []),
-            { label: t("email.reminder.addToCalendar"), url: `${viewUrl}&action=ics` },
           ],
+          calendar: await calendarSection(env, r, "customer"),
           footer: customerFooter,
         }),
       };
@@ -704,6 +744,7 @@ export async function renderJob(env: Env, job: EmailJobRow): Promise<Rendered | 
           paragraphs: [t("email.assigned.intro", names), ...replaces],
           facts: [...common, [t("common.technician"), names.tech]],
           actions: [{ label: t("email.newRequest.details"), url: staffUrl, primary: true }],
+          ...(isAssignedTech(job, r) ? { calendar: await calendarSection(env, r, "staff") } : {}),
           footer: staffFooter,
         }),
       };

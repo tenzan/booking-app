@@ -191,7 +191,7 @@ describe("accepting a proposed time", () => {
     expect(mails[0]!.subject).toContain("Fri, Oct 2, 2026, 11:00");
     expect(mails[0]!.text).toContain(`Fri, Oct 2, 2026, 11:00 ${TZ_LABEL}`);
     expect(mails[0]!.text).toContain(`Fri, Oct 2, 2026, 10:00 ${TZ_LABEL}`);
-    expect(mails[0]!.text).toMatch(/\/r#t=[A-Za-z0-9_-]+&action=ics/);
+    expect(mails[0]!.text).toMatch(/\/api\/cal\/[A-Za-z0-9_-]+\.ics/);
     // Same reservation, same calendar event: no need to remove an earlier entry.
     expect(mails[0]!.text).not.toContain("remove");
     expect(mails[0]!.text).not.toMatch(TECH_NAMES);
@@ -555,7 +555,7 @@ describe("choosing another time: replacement requests", () => {
       expect(mine).toHaveLength(1);
       expect(mine[0]!.text).toContain(`Fri, Oct 2, 2026, 10:30 ${TZ_LABEL}`);
       expect(mine[0]!.text).toContain(ref);
-      expect(mine[0]!.text).toMatch(/&action=ics/);
+      expect(mine[0]!.text).toMatch(/\/api\/cal\/[A-Za-z0-9_-]+\.ics/);
       // A new reservation is a new calendar event: the old one has to go by hand.
       expect(mine[0]!.text).toContain("If you added your earlier time to your calendar, please remove it");
       expect(mine[0]!.text).not.toMatch(TECH_NAMES);

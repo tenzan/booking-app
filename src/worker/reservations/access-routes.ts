@@ -7,7 +7,7 @@ import { HttpError, readJson } from "../lib/http";
 import { rateLimit } from "../lib/rate-limit";
 import { getSettings } from "../repos/settings";
 import { cancelAsCustomer, customerCancelBody } from "./cancel";
-import { customerIcs, icsResponse } from "./ics";
+import { customerIcs, customerWebCalendarLinks, icsResponse } from "./ics";
 import { kickOutbox } from "../mail/outbox";
 import { getAccessTokenTarget, getCustomerReservationByAccessToken } from "./queries";
 import { acceptBody, acceptProposal, rejectBody, rejectProposal } from "./respond";
@@ -46,6 +46,15 @@ accessRoutes.post("/reservation/ics", async (c) => {
   const target = await getAccessTokenTarget(c.env.DB, await sha256Hex(token), clock.now());
   if (!target) throw new HttpError(404, "invalid_link");
   return icsResponse(c, await customerIcs(c.env, target.id));
+});
+
+/** "Add to calendar" links, with a short-lived link to the file that the page can open (see calendarRoutes). */
+accessRoutes.post("/reservation/calendar", async (c) => {
+  await limitByIp(c);
+  const { token } = await readJson(c, body);
+  const target = await getAccessTokenTarget(c.env.DB, await sha256Hex(token), clock.now());
+  if (!target) throw new HttpError(404, "invalid_link");
+  return c.json({ links: await customerWebCalendarLinks(c.env, target.id) });
 });
 
 /** Cancel through the link: the token scopes this to one reservation and the contact on it is the one acting. */

@@ -406,6 +406,8 @@ describe("cleanup", () => {
     await db.batch([
       db.prepare("INSERT INTO access_tokens(token_hash, reservation_id, created_at, expires_at) VALUES ('a-old', ?, 0, ?)").bind(id, old),
       db.prepare("INSERT INTO access_tokens(token_hash, reservation_id, created_at, expires_at) VALUES ('a-new', ?, 0, ?)").bind(id, keep),
+      db.prepare("INSERT INTO calendar_tokens(token_hash, reservation_id, audience, created_at, expires_at) VALUES ('c-old', ?, 'customer', 0, ?)").bind(id, old),
+      db.prepare("INSERT INTO calendar_tokens(token_hash, reservation_id, audience, created_at, expires_at) VALUES ('c-new', ?, 'staff', 0, ?)").bind(id, keep),
     ]);
   };
   const names = async (sql: string) => (await env.DB.prepare(sql).all<{ k: string }>()).results.map((r) => r.k).sort();
@@ -422,6 +424,7 @@ describe("cleanup", () => {
     expect(r.counts.cleanup).not.toBeNull();
     expect(await names("SELECT token_hash AS k FROM auth_tokens WHERE token_hash LIKE 't-%'")).toEqual(["t-live", "t-new"]);
     expect(await names("SELECT token_hash AS k FROM access_tokens WHERE token_hash LIKE 'a-%'")).toEqual(["a-new"]);
+    expect(await names("SELECT token_hash AS k FROM calendar_tokens WHERE token_hash LIKE 'c-%'")).toEqual(["c-new"]);
     expect(await names("SELECT id_hash AS k FROM sessions WHERE id_hash LIKE 's-%'")).toEqual(["s-live", "s-revoked-new"]);
     expect(await names("SELECT key AS k FROM rate_limits WHERE key LIKE 'rl-%'")).toEqual(["rl-new"]);
     expect(await names("SELECT subject AS k FROM dev_mailbox WHERE subject IN ('old','new')")).toEqual(["new"]);

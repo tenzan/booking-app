@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "react-router";
-import type { CustomerReservationDTO } from "../../../shared/types";
-import { apiFetch, apiFetchBlob, isApiError } from "../../api";
+import type { CalendarLinks, CustomerReservationDTO } from "../../../shared/types";
+import { apiFetch, isApiError } from "../../api";
+import { AddToCalendar } from "../../components/AddToCalendar";
 import { Button } from "../../components/Button";
 import { Notice } from "../../components/Card";
 import { Dialog, focusWhenReady } from "../../components/Dialog";
@@ -22,7 +23,8 @@ export interface ReservationTransport {
   cancel: (body: { reason?: string; version: number }) => Promise<CustomerReservationDTO>;
   accept: (body: { proposalId: string; optionId: string }) => Promise<CustomerReservationDTO>;
   reject: (body: { proposalId: string }) => Promise<CustomerReservationDTO>;
-  ics: () => Promise<Blob>;
+  /** "Add to calendar" links, with a short-lived link to the .ics file. */
+  calendar: () => Promise<CalendarLinks>;
 }
 
 type Answer = { reservation: CustomerReservationDTO };
@@ -32,8 +34,8 @@ export const tokenTransport = (token: string): ReservationTransport => ({
   cancel: (b) => post("/api/access/reservation/cancel", { ...b, token }),
   accept: (b) => post("/api/access/proposal/accept", { ...b, token }),
   reject: (b) => post("/api/access/proposal/reject", { ...b, token }),
-  // A POST answered with a file (never a GET: the token stays out of URLs).
-  ics: () => apiFetchBlob("/api/access/reservation/ics", { method: "POST", body: { token } }),
+  // A POST, so the access token stays out of URLs; the file link it returns carries a read-only calendar token.
+  calendar: () => apiFetch<{ links: CalendarLinks }>("/api/access/reservation/calendar", { method: "POST", body: { token } }).then((r) => r.links),
 });
 
 export const sessionTransport = (id: string): ReservationTransport => {
@@ -42,22 +44,9 @@ export const sessionTransport = (id: string): ReservationTransport => {
     cancel: (b) => post(`${base}/cancel`, b),
     accept: (b) => post(`${base}/proposal/accept`, b),
     reject: (b) => post(`${base}/proposal/reject`, b),
-    ics: () => apiFetchBlob(`${base}/ics`, { method: "POST", body: {} }),
+    calendar: () => apiFetch<{ links: CalendarLinks }>(`${base}/calendar`, { method: "POST", body: {} }).then((r) => r.links),
   };
 };
-
-/** Save `blob` as `name` through a temporary link. */
-function saveBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
-}
 
 const isActive = (r: CustomerReservationDTO, now: number) => (r.status === "pending" || r.status === "confirmed") && r.startAt > now;
 
@@ -269,8 +258,8 @@ export function ErrorText({ e }: { e: unknown }) {
 }
 
 /**
- * "Add to calendar" for a confirmed appointment: the file is fetched with a POST and saved from a Blob as `<ref>.ics`.
- * `prompt` (the `#…&action=ics` email link) adds a line saying what the button is for; nothing downloads by itself.
+ * "Add to calendar" for a confirmed appointment (see AddToCalendar). `prompt` (the `#…&action=ics` link of earlier
+ * emails) opens the choices with a line saying what they are for; nothing is added by itself.
  */
 export function CalendarButton({
   r,
@@ -281,39 +270,21 @@ export function CalendarButton({
   r: CustomerReservationDTO;
   transport: ReservationTransport;
   prompt?: boolean;
-  /** The file was saved (the email link's request is answered). */
+  /** A calendar was chosen (the email link's request is answered). */
   onDone?: () => void;
 }) {
-  const [done, setDone] = useState(false);
-  const noteId = useId();
-  const ics = useMutation({
-    mutationFn: () => transport.ics(),
-    onMutate: () => setDone(false),
-    onSuccess: (blob) => {
-      saveBlob(blob, `${r.ref}.ics`);
-      setDone(true);
-      onDone?.();
-    },
-  });
   if (r.status !== "confirmed") return null;
-  const error = ics.error ? isApiError(ics.error, 409, "not_confirmed") ? t("web.customer.calendar.notConfirmed") : <ErrorText e={ics.error} /> : null;
   return (
-    <div className="space-y-2">
-      {prompt && <p className="font-medium">{t("web.customer.calendar.prompt")}</p>}
-      <Button variant="secondary" block loading={ics.isPending} aria-describedby={noteId} onClick={() => ics.mutate()}>
-        <svg className="size-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect x="3.5" y="5" width="17" height="15" rx="2" stroke="currentColor" strokeWidth="1.75" />
-          <path d="M3.5 9.5h17M8 3v4M16 3v4M12 12.5v5M9.5 15h5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-        </svg>
-        {ics.isPending ? t("web.customer.calendar.preparing") : t("web.customer.calendar.button")}
-      </Button>
-      <p id={noteId} className="text-sm text-slate-600 dark:text-slate-400">
-        {t("web.customer.calendar.note")}
-      </p>
-      <div aria-live="polite">
-        {error ? <Notice tone="error">{error}</Notice> : done ? <Notice tone="success">{t("web.customer.calendar.downloaded")}</Notice> : null}
-      </div>
-    </div>
+    <AddToCalendar
+      // Any change to the reservation (a new version) asks for the links afresh.
+      queryKey={["customer", "calendar", r.id, r.version]}
+      load={transport.calendar}
+      note={t("web.customer.calendar.note")}
+      prompt={prompt ? t("web.customer.calendar.prompt") : undefined}
+      initiallyOpen={prompt}
+      onPicked={onDone}
+      errorContent={(e) => <ErrorText e={e} />}
+    />
   );
 }
 
