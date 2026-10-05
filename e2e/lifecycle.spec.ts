@@ -420,7 +420,7 @@ test("the booking page shows the open reservation up front instead of refusing a
   await expect(page.getByRole("list", { name: /^Available times on/ })).toBeVisible();
 });
 
-test("the staff calendar marks the signed-in technician's own bookings and offers Only me; the request page offers Add to calendar", async ({ page }, testInfo) => {
+test("the staff calendar: technician chips and colours, (You), Week and Month views; the request page offers Add to calendar", async ({ page }, testInfo) => {
   const me = (await (await page.request.get("/api/auth/me")).json()) as { staff: { id: number; name: string } };
   // Arranged by hand: the sample administrator only works mornings (09:00–12:00), so the time must fall in those hours.
   const api = page.request;
@@ -454,13 +454,46 @@ test("the staff calendar marks the signed-in technician's own bookings and offer
   const startAt = (await staffReservation(api, id)).startAt;
   const week = new Date(startAt).toISOString().slice(0, 10);
   await page.goto(`/staff/calendar?week=${week}`);
-  const filter = page.getByLabel("Technician");
-  await expect(filter.locator("option").nth(1)).toHaveText(`Only me (${me.staff.name})`);
-  // The booking names its technician as "(You)": the week grid (desktop) and the agenda (phone) both carry it.
-  await expect(page.getByRole("link").filter({ hasText: ref }).first()).toContainText(`${me.staff.name} (You)`);
-  await filter.selectOption(String(me.staff.id));
+  // Technician chips instead of a dropdown: everyone at a glance, you first after Everyone. People click the chip (its
+  // label); the radio inside is what records the choice.
+  const pick = async (group: Locator, name: string) => {
+    await group.locator("label").filter({ has: page.getByRole("radio", { name, exact: true }) }).click();
+    await expect(group.getByRole("radio", { name, exact: true })).toBeChecked();
+  };
+  const chips = page.getByRole("radiogroup", { name: "Technician" });
+  await expect(chips.getByRole("radio", { name: "Everyone" })).toBeChecked();
+  await expect(chips.getByRole("radio").nth(1)).toHaveAccessibleName(`${me.staff.name} (You)`);
+  const team = await apiGet<{ staff: Array<{ active: boolean }> }>(api, "/api/staff/team");
+  await expect(chips.getByRole("radio")).toHaveCount(1 + team.staff.filter((s) => s.active).length);
+  // The booking names its technician as "(You)" and wears that technician's colour, the one on their chip.
+  const booking = page.getByRole("link").filter({ hasText: ref }).first();
+  await expect(booking).toContainText(`${me.staff.name} (You)`);
+  const myColour = await chips.locator(`[data-tech-color]`).nth(0).getAttribute("data-tech-color");
+  expect(myColour).toMatch(/^\d+$/);
+  await expect(booking).toHaveAttribute("data-tech-color", myColour!);
+  await pick(chips, `${me.staff.name} (You)`);
   await expect(page).toHaveURL(new RegExp(`tech=${me.staff.id}`));
   await expect(page.getByText(`Showing ${me.staff.name}'s calendar.`)).toBeVisible();
+  await pick(chips, "Everyone");
+  await expect(page).not.toHaveURL(/tech=/);
+
+  // Month view: the whole month, the booking in its technician's colour; the URL keeps the view.
+  await pick(page.getByRole("radiogroup", { name: "View" }), "Month");
+  await expect(page).toHaveURL(/view=month/);
+  const monthName = new Intl.DateTimeFormat("en", { month: "long", year: "numeric", timeZone: "UTC" }).format(startAt);
+  await expect(page.getByRole("heading", { name: monthName })).toBeVisible();
+  if (testInfo.project.name === "mobile") {
+    // Phones: a compact month with dots; tapping the day lists its bookings below.
+    const day = new Intl.DateTimeFormat("en", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }).format(startAt);
+    await page.getByRole("button", { name: new RegExp(`^${escapeRe(day)}`) }).click();
+  }
+  const inMonth = page.getByRole("link").filter({ hasText: ref }).first();
+  await expect(inMonth).toBeVisible();
+  await expect(inMonth).toHaveAttribute("data-tech-color", myColour!);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: monthName })).toBeVisible();
+  await pick(page.getByRole("radiogroup", { name: "View" }), "Week");
+  await expect(page).not.toHaveURL(/view=month/);
 
   // The request page offers Add to calendar in its actions box: one click, and "More calendars" for all five.
   await page.goto(`/staff/r/${id}`);
