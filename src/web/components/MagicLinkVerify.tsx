@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router";
-import { apiFetch, isApiError, queryKeys, safePath, useFragmentToken } from "../api";
+import { apiFetch, fragmentParams, isApiError, queryKeys, safePath, useFragmentToken } from "../api";
 import { t } from "../i18n";
 import { Button, ButtonLink } from "./Button";
 import { Card, Notice } from "./Card";
@@ -40,7 +40,9 @@ function Redeem({ token, kind }: { token: string | null; kind: Kind }) {
       // "who am I" before navigating so the destination header can say whose session this is.
       qc.removeQueries({ queryKey: [r.kind] });
       await qc.invalidateQueries({ queryKey: queryKeys.me });
-      const dest = safePath(r.redirectPath) ?? (r.kind === "staff" ? "/staff" : "/book");
+      // A customer email offers a button per destination on one link (`&to=/book`, `&to=/my`): the one clicked wins.
+      const chosen = r.kind === "customer" ? safePath(fragmentParams().to) : null;
+      const dest = chosen ?? safePath(r.redirectPath) ?? (r.kind === "staff" ? "/staff" : "/book");
       navigate(dest, { replace: true, state: { signedIn: true } satisfies SignedInState });
     },
   });

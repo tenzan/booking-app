@@ -22,7 +22,7 @@ test("customer books, staff approves, customer sees it confirmed", async ({ page
   await page.getByRole("button", { name: "Email me a link" }).click();
   await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
 
-  await followEmailLink(page, CUSTOMER, /Your link to book remote support/, "Book a remote support session");
+  await followEmailLink(page, CUSTOMER, /Your sign-in link/, "Book a session");
   await expect(page).toHaveURL(/\/auth\/verify$/);
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page).toHaveURL(/\/book$/);

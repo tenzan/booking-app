@@ -242,11 +242,12 @@ test("admin imports a new customer from pasted CSV, and its contact can get a bo
   await page.getByRole("button", { name: "Email me a link" }).click();
   await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
 
-  await followEmailLink(page, email, /Your link to book remote support/, "Book a remote support session");
+  // The email's second button signs in and goes to the reservations instead of booking.
+  await followEmailLink(page, email, /Your sign-in link/, "My reservations");
   await expect(page).toHaveURL(/\/auth\/verify$/);
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page).toHaveURL(/\/book$/);
-  await expect(page.getByText(`Signed in as ${email}`)).toBeVisible();
+  await expect(page).toHaveURL(/\/my$/);
+  await expect(page.getByRole("heading", { name: "My reservations", level: 1 })).toBeVisible();
 });
 
 test("admin adds a customer with the form; the first contact's email is asked for up front", async ({ page }, testInfo) => {
