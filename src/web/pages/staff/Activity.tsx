@@ -351,6 +351,8 @@ function describe(e: AuditEntryDTO, tz: string, names: Map<number, string>): { k
       return { key: "customers_import", params: { created: num(d.created) ?? 0, updated: num(d.updated) ?? 0 } };
     case "customers.import_partial":
       return { key: "customers_import_partial", params: { done: num(d.committedChunks) ?? 0, total: num(d.totalChunks) ?? 0 } };
+    case "calendar_feed.reset":
+      return { key: "calendar_feed_reset", params: {} };
     case "staff.create":
       return { key: "staff_create", params: { name: str(d.name) ?? "—" } };
     case "staff.update":

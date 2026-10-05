@@ -850,6 +850,7 @@ export const en = {
           customer_contact_remove: "{actor} removed the contact {email}",
           customers_import: "{actor} imported customers: {created} new, {updated} updated",
           customers_import_partial: "{actor}'s customer import stopped partway: {done} of {total} parts saved",
+          calendar_feed_reset: "{actor} reset their calendar subscription links",
           staff_create: "{actor} added {name} to the team",
           staff_update: "{actor} updated {name}'s team settings",
           staff_bootstrap_admin: "{email} was set up as the first administrator",

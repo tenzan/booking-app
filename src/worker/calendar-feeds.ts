@@ -3,6 +3,7 @@ import { buildCalendar } from "../domain/ics";
 import { t } from "../shared/i18n/i18n";
 import type { AppEnv, Env } from "./env";
 import { clock } from "./lib/clock";
+import { audit } from "./lib/db";
 import { randomToken } from "./lib/crypto";
 import { HttpError } from "./lib/http";
 import { rateLimit } from "./lib/rate-limit";
@@ -84,5 +85,18 @@ staffFeedRoutes.use("*", requireStaff());
 /** A POST, since the first call creates the token (no GET changes state). */
 staffFeedRoutes.post("/calendar-feed", async (c) => {
   const token = await ensureFeedToken(c.env.DB, c.var.staff!.id);
+  return c.json({ mine: feedUrl(c.env, token, "mine"), team: feedUrl(c.env, token, "team") });
+});
+
+/** New links; calendars subscribed with the old ones stop updating. Recorded in the activity log. */
+staffFeedRoutes.post("/calendar-feed/reset", async (c) => {
+  const staff = c.var.staff!;
+  const token = randomToken();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "INSERT INTO calendar_feeds(staff_id, token, created_at) VALUES (?1, ?2, ?3) ON CONFLICT(staff_id) DO UPDATE SET token = ?2, created_at = ?3",
+    ).bind(staff.id, token, clock.now()),
+    audit(c.env.DB, { actorKind: "staff", actor: String(staff.id), action: "calendar_feed.reset" }),
+  ]);
   return c.json({ mine: feedUrl(c.env, token, "mine"), team: feedUrl(c.env, token, "team") });
 });

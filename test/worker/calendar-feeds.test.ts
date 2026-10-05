@@ -162,3 +162,43 @@ describe("firstName", () => {
     expect(firstName(null)).toBe("—");
   });
 });
+
+describe("subscription links for staff", () => {
+  it("are created once and then stay the same, even when two tabs ask at once", async () => {
+    const [a, b] = await Promise.all([urls(techA), urls(techA)]);
+    expect(a).toEqual(b);
+    expect(await urls(techA)).toEqual(a);
+    expect(a.mine).toMatch(/^http:\/\/localhost:5173\/api\/feed\/[A-Za-z0-9_-]{43}\/mine\.ics$/);
+    expect(a.team).toBe(a.mine.replace("mine.ics", "team.ics"));
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM calendar_feeds").first("n")).toBe(1);
+  });
+
+  it("differ per staff member", async () => {
+    expect((await urls(techA)).mine).not.toBe((await urls(adminCookie)).mine);
+  });
+
+  it("reset gives new links, the old ones stop, and the reset is in the activity log", async () => {
+    const before = await urls(techA);
+    const res = await api("POST", "/api/staff/calendar-feed/reset", { cookie: techA, body: {} });
+    expect(res.status).toBe(200);
+    expect(res.json.mine).not.toBe(before.mine);
+    expect((await raw(before.mine)).status).toBe(404);
+    expect((await raw(res.json.mine)).status).toBe(200);
+    expect(await urls(techA)).toEqual(res.json);
+    const a = await env.DB.prepare("SELECT actor_kind, actor, action FROM audit_log WHERE action = 'calendar_feed.reset'").first();
+    expect(a).toEqual({ actor_kind: "staff", actor: String(team.a), action: "calendar_feed.reset" });
+  });
+
+  it("reset works before any link was made", async () => {
+    const res = await api("POST", "/api/staff/calendar-feed/reset", { cookie: techA, body: {} });
+    expect(res.status).toBe(200);
+    expect((await raw(res.json.mine)).status).toBe(200);
+  });
+
+  it("need a staff session and the CSRF header", async () => {
+    expect((await api("POST", "/api/staff/calendar-feed", { body: {} })).status).toBe(401);
+    expect((await api("POST", "/api/staff/calendar-feed", { cookie: pat.cookie, body: {} })).status).toBe(401);
+    expect((await api("POST", "/api/staff/calendar-feed", { cookie: techA, body: {}, xrw: false })).status).toBe(403);
+    expect((await api("POST", "/api/staff/calendar-feed/reset", { body: {} })).status).toBe(401);
+  });
+});
