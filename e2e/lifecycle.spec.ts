@@ -437,3 +437,34 @@ test("the staff calendar marks the signed-in technician's own bookings and offer
   await expect(page).toHaveURL(new RegExp(`tech=${me.staff.id}`));
   await expect(page.getByText(`Showing ${me.staff.name}'s calendar.`)).toBeVisible();
 });
+
+test("staff subscribe to their calendars from the Calendar page, and reset the links", async ({ page }) => {
+  await page.goto("/staff/calendar");
+  // Open on the first visit, collapsed afterwards: open it if needed (judged by the card, not by links still loading).
+  const details = page.locator("details").filter({ hasText: "Subscribe in your calendar app" });
+  await expect(details).toBeVisible();
+  if (!(await details.evaluate((d) => (d as HTMLDetailsElement).open))) await page.getByText("Subscribe in your calendar app").click();
+  const google = page.getByRole("link", { name: "Add to Google Calendar" });
+  await expect(google).toHaveCount(2);
+  await expect(google.first()).toHaveAttribute("href", /^https:\/\/calendar\.google\.com\/calendar\/r\?cid=webcal%3A%2F%2F/);
+  const webcalHref = await page.getByRole("link", { name: "Open in Apple Calendar / Outlook" }).first().getAttribute("href");
+  expect(webcalHref).toMatch(/^webcal:\/\/.+\/api\/feed\/[A-Za-z0-9_-]+\/mine\.ics$/);
+  const mineUrl = webcalHref!.replace(/^webcal:/, "http:");
+  const feed = await page.request.get(mineUrl);
+  expect(feed.status()).toBe(200);
+  expect(await feed.text()).toContain("— my appointments");
+
+  // A copy before the reset: its message (copied, or the select-it-yourself fallback) is about the old link.
+  await page.getByRole("button", { name: "Copy link" }).first().click();
+  const copyOutcome = page.getByText(/^Link copied\.$|^Couldn't copy\./).first();
+  await expect(copyOutcome).toBeVisible();
+
+  await page.getByRole("button", { name: "Reset links" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Reset links" }).click();
+  await expect(page.getByText("New links are ready. Subscribe again with them.")).toBeVisible();
+  // The new links start afresh: nothing still claims the old link was copied.
+  await expect(page.getByText(/^Link copied\.$|^Couldn't copy\./)).toHaveCount(0);
+  const newHref = await page.getByRole("link", { name: "Open in Apple Calendar / Outlook" }).first().getAttribute("href");
+  expect(newHref).not.toBe(webcalHref);
+  expect((await page.request.get(mineUrl)).status()).toBe(404);
+});

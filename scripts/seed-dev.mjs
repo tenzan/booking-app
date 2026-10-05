@@ -78,7 +78,7 @@ export function seedSql({ reset, csvText }) {
     sql.push(
       // Children first: reservations and what hangs off them.
       "DELETE FROM tech_blocks; DELETE FROM access_tokens; DELETE FROM calendar_tokens; DELETE FROM proposal_options; DELETE FROM proposals; DELETE FROM reservations;",
-      "DELETE FROM email_jobs; DELETE FROM dev_mailbox; DELETE FROM audit_log; DELETE FROM rate_limits; DELETE FROM auth_tokens; DELETE FROM sessions;",
+      "DELETE FROM email_jobs; DELETE FROM dev_mailbox; DELETE FROM audit_log; DELETE FROM rate_limits; DELETE FROM auth_tokens; DELETE FROM sessions; DELETE FROM calendar_feeds;",
       "DELETE FROM staff_unavailability; DELETE FROM availability_window_staff; DELETE FROM availability_windows; DELETE FROM date_overrides; DELETE FROM holidays;",
       // Settings fall back to their defaults (and ORG_NAME) when no row is saved.
       "DELETE FROM settings;",

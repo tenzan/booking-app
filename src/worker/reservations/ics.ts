@@ -12,7 +12,7 @@ import { getSettings } from "../repos/settings";
 /** Whose version of the event: the customer's (no technician) or the staff one (customer, contact, technician). */
 export type CalendarAudience = "customer" | "staff";
 
-interface IcsRow {
+export interface IcsRow {
   id: string;
   ref: string;
   status: string;
@@ -33,18 +33,15 @@ export interface IcsFile {
   body: string;
 }
 
+/** The row every calendar event is built from; callers append their own WHERE (reservation aliased `r`). */
+export const ICS_SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at, r.confirmed_at, r.phone, r.issue,
+        r.contact_name, r.contact_email, c.name AS customer_name, asg.name AS assigned_name
+ FROM reservations r
+ JOIN customers c ON c.id = r.customer_id
+ LEFT JOIN staff asg ON asg.id = r.assigned_staff_id`;
+
 async function loadRow(db: D1Database, id: string): Promise<IcsRow> {
-  const row = await db
-    .prepare(
-      `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at, r.confirmed_at, r.phone, r.issue,
-              r.contact_name, r.contact_email, c.name AS customer_name, asg.name AS assigned_name
-       FROM reservations r
-       JOIN customers c ON c.id = r.customer_id
-       LEFT JOIN staff asg ON asg.id = r.assigned_staff_id
-       WHERE r.id = ?`,
-    )
-    .bind(id)
-    .first<IcsRow>();
+  const row = await db.prepare(`${ICS_SELECT} WHERE r.id = ?`).bind(id).first<IcsRow>();
   if (!row) throw new HttpError(404, "not_found");
   return row;
 }
@@ -94,9 +91,8 @@ async function customerEvent(env: Env, reservationId: string): Promise<{ ref: st
   };
 }
 
-/** The staff event: names the customer, the contact and the assigned technician. Read-only. */
-async function staffEvent(env: Env, reservationId: string): Promise<{ ref: string; event: IcsEvent }> {
-  const r = await loadRow(env.DB, reservationId);
+/** The staff event for a row: customer, contact, phone, issue and technician. `summary` overrides the title (feeds). */
+export function staffEventFromRow(env: Env, r: IcsRow, summary?: string): IcsEvent {
   const status = eventStatus(r);
   const url = `${baseUrl(env)}/staff/r/${encodeURIComponent(r.id)}`;
   const description = [
@@ -109,20 +105,23 @@ async function staffEvent(env: Env, reservationId: string): Promise<{ ref: strin
     t("ics.link", { url }),
   ].join("\n");
   return {
-    ref: r.ref,
-    event: {
-      uid: uidFor(env, r.ref),
-      sequence: r.version,
-      method: "PUBLISH",
-      status,
-      startAt: r.start_at,
-      endAt: r.end_at,
-      stamp: clock.now(),
-      summary: t("ics.staffSummary", { customer: r.customer_name, ref: r.ref }),
-      description,
-      url,
-    },
+    uid: uidFor(env, r.ref),
+    sequence: r.version,
+    method: "PUBLISH",
+    status,
+    startAt: r.start_at,
+    endAt: r.end_at,
+    stamp: clock.now(),
+    summary: summary ?? t("ics.staffSummary", { customer: r.customer_name, ref: r.ref }),
+    description,
+    url,
   };
+}
+
+/** The staff event: names the customer, the contact and the assigned technician. Read-only. */
+async function staffEvent(env: Env, reservationId: string): Promise<{ ref: string; event: IcsEvent }> {
+  const r = await loadRow(env.DB, reservationId);
+  return { ref: r.ref, event: staffEventFromRow(env, r) };
 }
 
 const eventFor = (env: Env, reservationId: string, audience: CalendarAudience) =>

@@ -13,6 +13,7 @@ import { TimezoneNote } from "../../components/TimezoneNote";
 import { addDays, dateIn, dayParts, fmtShortDate, fmtTime, fmtTimeRange, todayIn, weekdayOf } from "../../format";
 import { LOCALE, t } from "../../i18n";
 import { useNow } from "./Countdown";
+import { SubscribeCard } from "./calendar/SubscribeCard";
 
 const k = (key: string, params?: Record<string, string | number>) => t(`web.staff.calendar.${key}`, params);
 
@@ -262,6 +263,8 @@ export default function CalendarPage() {
           </fieldset>
         </div>
       </div>
+
+      <SubscribeCard />
 
       <div className="flex min-h-6 items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
         {loading && <Spinner className="size-4" />}
