@@ -2,6 +2,7 @@ import { assignableFor } from "../../domain/matching";
 import { freeStaffAt, windowStaffAt } from "../../domain/slots";
 import { AUDIT_PAGE_SIZE, RESERVATIONS_PAGE_DEFAULT } from "../../shared/schemas";
 import type {
+  OpenReservationDTO,
   AuditEntryDTO,
   AuditListDTO,
   AuditRow,
@@ -238,6 +239,31 @@ export async function listReservations(
  * `replaces_ref`: the reservation this one asks to replace. `replaced_by_ref`: the latest request replacing this one that
  * is still pending or went through (a declined, expired or superseded one replaces nothing).
  */
+/**
+ * Reservations (aliased `r`) that count toward an account's open-request limit, with `?1` = now. An appointment that
+ * has already ended no longer counts, even before it is marked completed; nor does a pending change request while the
+ * reservation it changes is still active (that one counts).
+ */
+export const COUNTS_TOWARD_LIMIT_SQL = `r.status IN ('pending','confirmed') AND r.end_at > ?1
+  AND NOT (r.status = 'pending' AND r.replaces_id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM reservations o WHERE o.id = r.replaces_id AND o.status IN ('pending','confirmed') AND o.end_at > ?1))`;
+
+/** Each account's reservations that count toward its open-request limit, soonest first. */
+export async function openReservationsByAccount(db: D1Database, customerIds: number[], now: number): Promise<Map<number, OpenReservationDTO[]>> {
+  const out = new Map<number, OpenReservationDTO[]>(customerIds.map((id) => [id, []]));
+  if (customerIds.length === 0) return out;
+  const { results } = await db
+    .prepare(
+      `SELECT r.customer_id, r.id, r.ref, r.status, r.start_at, r.end_at FROM reservations r
+       WHERE r.customer_id IN (${customerIds.map((_, i) => `?${i + 2}`).join(",")}) AND ${COUNTS_TOWARD_LIMIT_SQL}
+       ORDER BY r.start_at, r.id`,
+    )
+    .bind(now, ...customerIds)
+    .all<{ customer_id: number; id: string; ref: string; status: OpenReservationDTO["status"]; start_at: number; end_at: number }>();
+  for (const r of results) out.get(r.customer_id)?.push({ id: r.id, ref: r.ref, status: r.status, startAt: r.start_at, endAt: r.end_at });
+  return out;
+}
+
 const CUSTOMER_SELECT = `SELECT r.id, r.ref, r.status, r.version, r.start_at, r.end_at, c.name AS account_name, c.customer_number,
     r.contact_name, r.phone, r.issue, r.created_at, r.close_reason, orig.ref AS replaces_ref,
     orig.status AS replaces_status, orig.start_at AS replaces_start_at, orig.end_at AS replaces_end_at,

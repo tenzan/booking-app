@@ -128,6 +128,10 @@ export default function CalendarPage() {
   const team = useQuery({ queryKey: queryKeys.team, queryFn: () => apiFetch<TeamList>("/api/staff/team") });
   const technicians = (team.data?.staff ?? []).filter((s) => s.active).sort((a, b) => a.name.localeCompare(b.name));
   const staffId = /^\d+$/.test(techParam) ? Number(techParam) : null;
+  const meId = me.data?.staff?.id ?? null;
+  // "Only me" comes first when the signed-in staff member is on the team list; the others follow by name.
+  const meListed = technicians.find((s) => s.id === meId) ?? null;
+  const others = technicians.filter((s) => s.id !== meId);
   const techName = staffId === null ? null : (team.data?.staff.find((s) => s.id === staffId)?.name ?? null);
 
   const from = wallToUtc(week, 0, tz);
@@ -234,7 +238,8 @@ export default function CalendarPage() {
             >
               <option value="">{k("everyone")}</option>
               {staffId !== null && !technicians.some((s) => s.id === staffId) && <option value={String(staffId)}>{techName ?? k("unknownTech")}</option>}
-              {technicians.map((s: StaffDTO) => (
+              {meListed && <option value={String(meListed.id)}>{k("onlyMe", { name: meListed.name })}</option>}
+              {others.map((s: StaffDTO) => (
                 <option key={s.id} value={String(s.id)}>
                   {s.name}
                 </option>
@@ -293,11 +298,11 @@ export default function CalendarPage() {
           )}
           {/* The grid needs the width: tablets and phones get the day-by-day agenda. */}
           <div className="hidden lg:block">
-            <WeekGrid days={days} tz={calTz} today={today} now={now} staffId={staffId} techName={techName} linkState={back} onShowDay={showDay} />
-            {shownDay && <DayPanel day={shownDay} tz={calTz} today={today} staffId={staffId} techName={techName} linkState={back} focusOnOpen={dayOpened} onClose={() => update({ day: null })} />}
+            <WeekGrid days={days} tz={calTz} today={today} now={now} staffId={staffId} techName={techName} meId={meId} linkState={back} onShowDay={showDay} />
+            {shownDay && <DayPanel day={shownDay} tz={calTz} today={today} staffId={staffId} techName={techName} meId={meId} linkState={back} focusOnOpen={dayOpened} onClose={() => update({ day: null })} />}
           </div>
           <div className="lg:hidden">
-            <Agenda days={days} tz={calTz} today={today} staffId={staffId} techName={techName} linkState={back} />
+            <Agenda days={days} tz={calTz} today={today} staffId={staffId} techName={techName} meId={meId} linkState={back} />
           </div>
           <Legend filtered={staffId !== null} holds={showHolds} />
         </div>
@@ -330,9 +335,12 @@ const blockTone = {
     "border border-l-4 border-green-600 bg-green-50 text-green-950 hover:bg-green-100 dark:border-green-500 dark:bg-green-950 dark:text-green-100 dark:hover:bg-green-900",
 } as const;
 
+/** The signed-in staff member's own bookings say so: "Ada Admin (You)". */
+const nameFor = (id: number, name: string, meId: number | null) => (id === meId ? k("you", { name }) : name);
+
 /** Who has it, as staff should read it: the assigned technician; a pending request is unassigned (or, on one technician's view, provisionally theirs). */
-function whoText(r: CalendarReservationDTO, techName: string | null): string {
-  if (r.assignedStaff) return r.assignedStaff.name;
+function whoText(r: CalendarReservationDTO, techName: string | null, meId: number | null): string {
+  if (r.assignedStaff) return nameFor(r.assignedStaff.id, r.assignedStaff.name, meId);
   if (r.status === "pending" && techName && r.provisionalForFilteredStaff) return k("provisional", { name: techName });
   return t("web.staff.dashboard.unassigned");
 }
@@ -349,14 +357,14 @@ function holdLabel(h: CalendarProposalHoldDTO, tz: string): string {
 }
 
 /** Tooltip, and (after the visible text) the rest of the link's accessible name. */
-function blockLabel(r: CalendarReservationDTO, tz: string, techName: string | null): string {
+function blockLabel(r: CalendarReservationDTO, tz: string, techName: string | null, meId: number | null): string {
   return k("blockLabel", {
     ref: r.ref,
     status: t(`web.statusShort.${r.status}`),
     date: fmtShortDate(dateIn(r.startAt, tz)),
     time: fmtTimeRange(r.startAt, r.endAt, tz),
     customer: r.customer.name,
-    who: whoText(r, techName),
+    who: whoText(r, techName, meId),
   });
 }
 
@@ -389,10 +397,12 @@ interface ViewProps {
   today: string;
   staffId: number | null;
   techName: string | null;
+  /** The signed-in staff member, whose bookings are marked "(You)". */
+  meId: number | null;
   linkState: object;
 }
 
-function WeekGrid({ days, tz, today, now, staffId, techName, linkState, onShowDay }: ViewProps & { now: number; onShowDay: (date: string) => void }) {
+function WeekGrid({ days, tz, today, now, staffId, techName, meId, linkState, onShowDay }: ViewProps & { now: number; onShowDay: (date: string) => void }) {
   // Hours shown: the earliest start to the latest end of the week's times and bookings, whole hours.
   let lo = Infinity;
   let hi = -Infinity;
@@ -562,7 +572,7 @@ function WeekGrid({ days, tz, today, now, staffId, techName, linkState, onShowDa
                       );
                     }
                     const res = r.r;
-                    const label = blockLabel(res, tz, techName);
+                    const label = blockLabel(res, tz, techName, meId);
                     return (
                       <li key={r.id} className="absolute" style={style}>
                         <Link
@@ -576,8 +586,10 @@ function WeekGrid({ days, tz, today, now, staffId, techName, linkState, onShowDa
                           <span className="hidden truncate @min-[6rem]:block">
                             <span className="font-semibold tabular-nums">{fmtTime(res.startAt, tz)}</span> {res.customer.name}
                           </span>
-                          <span className="hidden truncate opacity-80 @min-[6rem]:block">{whoText(res, techName)}</span>
-                          <span className="block truncate font-semibold @min-[6rem]:hidden">{res.assignedStaff ? initialsOf(res.assignedStaff.name) : "–"}</span>
+                          <span className="hidden truncate opacity-80 @min-[6rem]:block">{whoText(res, techName, meId)}</span>
+                          <span className="block truncate font-semibold @min-[6rem]:hidden">
+                            {res.assignedStaff ? (res.assignedStaff.id === meId ? k("youShort") : initialsOf(res.assignedStaff.name)) : "–"}
+                          </span>
                           <span className="block truncate text-[0.625rem] tracking-tight tabular-nums opacity-80 @min-[6rem]:hidden">{fmtTime(res.startAt, tz)}</span>
                           <span className="sr-only">, {label}</span>
                         </Link>
@@ -594,7 +606,7 @@ function WeekGrid({ days, tz, today, now, staffId, techName, linkState, onShowDa
   );
 }
 
-function Agenda({ days, tz, today, staffId, techName, linkState }: ViewProps) {
+function Agenda({ days, tz, today, staffId, techName, meId, linkState }: ViewProps) {
   return (
     <div className="space-y-5">
       {days.map((d) => {
@@ -624,7 +636,7 @@ function Agenda({ days, tz, today, staffId, techName, linkState }: ViewProps) {
               <ul className="space-y-2">
                 {d.items.map((item) => (
                   <li key={item.id}>
-                    <ItemRow item={item} tz={tz} techName={techName} linkState={linkState} />
+                    <ItemRow item={item} tz={tz} techName={techName} meId={meId} linkState={linkState} />
                   </li>
                 ))}
               </ul>
@@ -643,6 +655,7 @@ function DayPanel({
   today,
   staffId,
   techName,
+  meId,
   linkState,
   focusOnOpen,
   onClose,
@@ -669,7 +682,7 @@ function DayPanel({
       <ul className="grid gap-2 sm:grid-cols-2">
         {day.items.map((item) => (
           <li key={item.id}>
-            <ItemRow item={item} tz={tz} techName={techName} linkState={linkState} />
+            <ItemRow item={item} tz={tz} techName={techName} meId={meId} linkState={linkState} />
           </li>
         ))}
       </ul>
@@ -677,7 +690,7 @@ function DayPanel({
   );
 }
 
-function ItemRow({ item, ...rest }: { item: CalItem; tz: string; techName: string | null; linkState: object }) {
+function ItemRow({ item, ...rest }: { item: CalItem; tz: string; techName: string | null; meId: number | null; linkState: object }) {
   return item.kind === "hold" ? <HoldRow h={item.h} tz={rest.tz} linkState={rest.linkState} /> : <AgendaRow r={item.r} {...rest} />;
 }
 
@@ -704,7 +717,7 @@ function HoldRow({ h, tz, linkState }: { h: CalendarProposalHoldDTO; tz: string;
   );
 }
 
-function AgendaRow({ r, tz, techName, linkState }: { r: CalendarReservationDTO; tz: string; techName: string | null; linkState: object }) {
+function AgendaRow({ r, tz, techName, meId, linkState }: { r: CalendarReservationDTO; tz: string; techName: string | null; meId: number | null; linkState: object }) {
   const pending = r.status === "pending";
   return (
     <Link
@@ -720,7 +733,7 @@ function AgendaRow({ r, tz, techName, linkState }: { r: CalendarReservationDTO; 
         <p className="font-medium break-words">{r.customer.name}</p>
         <p className="text-sm break-words opacity-90">
           <span className="sr-only">{t("common.technician")}: </span>
-          {whoText(r, techName)}
+          {whoText(r, techName, meId)}
         </p>
         <p className="font-mono text-xs opacity-80">{r.ref}</p>
       </div>

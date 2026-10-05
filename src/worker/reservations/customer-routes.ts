@@ -2,16 +2,17 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { addDays } from "../../domain/time";
 import type { AppEnv } from "../env";
+import { clock } from "../lib/clock";
 import { HttpError, readJson } from "../lib/http";
 import { kickOutbox } from "../mail/outbox";
 import { rateLimit } from "../lib/rate-limit";
 import { requireCustomer } from "../middleware/session";
 import { accountIdsForContact, eligibleAccountsForEmail, lastPhonesForEmail } from "../repos/customers";
-import { assertBookingEnabled } from "../repos/settings";
+import { assertBookingEnabled, getSettings } from "../repos/settings";
 import { customerAvailability } from "../scheduling/availability";
 import { cancelAsCustomer, customerCancelBody } from "./cancel";
 import { customerIcs, customerWebCalendarLinks, icsResponse } from "./ics";
-import { getCustomerReservation, listCustomerReservations } from "./queries";
+import { getCustomerReservation, listCustomerReservations, openReservationsByAccount } from "./queries";
 import { acceptBody, acceptProposal, rejectBody, rejectProposal } from "./respond";
 import { submitReservation } from "./submit";
 
@@ -30,10 +31,14 @@ const availabilityQuery = z
 export const customerRoutes = new Hono<AppEnv>();
 customerRoutes.use("*", requireCustomer());
 
+/** The accounts this contact may book for, each with what already counts toward its open-request limit. */
 customerRoutes.get("/accounts", async (c) => {
   const email = c.var.customerEmail!;
-  const [accounts, phones] = await Promise.all([eligibleAccountsForEmail(c.env.DB, email), lastPhonesForEmail(c.env.DB, email)]);
-  return c.json({ accounts: accounts.map((a) => ({ ...a, lastPhone: phones.get(a.id) ?? null })) });
+  const [accounts, phones, settings] = await Promise.all([eligibleAccountsForEmail(c.env.DB, email), lastPhonesForEmail(c.env.DB, email), getSettings(c.env.DB, c.env)]);
+  const open = await openReservationsByAccount(c.env.DB, accounts.map((a) => a.id), clock.now());
+  return c.json({
+    accounts: accounts.map((a) => ({ ...a, lastPhone: phones.get(a.id) ?? null, openLimit: settings.maxActivePerAccount, open: open.get(a.id) ?? [] })),
+  });
 });
 
 customerRoutes.get("/availability", async (c) => {
