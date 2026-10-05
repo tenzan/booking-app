@@ -454,9 +454,16 @@ test("staff subscribe to their calendars from the Calendar page, and reset the l
   expect(feed.status()).toBe(200);
   expect(await feed.text()).toContain("— my appointments");
 
+  // A copy before the reset: its message (copied, or the select-it-yourself fallback) is about the old link.
+  await page.getByRole("button", { name: "Copy link" }).first().click();
+  const copyOutcome = page.getByText(/^Link copied\.$|^Couldn't copy\./).first();
+  await expect(copyOutcome).toBeVisible();
+
   await page.getByRole("button", { name: "Reset links" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Reset links" }).click();
   await expect(page.getByText("New links are ready. Subscribe again with them.")).toBeVisible();
+  // The new links start afresh: nothing still claims the old link was copied.
+  await expect(page.getByText(/^Link copied\.$|^Couldn't copy\./)).toHaveCount(0);
   const newHref = await page.getByRole("link", { name: "Open in Apple Calendar / Outlook" }).first().getAttribute("href");
   expect(newHref).not.toBe(webcalHref);
   expect((await page.request.get(mineUrl)).status()).toBe(404);

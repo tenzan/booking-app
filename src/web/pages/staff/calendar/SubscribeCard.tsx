@@ -57,8 +57,9 @@ export function SubscribeCard() {
             </Notice>
           ) : (
             <>
-              <FeedRow label={k("mine")} url={q.data.mine} />
-              <FeedRow label={k("team")} url={q.data.team} />
+              {/* Keyed by link: after a reset the rows start afresh, so no "copied" message outlives the link it was about. */}
+              <FeedRow key={q.data.mine} label={k("mine")} url={q.data.mine} />
+              <FeedRow key={q.data.team} label={k("team")} url={q.data.team} />
               <p className="text-sm text-slate-600 dark:text-slate-400">{k("note")}</p>
               <p className="text-sm font-medium">{k("privacy")}</p>
               <ResetLinks />
