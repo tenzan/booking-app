@@ -6,6 +6,8 @@ An open-source, self-hostable appointment-request app for small service teams th
 
 Plans 1 to 4 are done: the core booking flow, administration and scheduling, the reservation lifecycle, and deployment hardening (security headers, CI and deploy checks, a post-deploy smoke test). Deployment, logs, rollback, backups and the smoke test are covered in [`docs/SETUP.md`](docs/SETUP.md), including its [Operations](docs/SETUP.md#11-operations) section.
 
+This app is a proof of concept. The specification for building the production version, written from it for a development team, is in [`docs/SPEC.md`](docs/SPEC.md) (also as [PDF](docs/SPEC.pdf)).
+
 Implemented now:
 
 - Customer magic-link sign-in for registered contacts, slot availability with technician-aware capacity (business hours, holidays, buffers, minimum notice) and atomic, idempotent booking requests that hold a technician.
