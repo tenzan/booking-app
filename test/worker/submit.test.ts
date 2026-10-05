@@ -380,3 +380,59 @@ describe("POST /api/customer/reservations", () => {
     });
   });
 });
+
+describe("GET /api/customer/accounts: open reservations and the limit", () => {
+  beforeEach(async () => {
+    await seedWeekly(5, 600, 720, [team.a, team.b]);
+  });
+  const accounts = async (who: { cookie: string }) => {
+    const res = await api("GET", "/api/customer/accounts", { cookie: who.cookie });
+    expect(res.status).toBe(200);
+    return res.json.accounts as Array<{ id: number; openLimit: number; open: Array<Record<string, unknown>> }>;
+  };
+
+  it("lists nothing open and the configured limit for a fresh account", async () => {
+    expect((await accounts(pat))[0]).toMatchObject({ id: pat.id, openLimit: 1, open: [] });
+    await env.DB.prepare("INSERT INTO settings(key, value) VALUES ('maxActivePerAccount', '3')").run();
+    expect((await accounts(pat))[0]!.openLimit).toBe(3);
+  });
+
+  it("lists the open request that blocks another booking, exactly as the submit check counts it", async () => {
+    const first = await submit(pat, at(FRI, 10));
+    const [a] = await accounts(pat);
+    expect(a!.open).toEqual([
+      { id: first.json.reservation.id, ref: first.json.reservation.ref, status: "pending", startAt: at(FRI, 10), endAt: at(FRI, 10, 30) },
+    ]);
+    expect(a!.open.length >= a!.openLimit).toBe(true);
+    expect((await submit(pat, at(FRI, 11))).json.error).toBe("limit_reached");
+    // Another account is unaffected.
+    expect((await accounts(sam))[0]!.open).toEqual([]);
+  });
+
+  it("does not list an appointment that has already ended", async () => {
+    await env.DB.prepare(
+      `INSERT INTO reservations(id, ref, customer_id, contact_email, contact_name, phone, issue, start_at, end_at, occ_start, occ_end, status,
+         idempotency_key, created_at, updated_at)
+       VALUES ('past1', 'R-PAST-0001', ?, 'pat@example.test', 'Pat', '000', 'issue', ?, ?, ?, ?, 'confirmed', 'past-key', 0, 0)`,
+    )
+      .bind(pat.id, at(THU, 7), at(THU, 7, 30), at(THU, 7), at(THU, 7, 30))
+      .run();
+    expect((await accounts(pat))[0]!.open).toEqual([]);
+  });
+
+  it("lists a reservation with a pending change request once (the original), not the change request", async () => {
+    const original = await submit(pat, at(FRI, 10));
+    const change = await submit(pat, at(FRI, 11), { replacesId: original.json.reservation.id });
+    expect(change.status).toBe(201);
+    expect((await accounts(pat))[0]!.open.map((r) => r.ref)).toEqual([original.json.reservation.ref]);
+  });
+
+  it("lists several open reservations in time order when the limit allows them", async () => {
+    await env.DB.prepare("INSERT INTO settings(key, value) VALUES ('maxActivePerAccount', '2')").run();
+    const later = await submit(pat, at(FRI, 11));
+    const sooner = await submit(pat, at(FRI, 10));
+    const [a] = await accounts(pat);
+    expect(a!.open.map((r) => r.ref)).toEqual([sooner.json.reservation.ref, later.json.reservation.ref]);
+    expect(a!.openLimit).toBe(2);
+  });
+});

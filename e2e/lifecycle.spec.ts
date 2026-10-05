@@ -373,3 +373,67 @@ test("the confirmation email's calendar link serves the appointment's .ics", asy
   expect(text).toContain(ref);
   expect(text).toMatch(/^STATUS:CONFIRMED\r?$/m);
 });
+
+test("the booking page shows the open reservation up front instead of refusing at the end", async ({ page }, testInfo) => {
+  const { ref } = await arrange(page, testInfo.project.name, "limit");
+  await page.goto("/book");
+  // The contact gets an account per lifecycle test: with several, choose this test's (the picker stays, so another
+  // account can still book). Run on its own, this account is the only one and is preselected.
+  const accountChoice = page.getByRole("radio", { name: new RegExp(`^limit clinic ${projectTag(testInfo.project.name)}`) });
+  const blocked = page.getByRole("heading", { name: "You already have an open reservation" });
+  await expect(accountChoice.or(blocked).first()).toBeVisible();
+  if (await accountChoice.count()) await accountChoice.check();
+  await expect(page.getByRole("heading", { name: "You already have an open reservation" })).toBeVisible();
+  await expect(page.getByText(ref)).toBeVisible();
+  // No time can be picked: the steps that would be refused at the end aren't offered.
+  await expect(page.getByRole("heading", { name: "Choose a time" })).toHaveCount(0);
+  await expect(page.getByRole("list", { name: /^Available times on/ })).toHaveCount(0);
+  // "Choose another time" goes to the change-of-time flow for that reservation.
+  await page.getByRole("link", { name: "Choose another time" }).click();
+  await expect(page).toHaveURL(/\/book\?replaces=/);
+  await expect(page.getByText(new RegExp(`${escapeRe(ref)}`)).first()).toBeVisible();
+  await expect(page.getByRole("list", { name: /^Available times on/ })).toBeVisible();
+});
+
+test("the staff calendar marks the signed-in technician's own bookings and offers Only me", async ({ page }, testInfo) => {
+  const me = (await (await page.request.get("/api/auth/me")).json()) as { staff: { id: number; name: string } };
+  // Arranged by hand: the sample administrator only works mornings (09:00–12:00), so the time must fall in those hours.
+  const api = page.request;
+  const tag = projectTag(testInfo.project.name);
+  const email = contactEmail(testInfo.project.name);
+  const number = `E2E-YOU-${tag.toUpperCase()}`;
+  await createCustomer(api, number, `you clinic ${tag}`, email, `Lee ${tag}`);
+  const session = sessions.get(email);
+  if (session) await page.context().addCookies(session);
+  else {
+    await signIn(api, "customer", email);
+    sessions.set(email, (await page.context().cookies()).filter((c) => c.name === "__Host-cust"));
+  }
+  const { timezone, slots } = await availableSlots(api);
+  const hourOf = (ms: number) => Number(new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: timezone }).format(ms));
+  // The first morning time the administrator is free for (another test may hold them at some).
+  let booked: { id: string; ref: string } | null = null;
+  for (const slot of slots.filter((x) => hourOf(x.startAt) >= 9 && hourOf(x.startAt) < 12)) {
+    const r = await requestSlot(api, slot.startAt, `Lee ${tag}`, number);
+    created.push(r.id);
+    const { techOptions } = await apiGet<{ techOptions: Array<{ id: number; assignable: boolean }> }>(api, `/api/staff/reservations/${r.id}`);
+    if (techOptions.some((o) => o.id === me.staff.id && o.assignable)) {
+      booked = r;
+      break;
+    }
+    await cancelIfOpen(api, r.id);
+  }
+  expect(booked, "a morning time the administrator is free for").not.toBeNull();
+  const { id, ref } = booked!;
+  await approve(api, id, me.staff.id);
+  const startAt = (await staffReservation(api, id)).startAt;
+  const week = new Date(startAt).toISOString().slice(0, 10);
+  await page.goto(`/staff/calendar?week=${week}`);
+  const filter = page.getByLabel("Technician");
+  await expect(filter.locator("option").nth(1)).toHaveText(`Only me (${me.staff.name})`);
+  // The booking names its technician as "(You)": the week grid (desktop) and the agenda (phone) both carry it.
+  await expect(page.getByRole("link").filter({ hasText: ref }).first()).toContainText(`${me.staff.name} (You)`);
+  await filter.selectOption(String(me.staff.id));
+  await expect(page).toHaveURL(new RegExp(`tech=${me.staff.id}`));
+  await expect(page.getByText(`Showing ${me.staff.name}'s calendar.`)).toBeVisible();
+});

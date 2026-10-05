@@ -15,6 +15,7 @@ import { t } from "../../i18n";
 import { AccountPicker } from "./book/AccountPicker";
 import { DateStrip } from "./book/DateStrip";
 import { DetailsForm, validateDetails, type Details, type DetailsErrors } from "./book/DetailsForm";
+import { AlsoOpen, atLimit, LimitReached } from "./book/OpenReservations";
 import { ReviewCard } from "./book/ReviewCard";
 import { SlotList } from "./book/SlotList";
 import { StickyBar } from "./book/StickyBar";
@@ -190,7 +191,9 @@ function BookFlow({
   const account = accounts.length === 1 ? accounts[0]! : (accounts.find((a) => a.id === accountId) ?? null);
   const requested = stepFromName(params.get("step"));
   const detailsOk = Object.keys(validateDetails(details)).length === 0;
-  const step: Step = account && slot ? (requested === 3 && !detailsOk ? 2 : requested) : 1;
+  // At its open-request limit the account can't book (a change of time doesn't count): say so before any time is picked.
+  const blocked = !original && account !== null && atLimit(account);
+  const step: Step = account && slot && !blocked ? (requested === 3 && !detailsOk ? 2 : requested) : 1;
 
   const goTo = (s: Step, replace = false) =>
     setParams({ ...(original ? { replaces: original.id } : {}), ...(s === 1 ? {} : { step: stepName(s) }) }, { replace });
@@ -362,7 +365,8 @@ function BookFlow({
   return (
     <div className="space-y-6 pb-28 sm:pb-0">
       {original && <ReplaceBanner original={original} tz={tz} />}
-      <Steps current={step} onGo={(s) => goTo(s)} />
+      {/* At the limit there are no steps to take: the reservation already open is what to act on. */}
+      {!blocked && <Steps current={step} onGo={(s) => goTo(s)} />}
 
       <div aria-live="polite" className="empty:mb-0">
         {banner && banner.step === step && (
@@ -382,9 +386,17 @@ function BookFlow({
         )}
       </div>
 
-      {step === 1 && (
+      {step === 1 && blocked && account && (
         <div className="space-y-8">
           {accounts.length > 1 && <AccountPicker accounts={accounts} value={accountId} onChange={chooseAccount} />}
+          <LimitReached account={account} tz={tz} headingRef={stepHeading} />
+        </div>
+      )}
+
+      {step === 1 && !blocked && (
+        <div className="space-y-8">
+          {accounts.length > 1 && <AccountPicker accounts={accounts} value={accountId} onChange={chooseAccount} />}
+          {account && !original && account.open.length > 0 && <AlsoOpen account={account} tz={tz} />}
           <section aria-labelledby="day-heading" className="space-y-3">
             <h2 id="day-heading" ref={stepHeading} tabIndex={-1} className={headingClass}>
               {t("web.book.date.heading")}

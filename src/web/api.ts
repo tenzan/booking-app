@@ -4,7 +4,7 @@ import type { CodedMessage } from "../domain/csv";
 import type { ImportRow, ImportSummary } from "../domain/customer-import";
 import type { HolidayImportRow } from "../domain/holiday-import";
 import type { Settings } from "../domain/settings";
-import type { AuditRow, CustomerReservationDTO, ImpactDTO, ReservationDTO, StaffDTO, TechOption, UnavailabilityDTO, WindowDTO } from "../shared/types";
+import type { AuditRow, CustomerReservationDTO, OpenReservationDTO, ImpactDTO, ReservationDTO, StaffDTO, TechOption, UnavailabilityDTO, WindowDTO } from "../shared/types";
 
 /** A non-2xx API response (`status` 0 = the request never reached the server). */
 export class ApiError extends Error {
@@ -90,6 +90,9 @@ export interface Account {
   contactPhone: string | null;
   customerPhone: string | null;
   lastPhone: string | null;
+  /** How many open reservations the account may have at once, and those it has now (soonest first). */
+  openLimit: number;
+  open: OpenReservationDTO[];
 }
 
 export interface Slot {
@@ -206,7 +209,8 @@ export interface DevMessage {
 
 export const queryKeys = {
   me: ["me"] as const,
-  accounts: ["customer", "accounts"] as const,
+  /** Under reservations: the accounts carry their open reservations, so a cancel or a move elsewhere refreshes them. */
+  accounts: ["customer", "reservations", "accounts"] as const,
   availability: ["customer", "availability"] as const,
   reservations: ["customer", "reservations"] as const,
   reservation: (id: string) => ["customer", "reservations", id] as const,

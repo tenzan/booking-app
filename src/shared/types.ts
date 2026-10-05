@@ -101,6 +101,15 @@ export interface CustomerReservationDTO {
   replacedByRef: string | null;
 }
 
+/** A reservation that counts toward its account's open-request limit (shown on the booking page). */
+export interface OpenReservationDTO {
+  id: string;
+  ref: string;
+  status: "pending" | "confirmed";
+  startAt: number;
+  endAt: number;
+}
+
 /** "Add to calendar" for a confirmed appointment: the .ics file (Apple Calendar and others) and web calendar forms. */
 export interface CalendarLinks {
   ics: string;

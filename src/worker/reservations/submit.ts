@@ -13,6 +13,7 @@ import { activeStaffByIds, noticeRecipients, notifyStaff } from "../repos/staff"
 import { loadScheduleCtx } from "../scheduling/context";
 import { blockInsert, ELIGIBLE_SQL, movedPending, movePendingStatements } from "./holds";
 import { closeProposalStatements } from "./propose";
+import { COUNTS_TOWARD_LIMIT_SQL } from "./queries";
 import { cancelReplacedStatements } from "./replacement";
 
 export interface SubmitInput {
@@ -118,15 +119,8 @@ async function attempt(env: Env, email: string, input: SubmitInput): Promise<Sub
   const plan = input.replacesId === undefined ? null : await planReplacement(db, input.replacesId, input.customerId, now);
   if (!plan) {
     const active = await db
-      // An appointment that has already ended no longer counts, even before it is marked completed; nor does a pending
-      // change request while the reservation it changes is still active (that one counts).
-      .prepare(
-        `SELECT COUNT(*) AS n FROM reservations r
-         WHERE r.customer_id = ?1 AND r.status IN ('pending','confirmed') AND r.end_at > ?2
-           AND NOT (r.status = 'pending' AND r.replaces_id IS NOT NULL AND EXISTS (
-             SELECT 1 FROM reservations o WHERE o.id = r.replaces_id AND o.status IN ('pending','confirmed') AND o.end_at > ?2))`,
-      )
-      .bind(input.customerId, now)
+      .prepare(`SELECT COUNT(*) AS n FROM reservations r WHERE r.customer_id = ?2 AND ${COUNTS_TOWARD_LIMIT_SQL}`)
+      .bind(now, input.customerId)
       .first<{ n: number }>();
     if ((active?.n ?? 0) >= ctx.settings.maxActivePerAccount) throw new HttpError(409, "limit_reached");
   }
