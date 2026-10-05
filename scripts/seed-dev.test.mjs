@@ -139,6 +139,7 @@ test("--reset restores the baseline and clears everything else", () => {
     INSERT INTO auth_tokens (token_hash, kind, email, created_at, expires_at) VALUES ('t', 'staff', 'extra@example.test', 0, 1);
     INSERT INTO sessions (id_hash, kind, email, staff_id, created_at, expires_at, last_seen_at)
       SELECT 's', 'staff', email, id, 0, 1, 0 FROM staff WHERE email = 'extra@example.test';
+    INSERT INTO calendar_feeds (staff_id, token, created_at) SELECT id, 'feed-tok', 0 FROM staff WHERE email = 'extra@example.test';
   `);
   const optionCols = all(db, "PRAGMA table_info(proposal_options)").map((c) => c.name);
   db.exec(
@@ -154,7 +155,7 @@ test("--reset restores the baseline and clears everything else", () => {
 
   for (const table of [
     "reservations", "tech_blocks", "access_tokens", "calendar_tokens", "proposals", "proposal_options", "email_jobs", "dev_mailbox", "audit_log", "rate_limits",
-    "auth_tokens", "sessions", "date_overrides", "holidays", "staff_unavailability", "settings",
+    "auth_tokens", "sessions", "calendar_feeds", "date_overrides", "holidays", "staff_unavailability", "settings",
   ]) {
     assert.equal(count(db, table), 0, `${table} is cleared`);
   }

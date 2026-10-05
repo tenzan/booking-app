@@ -245,6 +245,14 @@ export const en = {
     office365: "Microsoft 365",
     other: "Other calendar (.ics)",
   },
+  /** Staff calendar subscriptions (feeds): calendar names, event titles and the plain-text page for a dead link. */
+  calendarFeed: {
+    mineName: "{org} — my appointments",
+    teamName: "{org} — team",
+    mineSummary: "{customer} ({ref})",
+    teamSummary: "{tech}: {customer} ({ref})",
+    invalid: "This calendar subscription link is not valid any more (it was reset, or its owner no longer has access). Get a new link from the Calendar page at {url}",
+  },
   /** Plain-text pages for an "Add to calendar" file link that can no longer be served. */
   calendarLink: {
     invalid: "This calendar link has expired or is not valid. Open your reservation from a recent email, or sign in at {url}",
