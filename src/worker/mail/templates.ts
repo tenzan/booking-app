@@ -226,16 +226,38 @@ function parsePayload(job: EmailJobRow): Record<string, unknown> {
   }
 }
 
+/**
+ * A customer's sign-in buttons. Where the customer was heading is known (My reservations, choosing another time), one
+ * button says so. Otherwise (the start page) they choose: book a session, or see their reservations. Both buttons are
+ * the same single-use link, with the destination after the token (`&to=`; the verify page takes same-site paths only).
+ */
+function customerSignInActions(url: string, redirect: string | null): NonNullable<EmailSpec["actions"]> {
+  if (redirect === null || redirect === "/book") {
+    return [
+      { label: t("email.customerLogin.book"), url: `${url}&to=/book`, primary: true },
+      { label: t("email.customerLogin.reservations"), url: `${url}&to=/my` },
+    ];
+  }
+  const label = redirect.startsWith("/my")
+    ? "email.customerLogin.viewReservations"
+    : redirect.startsWith("/book?replaces=")
+      ? "email.customerLogin.chooseAnother"
+      : "email.customerLogin.signIn";
+  return [{ label: t(label), url, primary: true }];
+}
+
 async function renderLogin(env: Env, job: EmailJobRow, s: Settings, kind: "customer" | "staff"): Promise<Rendered> {
-  const token = await mintLoginToken(env, kind, job.to_email, safeRedirect(parsePayload(job).redirectPath));
+  const redirect = safeRedirect(parsePayload(job).redirectPath);
+  const token = await mintLoginToken(env, kind, job.to_email, redirect);
   const path = kind === "customer" ? "/auth/verify" : "/staff/auth/verify";
   const url = `${env.APP_BASE_URL}${path}#t=${token}`;
   const k = kind === "customer" ? "email.customerLogin" : "email.staffLogin";
   const subject = t(`${k}.subject`, { org: s.orgName });
+  const actions = kind === "customer" ? customerSignInActions(url, redirect) : [{ label: t("email.staffLogin.button"), url, primary: true }];
   const mail = renderEmail({
     orgName: s.orgName,
-    paragraphs: [t(`${k}.body`)],
-    actions: [{ label: t(`${k}.button`), url, primary: true }],
+    paragraphs: [t(kind === "customer" ? (actions.length > 1 ? "email.customerLogin.bodyChoice" : "email.customerLogin.body") : "email.staffLogin.body")],
+    actions,
     after: kind === "customer" ? [t("email.customerLogin.ignore")] : [],
     footer: t("email.footer.login", { org: s.orgName }),
   });

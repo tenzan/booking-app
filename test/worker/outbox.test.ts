@@ -109,7 +109,7 @@ describe("processOutbox", () => {
     await enqueue("customer_login", "pat@example.test", null, { redirectPath: "/book" });
     expect(await processOutbox(env)).toEqual({ sent: 1, failed: 0, skipped: 0 });
     const [m] = await mailbox();
-    expect(m!.subject).toBe("Your link to book remote support");
+    expect(m!.subject).toMatch(/^Your sign-in link — /);
     expect(m!.to_email).toBe("pat@example.test");
     const token = /http:\/\/localhost:5173\/auth\/verify#t=([A-Za-z0-9_-]+)/.exec(m!.text)?.[1];
     expect(token).toBeTruthy();
@@ -299,7 +299,7 @@ describe("dev mailbox route", () => {
     const ok = await api("GET", "/api/dev/mail");
     expect(ok.status).toBe(200);
     expect(ok.json.messages).toHaveLength(1);
-    expect(ok.json.messages[0]).toMatchObject({ to: "pat@example.test", subject: "Your link to book remote support" });
+    expect(ok.json.messages[0]).toMatchObject({ to: "pat@example.test", subject: expect.stringMatching(/^Your sign-in link — /) });
 
     const { default: worker } = await import("../../src/worker/index");
     const res = await worker.fetch!(new Request("http://localhost:5173/api/dev/mail") as any, { ...env, MAIL_MODE: "cloudflare" } as any, { waitUntil() {}, passThroughOnException() {} } as any);

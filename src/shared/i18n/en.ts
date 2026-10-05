@@ -26,14 +26,19 @@ export const en = {
   },
   email: {
     footer: {
-      login: "You received this because someone entered this email address on the {org} booking page.",
+      login: "You received this because someone entered this email address on the {org} sign-in page.",
       customer: "You received this because a remote support request was made for your account with {org}.",
       staff: "You received this because you are on the {org} technical-service team.",
     },
     customerLogin: {
-      subject: "Your link to book remote support",
-      button: "Book a remote support session",
-      body: "Use the button below to book a remote support session. The link expires in 15 minutes and can be used once.",
+      subject: "Your sign-in link — {org}",
+      body: "Use the button below to sign in. The link expires in 15 minutes and can be used once.",
+      bodyChoice: "Use a button below to sign in and go straight there. The link expires in 15 minutes and can be used once.",
+      book: "Book a session",
+      reservations: "My reservations",
+      viewReservations: "View my reservations",
+      chooseAnother: "Choose another time",
+      signIn: "Sign in",
       ignore: "If you didn't request this, you can ignore this email.",
     },
     staffLogin: {
@@ -282,7 +287,7 @@ export const en = {
     },
     start: {
       heading: "Book a remote support session",
-      lead: "Enter the email address we have on file for you. We'll send you a secure link to choose a time — no password needed.",
+      lead: "Enter the email address we have on file for you. We'll send you a secure sign-in link — no password needed. Then book a time or check your reservations.",
       emailLabel: "Email address",
       emailHint: "Use the email address your organization registered for remote support.",
       emailInvalid: "Please enter a valid email address.",
@@ -293,7 +298,7 @@ export const en = {
       turnstileWaiting: "Completing a quick security check…",
       turnstileFailed: "The security check didn't load. Please refresh the page and try again.",
       sentHeading: "Check your email",
-      sentBody: "If {email} is registered for remote support, you'll receive a booking link shortly. The link expires in 15 minutes and can be used once.",
+      sentBody: "If {email} is registered for remote support, you'll receive a sign-in link shortly. The link expires in 15 minutes and can be used once.",
       sentHelp: "Didn't get it? Check spam, or try again in a minute.",
       differentEmail: "Use a different email",
       howHeading: "How it works",
