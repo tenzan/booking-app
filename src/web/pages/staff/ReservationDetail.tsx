@@ -228,6 +228,7 @@ export default function ReservationDetail() {
                   actions={allowed}
                   action={action}
                   onOpen={openPanel}
+                  footer={q.data.reservation.status === "confirmed" ? <StaffAddToCalendar r={q.data.reservation} /> : undefined}
                   note={
                     pendingChange && (
                       <Notice tone="info">
@@ -377,25 +378,24 @@ function ReservationLink({ id, refText, status }: { id: string; refText: string;
   );
 }
 
+/** Staff "Add to calendar" for a confirmed appointment: the split button, at the foot of the actions box. */
+function StaffAddToCalendar({ r }: { r: ReservationDTO }) {
+  return (
+    <AddToCalendar
+      queryKey={["staff", "reservations", "calendar-links", r.id, r.version]}
+      load={() => apiFetch<{ links: CalendarLinks }>(`/api/staff/reservations/${encodeURIComponent(r.id)}/calendar`).then((x) => x.links)}
+      note={t("web.staff.lifecycle.ics.note")}
+    />
+  );
+}
+
 /**
- * Staff "Add to calendar": the choices for a confirmed appointment; for one cancelled after it was confirmed, the
- * cancelled .ics only (it removes the event from calendars that read files; web calendars can't be updated by a link).
+ * For an appointment cancelled after it was confirmed: the cancelled .ics, which removes the event from calendars that
+ * imported the file (web calendars can't be updated by a link).
  */
 function IcsDownload({ r }: { r: ReservationDTO }) {
-  const cancelled = r.status === "cancelled" && r.confirmedAt !== null;
   const noteId = `ics-note-${r.id}`;
-  if (r.status === "confirmed") {
-    return (
-      <div className="mt-3 sm:max-w-sm">
-        <AddToCalendar
-          queryKey={["staff", "reservations", "calendar-links", r.id, r.version]}
-          load={() => apiFetch<{ links: CalendarLinks }>(`/api/staff/reservations/${encodeURIComponent(r.id)}/calendar`).then((x) => x.links)}
-          note={t("web.staff.lifecycle.ics.note")}
-        />
-      </div>
-    );
-  }
-  if (!cancelled) return null;
+  if (r.status !== "cancelled" || r.confirmedAt === null) return null;
   return (
     <div className="mt-3 space-y-1.5">
       {/* A plain GET with the staff session: the browser saves the attachment, no token involved. */}
@@ -506,6 +506,7 @@ function ActionsCard({
   action,
   onOpen,
   note,
+  footer,
   children,
 }: {
   actions: Action[];
@@ -513,6 +514,8 @@ function ActionsCard({
   onOpen: (a: Action | null) => void;
   /** Shown under the actions: why one that would otherwise be there is not. */
   note?: ReactNode;
+  /** At the foot of the box, under any open panel (Add to calendar). */
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -579,6 +582,7 @@ function ActionsCard({
           {children}
         </div>
       )}
+      {footer && <div className="border-t border-slate-200 pt-4 dark:border-slate-800">{footer}</div>}
     </Card>
   );
 }

@@ -13,7 +13,7 @@ import { TimezoneNote } from "../../components/TimezoneNote";
 import { addDays, dateIn, dayParts, fmtShortDate, fmtTime, fmtTimeRange, todayIn, weekdayOf } from "../../format";
 import { LOCALE, t } from "../../i18n";
 import { useNow } from "./Countdown";
-import { SubscribeCard } from "./calendar/SubscribeCard";
+import { SubscribeButton } from "./calendar/SubscribeButton";
 
 const k = (key: string, params?: Record<string, string | number>) => t(`web.staff.calendar.${key}`, params);
 
@@ -203,9 +203,12 @@ export default function CalendarPage() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <PageHeading>{k("heading")}</PageHeading>
-        <TimezoneNote tz={calTz} atMs={from} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <PageHeading>{k("heading")}</PageHeading>
+          <TimezoneNote tz={calTz} atMs={from} />
+        </div>
+        <SubscribeButton />
       </div>
 
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -263,8 +266,6 @@ export default function CalendarPage() {
           </fieldset>
         </div>
       </div>
-
-      <SubscribeCard />
 
       <div className="flex min-h-6 items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
         {loading && <Spinner className="size-4" />}

@@ -57,10 +57,11 @@ const sessions = new Map<string, Cookie[]>();
  * A customer account of this test's own, with the project's lifecycle contact signed in in this browser, and one
  * request for the first bookable time; approved (by its provisional technician) unless `pending`.
  */
-async function arrange(page: Page, project: string, label: string, opts: { pending?: boolean } = {}): Promise<Arranged> {
+async function arrange(page: Page, project: string, label: string, opts: { pending?: boolean; email?: string } = {}): Promise<Arranged> {
   const tag = projectTag(project);
   const api = page.request;
-  const email = contactEmail(project);
+  // A contact of its own gets its own allowance of booking requests per hour (the shared one is near its limit).
+  const email = opts.email ?? contactEmail(project);
   const contact = `Lee ${tag}`;
   const number = `E2E-${label.toUpperCase()}-${tag.toUpperCase()}`;
   await createCustomer(api, number, `${label} clinic ${tag}`, email, contact);
@@ -331,17 +332,35 @@ test("customer adds the appointment to a calendar from the email link and from M
     expect(file.text).toContain(ref);
     expect(file.text).toMatch(/^STATUS:CONFIRMED\r?$/m);
   };
-  /** Opens the choices in `scope`, checks the web calendar links, and downloads the .ics through "Other calendar". */
-  const addToCalendar = async (scope: Page | Locator) => {
-    const toggle = scope.getByRole("button", { name: "Add to calendar" });
-    await toggle.click();
-    await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    await expect(scope.getByRole("link", { name: /^Google Calendar/ })).toHaveAttribute("href", /^https:\/\/calendar\.google\.com\/calendar\/render\?/);
-    await expect(scope.getByRole("link", { name: /^Google Calendar/ })).toHaveAttribute("target", "_blank");
-    await expect(scope.getByRole("link", { name: /^Outlook\.com/ })).toHaveAttribute("href", /^https:\/\/outlook\.live\.com\//);
-    await expect(scope.getByRole("link", { name: /^Microsoft 365/ })).toHaveAttribute("href", /^https:\/\/outlook\.office\.com\//);
-    await expect(scope.getByRole("link", { name: "Apple Calendar" })).toHaveAttribute("href", /\/api\/cal\/[A-Za-z0-9_-]+\.ics$/);
-    check(await download(page, () => scope.getByRole("link", { name: "Other calendar (.ics)" }).click()));
+  /**
+   * In `scope`: the main button adds in one click (Google on these non-Apple browsers), "More calendars" lists every
+   * choice with what it does, and the .ics is downloaded through "Calendar file (.ics)". That choice is then remembered:
+   * the main button offers it next time.
+   */
+  const addToCalendar = async (scope: Page | Locator, reload: () => Promise<Locator | Page>) => {
+    const main = scope.getByRole("link", { name: "Add to Google Calendar" });
+    await expect(main).toHaveAttribute("href", /^https:\/\/calendar\.google\.com\/calendar\/render\?/);
+    await expect(main).toHaveAttribute("target", "_blank");
+    const more = scope.getByRole("button", { name: "More calendars" });
+    await more.click();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    const menu = scope.getByRole("menu", { name: "More calendars" });
+    await expect(menu.getByRole("menuitem", { name: /^Google Calendar/ })).toHaveAttribute("href", /^https:\/\/calendar\.google\.com\//);
+    await expect(menu.getByRole("menuitem", { name: /^Outlook \(work or school\)/ })).toHaveAttribute("href", /^https:\/\/outlook\.office\.com\//);
+    await expect(menu.getByRole("menuitem", { name: /^Outlook\.com \(personal\)/ })).toHaveAttribute("href", /^https:\/\/outlook\.live\.com\//);
+    await expect(menu.getByRole("menuitem", { name: /^Apple Calendar/ })).toHaveAttribute("href", /\/api\/cal\/[A-Za-z0-9_-]+\.ics$/);
+    // Each choice says what will happen.
+    await expect(menu.getByRole("menuitem", { name: /^Google Calendar/ })).toContainText("Opens Google Calendar to save it");
+    // Escape closes the menu and gives focus back to its button.
+    await page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
+    await expect(more).toBeFocused();
+    await more.click();
+    check(await download(page, () => menu.getByRole("menuitem", { name: /^Calendar file \(\.ics\)/ }).click()));
+    await expect(menu).toBeHidden();
+    const again = await reload();
+    await expect(again.getByRole("link", { name: "Download calendar file" })).toHaveAttribute("href", /\/api\/cal\/[A-Za-z0-9_-]+\.ics$/);
+    check(await download(page, () => again.getByRole("link", { name: "Download calendar file" }).click()));
   };
 
   // ---- the link page: it works from the emailed link's token alone (this browser also has the customer's session from
@@ -350,13 +369,19 @@ test("customer adds the appointment to a calendar from the email link and from M
   // The token is taken out of the address bar as soon as the page has read it.
   await expect(page).toHaveURL(/\/r$/);
   await expect(page.getByText("Confirmed", { exact: true })).toBeVisible();
-  await addToCalendar(page);
+  await page.evaluate(() => localStorage.removeItem("calendar-choice"));
+  await addToCalendar(page, async () => page);
 
   // ---- My reservations (the customer's session)
   await page.goto("/my");
+  await page.evaluate(() => localStorage.removeItem("calendar-choice"));
   const card = myCard(page, ref);
   await card.getByRole("button").first().click();
-  await addToCalendar(card);
+  await addToCalendar(card, async () => {
+    await page.reload();
+    await myCard(page, ref).getByRole("button").first().click();
+    return myCard(page, ref);
+  });
   expect((await staffReservation(page.request, id)).status).toBe("confirmed");
 });
 
@@ -395,7 +420,7 @@ test("the booking page shows the open reservation up front instead of refusing a
   await expect(page.getByRole("list", { name: /^Available times on/ })).toBeVisible();
 });
 
-test("the staff calendar marks the signed-in technician's own bookings and offers Only me", async ({ page }, testInfo) => {
+test("the staff calendar marks the signed-in technician's own bookings and offers Only me; the request page offers Add to calendar", async ({ page }, testInfo) => {
   const me = (await (await page.request.get("/api/auth/me")).json()) as { staff: { id: number; name: string } };
   // Arranged by hand: the sample administrator only works mornings (09:00–12:00), so the time must fall in those hours.
   const api = page.request;
@@ -436,18 +461,24 @@ test("the staff calendar marks the signed-in technician's own bookings and offer
   await filter.selectOption(String(me.staff.id));
   await expect(page).toHaveURL(new RegExp(`tech=${me.staff.id}`));
   await expect(page.getByText(`Showing ${me.staff.name}'s calendar.`)).toBeVisible();
+
+  // The request page offers Add to calendar in its actions box: one click, and "More calendars" for all five.
+  await page.goto(`/staff/r/${id}`);
+  const actions = page.getByRole("group", { name: "Actions" }).locator("..");
+  await expect(actions.getByRole("link", { name: /^Add to (Google|Apple) Calendar$|^Download calendar file$|^Add to Outlook/ })).toBeVisible();
+  await actions.getByRole("button", { name: "More calendars" }).click();
+  await expect(actions.getByRole("menu", { name: "More calendars" }).getByRole("menuitem")).toHaveCount(5);
 });
 
 test("staff subscribe to their calendars from the Calendar page, and reset the links", async ({ page }) => {
   await page.goto("/staff/calendar");
-  // Open on the first visit, collapsed afterwards: open it if needed (judged by the card, not by links still loading).
-  const details = page.locator("details").filter({ hasText: "Subscribe in your calendar app" });
-  await expect(details).toBeVisible();
-  if (!(await details.evaluate((d) => (d as HTMLDetailsElement).open))) await page.getByText("Subscribe in your calendar app").click();
-  const google = page.getByRole("link", { name: "Add to Google Calendar" });
+  await page.getByRole("button", { name: "Subscribe" }).click();
+  const dialog = page.getByRole("dialog", { name: "Subscribe in your calendar app" });
+  await expect(dialog).toBeVisible();
+  const google = dialog.getByRole("link", { name: "Add to Google" });
   await expect(google).toHaveCount(2);
   await expect(google.first()).toHaveAttribute("href", /^https:\/\/calendar\.google\.com\/calendar\/r\?cid=webcal%3A%2F%2F/);
-  const webcalHref = await page.getByRole("link", { name: "Open in Apple Calendar / Outlook" }).first().getAttribute("href");
+  const webcalHref = await dialog.getByRole("link", { name: "Add to Apple / Outlook" }).first().getAttribute("href");
   expect(webcalHref).toMatch(/^webcal:\/\/.+\/api\/feed\/[A-Za-z0-9_-]+\/mine\.ics$/);
   const mineUrl = webcalHref!.replace(/^webcal:/, "http:");
   const feed = await page.request.get(mineUrl);
@@ -455,16 +486,35 @@ test("staff subscribe to their calendars from the Calendar page, and reset the l
   expect(await feed.text()).toContain("— my appointments");
 
   // A copy before the reset: its message (copied, or the select-it-yourself fallback) is about the old link.
-  await page.getByRole("button", { name: "Copy link" }).first().click();
-  const copyOutcome = page.getByText(/^Link copied\.$|^Couldn't copy\./).first();
-  await expect(copyOutcome).toBeVisible();
+  await dialog.getByRole("button", { name: "Copy link" }).first().click();
+  await expect(dialog.getByText(/^Link copied\.$|^Couldn't copy\./).first()).toBeVisible();
 
-  await page.getByRole("button", { name: "Reset links" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Reset links" }).click();
-  await expect(page.getByText("New links are ready. Subscribe again with them.")).toBeVisible();
+  // Reset asks first, inside the same dialog.
+  await dialog.getByRole("button", { name: "Reset links" }).click();
+  await expect(dialog.getByText("Your current links stop working.", { exact: false })).toBeVisible();
+  await dialog.getByRole("button", { name: "Yes, reset links" }).click();
+  await expect(dialog.getByText("New links are ready. Subscribe again with them.")).toBeVisible();
   // The new links start afresh: nothing still claims the old link was copied.
-  await expect(page.getByText(/^Link copied\.$|^Couldn't copy\./)).toHaveCount(0);
-  const newHref = await page.getByRole("link", { name: "Open in Apple Calendar / Outlook" }).first().getAttribute("href");
+  await expect(dialog.getByText(/^Link copied\.$|^Couldn't copy\./)).toHaveCount(0);
+  const newHref = await dialog.getByRole("link", { name: "Add to Apple / Outlook" }).first().getAttribute("href");
   expect(newHref).not.toBe(webcalHref);
   expect((await page.request.get(mineUrl)).status()).toBe(404);
+
+  // Closing gives the calendar back; the Subscribe button is where it was.
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("button", { name: "Subscribe" })).toBeFocused();
+});
+
+test.describe("on an iPhone", () => {
+  test.use({ userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1" });
+  test("the one-click button adds to Apple Calendar", async ({ page }, testInfo) => {
+    const { ref } = await arrange(page, testInfo.project.name, "ios-cal", { email: `ios-${testInfo.project.name}@example.test` });
+    await page.goto("/my");
+    await page.evaluate(() => localStorage.removeItem("calendar-choice"));
+    await page.reload();
+    const card = myCard(page, ref);
+    await card.getByRole("button").first().click();
+    await expect(card.getByRole("link", { name: "Add to Apple Calendar" })).toHaveAttribute("href", /\/api\/cal\/[A-Za-z0-9_-]+\.ics$/);
+  });
 });
