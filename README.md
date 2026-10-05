@@ -21,6 +21,7 @@ Implemented now:
 - Lifecycle jobs on a one-minute cron: approval reminders and escalation, expiry of unanswered requests and proposals, customer appointment reminders, completion of finished appointments and hourly cleanup of old tokens, sessions and mail.
 - "Add to calendar" for customers and staff: Apple Calendar (a one-tap `.ics` link), Google Calendar, Outlook.com, Microsoft 365 and any other calendar (`.ics`), in the confirmation, reschedule and reminder emails (and the assigned technician's notices) and on the reservation pages.
 - Customers' email replies relayed to the staff.
+- Staff calendar subscriptions: each staff member subscribes once (Google Calendar, Apple Calendar, Outlook) to two live calendars, their own appointments and the rest of the team's (confirmed appointments only), from the Calendar page.
 
 ## Who it is for
 
@@ -46,7 +47,7 @@ Small technical-service teams (IT support, equipment vendors, clinics' IT provid
 - "Add to calendar" links (Apple, Google, Outlook.com, Microsoft 365, `.ics`) for confirmed reservations, in emails and in the app.
 - English UI and emails through an i18n catalog.
 
-Out of scope: payments, subscriptions, AI features, CRM features, remote-access tool APIs, meeting links, Outlook/Graph integration, calendar subscriptions and public self-registration.
+Out of scope: payments, subscriptions, AI features, CRM features, remote-access tool APIs, meeting links, Outlook/Graph integration, customer calendar subscriptions and public self-registration.
 
 ## How it works
 
