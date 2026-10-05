@@ -130,6 +130,7 @@ test("--reset restores the baseline and clears everything else", () => {
         FROM customers c, staff s WHERE c.customer_number = 'X-1' AND s.email = 'extra@example.test';
     INSERT INTO tech_blocks (staff_id, block_start, owner_kind, owner_id) SELECT id, 0, 'reservation', 'r1' FROM staff WHERE email = 'extra@example.test';
     INSERT INTO access_tokens (token_hash, reservation_id, created_at, expires_at) VALUES ('h', 'r1', 0, 1);
+    INSERT INTO calendar_tokens (token_hash, reservation_id, audience, created_at, expires_at) VALUES ('c', 'r1', 'customer', 0, 1);
     INSERT INTO proposals (id, reservation_id, status, created_at, expires_at) VALUES ('p1', 'r1', 'open', 0, 1);
     INSERT INTO email_jobs (id, dedupe_key, template, to_email, status, send_after, created_at) VALUES ('e1', 'd1', 't', 'x@example.test', 'queued', 0, 0);
     INSERT INTO dev_mailbox (to_email, subject, html, text, created_at) VALUES ('x@example.test', 's', 'h', 't', 0);
@@ -152,7 +153,7 @@ test("--reset restores the baseline and clears everything else", () => {
   seed(db, true);
 
   for (const table of [
-    "reservations", "tech_blocks", "access_tokens", "proposals", "proposal_options", "email_jobs", "dev_mailbox", "audit_log", "rate_limits",
+    "reservations", "tech_blocks", "access_tokens", "calendar_tokens", "proposals", "proposal_options", "email_jobs", "dev_mailbox", "audit_log", "rate_limits",
     "auth_tokens", "sessions", "date_overrides", "holidays", "staff_unavailability", "settings",
   ]) {
     assert.equal(count(db, table), 0, `${table} is cleared`);

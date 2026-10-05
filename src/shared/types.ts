@@ -101,6 +101,16 @@ export interface CustomerReservationDTO {
   replacedByRef: string | null;
 }
 
+/** "Add to calendar" for a confirmed appointment: the .ics file (Apple Calendar and others) and web calendar forms. */
+export interface CalendarLinks {
+  ics: string;
+  google: string;
+  /** Outlook.com (personal accounts). */
+  outlook: string;
+  /** Microsoft 365 (work or school Outlook). */
+  office365: string;
+}
+
 export type TechUnavailableReason = "not_scheduled" | "unavailable" | "busy" | "needed_for_other_request";
 
 export interface TechOption {

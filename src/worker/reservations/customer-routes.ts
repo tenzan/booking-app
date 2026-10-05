@@ -10,7 +10,7 @@ import { accountIdsForContact, eligibleAccountsForEmail, lastPhonesForEmail } fr
 import { assertBookingEnabled } from "../repos/settings";
 import { customerAvailability } from "../scheduling/availability";
 import { cancelAsCustomer, customerCancelBody } from "./cancel";
-import { customerIcs, icsResponse } from "./ics";
+import { customerIcs, customerWebCalendarLinks, icsResponse } from "./ics";
 import { getCustomerReservation, listCustomerReservations } from "./queries";
 import { acceptBody, acceptProposal, rejectBody, rejectProposal } from "./respond";
 import { submitReservation } from "./submit";
@@ -80,6 +80,13 @@ customerRoutes.post("/reservations/:id/ics", async (c) => {
   const id = c.req.param("id");
   await assertOwned(c.env.DB, c.var.customerEmail!, id);
   return icsResponse(c, await customerIcs(c.env, id));
+});
+
+/** "Add to calendar" links, with a short-lived link to the file. Ownership as for cancel; a POST, since it mints a token. */
+customerRoutes.post("/reservations/:id/calendar", async (c) => {
+  const id = c.req.param("id");
+  await assertOwned(c.env.DB, c.var.customerEmail!, id);
+  return c.json({ links: await customerWebCalendarLinks(c.env, id) });
 });
 
 /**

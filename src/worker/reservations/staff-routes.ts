@@ -9,7 +9,7 @@ import { requireStaff } from "../middleware/session";
 import { approveReservation } from "./approve";
 import { cancelReservation } from "./cancel";
 import { declineReservation } from "./decline";
-import { icsResponse, staffIcs } from "./ics";
+import { calendarLinks, icsResponse, staffIcs } from "./ics";
 import { CANDIDATE_MAX_DAYS, proposalCandidates, proposeBody, proposeReservation, withdrawProposal } from "./propose";
 import { reassignReservation } from "./reassign";
 import { getAudit, getReservation, listReservations, techOptions } from "./queries";
@@ -38,6 +38,12 @@ staffReservationRoutes.get("/reservations/:id", async (c) => {
 });
 
 staffReservationRoutes.get("/reservations/:id/ics", async (c) => icsResponse(c, await staffIcs(c.env, c.req.param("id"))));
+/** "Add to calendar" links; the file is the session download above, so no token is needed. */
+staffReservationRoutes.get("/reservations/:id/calendar", async (c) => {
+  const id = c.req.param("id");
+  const ics = `${c.env.APP_BASE_URL.replace(/\/+$/, "")}/api/staff/reservations/${encodeURIComponent(id)}/ics`;
+  return c.json({ links: await calendarLinks(c.env, id, "staff", () => ics) });
+});
 
 staffReservationRoutes.post("/reservations/:id/approve", async (c) => {
   const { staffId, version } = await readJson(c, approveBody);

@@ -37,6 +37,7 @@ it("has the lookup indexes the outbox, sessions and token cleanup rely on", asyn
   expect(cols("sessions")).toContain("staff_id");
   expect(cols("auth_tokens")).toContain("expires_at");
   expect(cols("access_tokens")).toContain("expires_at");
+  expect(cols("calendar_tokens")).toContain("expires_at");
 });
 
 it("finds a contact's recent bookings by email through an index (0006)", async () => {
