@@ -323,13 +323,25 @@ test("a pending request expires at its deadline (dev cron); staff and customer s
   expect(await countMailAnyone(api, new RegExp(`^${ref} expired — `))).toBeGreaterThanOrEqual(1);
 });
 
-test("customer downloads the appointment as a calendar file from the email link and from My reservations", async ({ page }, testInfo) => {
+test("customer adds the appointment to a calendar from the email link and from My reservations", async ({ page }, testInfo) => {
   const { id, ref, email } = await arrange(page, testInfo.project.name, "ics");
   const check = (file: { name: string; text: string }) => {
     expect(file.name).toBe(`${ref}.ics`);
     expect(file.text).toContain("BEGIN:VCALENDAR");
     expect(file.text).toContain(ref);
     expect(file.text).toMatch(/^STATUS:CONFIRMED\r?$/m);
+  };
+  /** Opens the choices in `scope`, checks the web calendar links, and downloads the .ics through "Other calendar". */
+  const addToCalendar = async (scope: Page | Locator) => {
+    const toggle = scope.getByRole("button", { name: "Add to calendar" });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(scope.getByRole("link", { name: /^Google Calendar/ })).toHaveAttribute("href", /^https:\/\/calendar\.google\.com\/calendar\/render\?/);
+    await expect(scope.getByRole("link", { name: /^Google Calendar/ })).toHaveAttribute("target", "_blank");
+    await expect(scope.getByRole("link", { name: /^Outlook\.com/ })).toHaveAttribute("href", /^https:\/\/outlook\.live\.com\//);
+    await expect(scope.getByRole("link", { name: /^Microsoft 365/ })).toHaveAttribute("href", /^https:\/\/outlook\.office\.com\//);
+    await expect(scope.getByRole("link", { name: "Apple Calendar" })).toHaveAttribute("href", /\/api\/cal\/[A-Za-z0-9_-]+\.ics$/);
+    check(await download(page, () => scope.getByRole("link", { name: "Other calendar (.ics)" }).click()));
   };
 
   // ---- the link page: it works from the emailed link's token alone (this browser also has the customer's session from
@@ -338,14 +350,26 @@ test("customer downloads the appointment as a calendar file from the email link 
   // The token is taken out of the address bar as soon as the page has read it.
   await expect(page).toHaveURL(/\/r$/);
   await expect(page.getByText("Confirmed", { exact: true })).toBeVisible();
-  check(await download(page, () => page.getByRole("button", { name: "Add to calendar" }).click()));
-  await expect(page.getByText("Calendar file downloaded. Open it to add the appointment to your calendar.")).toBeVisible();
+  await addToCalendar(page);
 
   // ---- My reservations (the customer's session)
   await page.goto("/my");
   const card = myCard(page, ref);
   await card.getByRole("button").first().click();
-  check(await download(page, () => card.getByRole("button", { name: "Add to calendar" }).click()));
-  await expect(card.getByText("Calendar file downloaded. Open it to add the appointment to your calendar.")).toBeVisible();
+  await addToCalendar(card);
   expect((await staffReservation(page.request, id)).status).toBe("confirmed");
+});
+
+test("the confirmation email's calendar link serves the appointment's .ics", async ({ page }, testInfo) => {
+  const { ref, email } = await arrange(page, testInfo.project.name, "ics-mail");
+  const mail = await openEmail(page, email, new RegExp(`Confirmed: .*\\(${escapeRe(ref)}\\)`));
+  await expect(mail.getByRole("link", { name: "Google Calendar" })).toHaveAttribute("href", /^https:\/\/calendar\.google\.com\//);
+  const href = await mail.getByRole("link", { name: "Apple Calendar" }).getAttribute("href");
+  expect(href).toMatch(/\/api\/cal\/[A-Za-z0-9_-]+\.ics$/);
+  const res = await page.request.get(href!);
+  expect(res.status()).toBe(200);
+  expect(res.headers()["content-type"]).toBe("text/calendar; charset=utf-8");
+  const text = await res.text();
+  expect(text).toContain(ref);
+  expect(text).toMatch(/^STATUS:CONFIRMED\r?$/m);
 });
