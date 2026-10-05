@@ -5,7 +5,8 @@ import { api } from "../helpers";
 import { loginCustomer, loginStaff, seedCustomer, seedTeam, seedWeekly, TZ } from "../fixtures";
 import { setNow } from "../../src/worker/lib/clock";
 import { wallToUtc } from "../../src/domain/time";
-import { firstName } from "../../src/worker/calendar-feeds";
+import { ensureFeedToken, firstName } from "../../src/worker/calendar-feeds";
+import { HttpError } from "../../src/worker/lib/http";
 
 afterEach(() => setNow(null));
 
@@ -200,5 +201,18 @@ describe("subscription links for staff", () => {
     expect((await api("POST", "/api/staff/calendar-feed", { cookie: pat.cookie, body: {} })).status).toBe(401);
     expect((await api("POST", "/api/staff/calendar-feed", { cookie: techA, body: {}, xrw: false })).status).toBe(403);
     expect((await api("POST", "/api/staff/calendar-feed/reset", { body: {} })).status).toBe(401);
+  });
+});
+
+describe("ensureFeedToken", () => {
+  it("fails with a clear error, not a crash, if the token can't be stored (e.g. a random token colliding)", async () => {
+    // The insert is ignored, as INSERT OR IGNORE does on a UNIQUE clash; the read-back then finds nothing.
+    const real = env.DB;
+    const db = {
+      prepare: (q: string) => (q.startsWith("INSERT OR IGNORE INTO calendar_feeds") ? { bind: () => ({ run: async () => ({}) }) } : real.prepare(q)),
+    } as unknown as D1Database;
+    const err = await ensureFeedToken(db, team.a).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect(err).toMatchObject({ status: 503, code: "calendar_feed_unavailable" });
   });
 });

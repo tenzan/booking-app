@@ -75,7 +75,10 @@ feedRoutes.get("/:token/:file", async (c) => {
 export async function ensureFeedToken(db: D1Database, staffId: number): Promise<string> {
   await db.prepare("INSERT OR IGNORE INTO calendar_feeds(staff_id, token, created_at) VALUES (?, ?, ?)").bind(staffId, randomToken(), clock.now()).run();
   const row = await db.prepare("SELECT token FROM calendar_feeds WHERE staff_id = ?").bind(staffId).first<{ token: string }>();
-  return row!.token;
+  // Only if the insert was ignored for another reason than an existing row (a random token clashing): asking again
+  // draws a fresh token, so say "try again" rather than crash.
+  if (!row) throw new HttpError(503, "calendar_feed_unavailable");
+  return row.token;
 }
 
 /** Staff session routes for the subscribe card (mounted under /api/staff). */
