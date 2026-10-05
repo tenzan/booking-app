@@ -13,7 +13,7 @@ Implemented now:
 - Customer "My reservations" and per-reservation access links from emails.
 - Staff scheduling: weekly hours per technician, date-specific schedules, holidays and technician time off. Every change is previewed first: affected requests and appointments are listed, and anything that would lose its technician must be reassigned, cancelled or declined before the change is saved.
 - Customer administration (accounts and contacts) with CSV import (preview, then apply), team management (roles, bookable, notifications, deactivation) and settings (organisation details, appointment length and buffers, booking window, business hours, approval deadlines, customer reminders, rescheduling).
-- Calendar, activity log and an email page where administrators retry failed emails.
+- Calendar (week and month views, each technician colour-coded, filtered by technician chips), activity log and an email page where administrators retry failed emails.
 - An administrator switch (Settings or the staff dashboard) pauses and resumes online booking (to stop spam); existing reservations, their links and all staff features keep working.
 - Email outbox with retries for every notification, a local development mailbox, audit log entries, rate limits and optional Turnstile.
 - Customer cancellation (from the account or an emailed link, until a configurable cut-off).

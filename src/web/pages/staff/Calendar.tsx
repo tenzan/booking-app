@@ -2,20 +2,22 @@ import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode 
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useSearchParams } from "react-router";
 import { utcToWall, wallToUtc } from "../../../domain/time";
-import type { CalendarDTO, CalendarProposalHoldDTO, CalendarReservationDTO, CalendarSlotDTO, StaffDTO } from "../../../shared/types";
+import { techColorIndex } from "../../../domain/tech-colors";
+import type { CalendarDTO, CalendarSlotDTO } from "../../../shared/types";
 import { apiFetch, queryKeys, useMe, type TeamList } from "../../api";
 import { Button } from "../../components/Button";
 import { Card, Notice } from "../../components/Card";
 import { PageHeading, usePageTitle } from "../../components/Layout";
 import { Skeleton, Spinner } from "../../components/Spinner";
-import { StatusBadge } from "../../components/StatusBadge";
 import { TimezoneNote } from "../../components/TimezoneNote";
 import { addDays, dateIn, dayParts, fmtShortDate, fmtTime, fmtTimeRange, todayIn, weekdayOf } from "../../format";
 import { LOCALE, t } from "../../i18n";
 import { useNow } from "./Countdown";
+import { blockLabel, blockTone, holdLabel, initialsOf, ItemRow, k, reservationTone, whoText, type CalItem, type ColorOf, type Day, type WhoProps } from "./calendar/items";
+import { TECH_COLORS } from "./calendar/colors";
+import { MonthGrid } from "./calendar/MonthGrid";
 import { SubscribeButton } from "./calendar/SubscribeButton";
-
-const k = (key: string, params?: Record<string, string | number>) => t(`web.staff.calendar.${key}`, params);
+import { TechChips, ViewSwitch } from "./calendar/TechChips";
 
 const STATUSES = ["all", "pending", "confirmed"] as const;
 type StatusFilter = (typeof STATUSES)[number];
@@ -34,6 +36,24 @@ const mondayOf = (date: string): string => addDays(date, -((weekdayOf(date) + 6)
 const readWeek = (s: string | null, today: string): string =>
   s && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`)) ? mondayOf(s) : mondayOf(today);
 
+type View = "week" | "month";
+const readView = (s: string | null): View => (s === "month" ? "month" : "week");
+/** "YYYY-MM" of a date. */
+const monthOf = (date: string) => date.slice(0, 7);
+const readMonth = (s: string | null, today: string): string => (s && /^\d{4}-(0[1-9]|1[0-2])$/.test(s) ? s : monthOf(today));
+/** The first day of the month after `month`. */
+const nextMonth = (month: string): string => {
+  const [y, m] = month.split("-").map(Number) as [number, number];
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+};
+const prevMonth = (month: string): string => {
+  const [y, m] = month.split("-").map(Number) as [number, number];
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+};
+/** "October 2026". */
+const fmtMonth = (month: string) =>
+  new Intl.DateTimeFormat(LOCALE, { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
+
 /** "Oct 5 – 11, 2026" (or across months and years as needed). */
 function fmtWeekRange(monday: string): string {
   const f = new Intl.DateTimeFormat(LOCALE, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
@@ -44,19 +64,6 @@ function fmtWeekRange(monday: string): string {
 function minuteIn(ms: number, tz: string, date: string): number {
   const w = utcToWall(ms, tz);
   return w.date > date ? 1440 : w.date < date ? 0 : w.minute;
-}
-
-/** One block on the calendar: a reservation, or a time held for an open proposal (an option). */
-type CalItem =
-  | { kind: "reservation"; id: string; startAt: number; endAt: number; r: CalendarReservationDTO }
-  | { kind: "hold"; id: string; startAt: number; endAt: number; h: CalendarProposalHoldDTO };
-
-interface Day {
-  date: string;
-  slots: CalendarSlotDTO[];
-  reservations: CalendarReservationDTO[];
-  /** Reservations and proposal holds, soonest first. */
-  items: CalItem[];
 }
 
 /** How full a start time is: `booked` of `capacity` technicians (for one technician when filtered: 0 or 1 of 1). */
@@ -112,7 +119,10 @@ function layoutLanes(items: CalItem[]): Map<string, { lane: number; lanes: numbe
   return out;
 }
 
-/** `/staff/calendar[?week=YYYY-MM-DD&tech=<id>&status=pending|confirmed]` — the team's week at a glance. */
+/**
+ * `/staff/calendar[?view=month&month=YYYY-MM | ?week=YYYY-MM-DD][&tech=<id>&status=pending|confirmed&day=YYYY-MM-DD]`:
+ * the team's week or month at a glance, each confirmed booking in its technician's colour.
+ */
 export default function CalendarPage() {
   usePageTitle(k("heading"));
   const me = useMe();
@@ -121,24 +131,29 @@ export default function CalendarPage() {
   const today = todayIn(tz, now);
   const location = useLocation();
   const [params, setParams] = useSearchParams();
+  const view = readView(params.get("view"));
   const week = readWeek(params.get("week"), today);
+  const month = readMonth(params.get("month"), today);
   const status = readStatus(params.get("status"));
   const techParam = params.get("tech") ?? "";
   const ids = useId();
 
   const team = useQuery({ queryKey: queryKeys.team, queryFn: () => apiFetch<TeamList>("/api/staff/team") });
-  const technicians = (team.data?.staff ?? []).filter((s) => s.active).sort((a, b) => a.name.localeCompare(b.name));
+  const technicians = (team.data?.staff ?? []).filter((s) => s.active);
+  const allStaffIds = (team.data?.staff ?? []).map((s) => s.id);
+  const colorOf: ColorOf = (id) => techColorIndex(allStaffIds, id);
   const staffId = /^\d+$/.test(techParam) ? Number(techParam) : null;
   const meId = me.data?.staff?.id ?? null;
-  // "Only me" comes first when the signed-in staff member is on the team list; the others follow by name.
-  const meListed = technicians.find((s) => s.id === meId) ?? null;
-  const others = technicians.filter((s) => s.id !== meId);
   const techName = staffId === null ? null : (team.data?.staff.find((s) => s.id === staffId)?.name ?? null);
 
-  const from = wallToUtc(week, 0, tz);
-  const to = wallToUtc(addDays(week, 7), 0, tz);
+  // The days shown: a Monday-first week, or the whole weeks covering the month (4–6, within the feed's 42 days).
+  const gridStart = view === "week" ? week : mondayOf(`${month}-01`);
+  const gridEnd = view === "week" ? addDays(week, 7) : addDays(mondayOf(addDays(`${nextMonth(month)}-01`, -1)), 7);
+  const dayCount = Math.round((Date.parse(`${gridEnd}T00:00:00Z`) - Date.parse(`${gridStart}T00:00:00Z`)) / 86_400_000);
+  const from = wallToUtc(gridStart, 0, tz);
+  const to = wallToUtc(gridEnd, 0, tz);
   const cal = useQuery({
-    queryKey: queryKeys.calendar(`${week}|${tz}`, techParam, status),
+    queryKey: queryKeys.calendar(`${gridStart}|${gridEnd}|${tz}`, techParam, status),
     queryFn: () => {
       const p = new URLSearchParams({ from: String(from), to: String(to) });
       if (staffId !== null) p.set("staffId", String(staffId));
@@ -152,7 +167,7 @@ export default function CalendarPage() {
   });
   const calTz = cal.data?.timezone ?? tz;
 
-  const update = (next: { week?: string | null; tech?: string; status?: StatusFilter; day?: string | null }) => {
+  const update = (next: { view?: View; week?: string | null; month?: string | null; tech?: string; status?: StatusFilter; day?: string | null }) => {
     // From the live URL: router navigations are transitions, so `params` can lag a filter changed a moment ago.
     const p = new URLSearchParams(window.location.search);
     const set = (key: string, value: string | null | undefined, dflt: string) => {
@@ -160,18 +175,28 @@ export default function CalendarPage() {
       if (value === null || value === dflt) p.delete(key);
       else p.set(key, value);
     };
+    set("view", next.view, "week");
     set("week", next.week === undefined ? undefined : next.week === mondayOf(today) ? null : next.week, "");
+    set("month", next.month === undefined ? undefined : next.month === monthOf(today) ? null : next.month, "");
     set("tech", next.tech, "");
     set("status", next.status, "all");
-    // A day's list belongs to its week.
-    set("day", next.day === undefined ? (next.week !== undefined ? null : undefined) : next.day, "");
+    // A day's list belongs to the week or month it was opened in.
+    const moved = next.week !== undefined || next.month !== undefined || next.view !== undefined;
+    set("day", next.day === undefined ? (moved ? null : undefined) : next.day, "");
     setParams(p, { replace: true, preventScrollReset: true });
   };
+  // Switching views keeps the place: the month of the week shown, or the week the month starts with (today's, this month).
+  const switchView = (v: View) => {
+    if (v === view) return;
+    if (v === "month") update({ view: v, month: monthOf(week === mondayOf(today) ? today : week), week: null });
+    else update({ view: v, week: month === monthOf(today) ? null : mondayOf(`${month}-01`), month: null });
+  };
+  const openWeek = (date: string) => update({ view: "week", week: mondayOf(date), month: null });
 
   // Proposal holds are neither pending nor confirmed: shown with "All" only.
   const showHolds = status === "all";
-  const days: Day[] = Array.from({ length: 7 }, (_, i) => {
-    const date = addDays(week, i);
+  const days: Day[] = Array.from({ length: dayCount }, (_, i) => {
+    const date = addDays(gridStart, i);
     const reservations = (cal.data?.reservations ?? []).filter((r) => dateIn(r.startAt, calTz) === date).sort((a, b) => a.startAt - b.startAt);
     const holds = showHolds ? (cal.data?.proposalHolds ?? []).filter((h) => dateIn(h.startAt, calTz) === date) : [];
     const items: CalItem[] = [
@@ -180,26 +205,34 @@ export default function CalendarPage() {
     ].sort((a, b) => a.startAt - b.startAt || a.endAt - b.endAt);
     return { date, slots: cal.data?.slots.find((d) => d.date === date)?.slots ?? [], reservations, items };
   });
-  const count = cal.data?.reservations.length ?? 0;
+  // The month view counts its own month's bookings, not the neighbouring days the grid also shows.
+  const counted = view === "month" ? days.filter((d) => d.date.startsWith(month)) : days;
+  const count = counted.reduce((n, d) => n + d.reservations.length, 0);
   const loading = cal.isFetching && cal.isPlaceholderData;
-  const weekLabel = fmtWeekRange(week);
-  // `?day=` (from a "+N more" button): that day's bookings listed under the grid.
+  const rangeLabel = view === "week" ? fmtWeekRange(week) : fmtMonth(month);
+  // `?day=` (a "+N more" button, or a day tapped in the month): that day's bookings listed under the grid.
   const dayParam = params.get("day");
   const shownDay = days.find((d) => d.date === dayParam) ?? null;
+  const phoneDefault = view === "month" && month === monthOf(today) ? (days.find((d) => d.date === today) ?? null) : null;
   const [dayOpened, setDayOpened] = useState(0);
   const showDay = (date: string) => {
     update({ day: date });
     setDayOpened((n) => n + 1);
   };
   const back = { back: { to: location.pathname + location.search, label: t("web.staff.nav.calendar") } };
+  const who = { techName, meId, colorOf };
+  const atToday = view === "week" ? week === mondayOf(today) : month === monthOf(today);
+  const step = (dir: 1 | -1) =>
+    view === "week" ? update({ week: addDays(week, 7 * dir) }) : update({ month: dir === 1 ? nextMonth(month) : prevMonth(month) });
 
-  const statusLine = cal.isSuccess && !loading
-    ? count === 0
-      ? k("summaryNone", { week: weekLabel })
-      : count === 1
-        ? k("summaryOne", { week: weekLabel })
-        : k("summary", { n: count, week: weekLabel })
-    : "";
+  const statusLine =
+    cal.isSuccess && !loading
+      ? count === 0
+        ? k("summaryNone", { week: rangeLabel })
+        : count === 1
+          ? k("summaryOne", { week: rangeLabel })
+          : k("summary", { n: count, week: rangeLabel })
+      : "";
 
   return (
     <div className="space-y-6">
@@ -211,60 +244,51 @@ export default function CalendarPage() {
         <SubscribeButton />
       </div>
 
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1">
-            <IconButton label={k("prevWeek")} onClick={() => update({ week: addDays(week, -7) })} path="m15 6-6 6 6 6" />
-            {/* aria-disabled, not disabled: it stays focusable and in the tab order next to the arrows. */}
-            <Button
-              variant="secondary"
-              aria-disabled={week === mondayOf(today)}
-              onClick={() => week !== mondayOf(today) && update({ week: null })}
-              className="aria-disabled:cursor-default aria-disabled:opacity-60"
-            >
-              {k("thisWeek")}
-            </Button>
-            <IconButton label={k("nextWeek")} onClick={() => update({ week: addDays(week, 7) })} path="m9 6 6 6-6 6" />
-          </div>
-          <h2 className="px-1 text-lg font-semibold tabular-nums sm:text-xl">{weekLabel}</h2>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-[minmax(12rem,16rem)_auto] sm:items-end">
-          <div>
-            <label htmlFor={`${ids}-tech`} className="mb-1.5 block text-sm font-medium">
-              {k("techLabel")}
-            </label>
-            <select
-              id={`${ids}-tech`}
-              value={staffId === null ? "" : String(staffId)}
-              onChange={(e) => update({ tech: e.target.value })}
-              className="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-base text-slate-900 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
-            >
-              <option value="">{k("everyone")}</option>
-              {staffId !== null && !technicians.some((s) => s.id === staffId) && <option value={String(staffId)}>{techName ?? k("unknownTech")}</option>}
-              {meListed && <option value={String(meListed.id)}>{k("onlyMe", { name: meListed.name })}</option>}
-              {others.map((s: StaffDTO) => (
-                <option key={s.id} value={String(s.id)}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <fieldset>
-            <legend className="mb-1.5 block text-sm font-medium">{k("statusLabel")}</legend>
-            <div className="grid grid-cols-3 rounded-xl border border-slate-300 bg-white p-1 dark:border-slate-600 dark:bg-slate-900">
-              {STATUSES.map((s) => (
-                <label
-                  key={s}
-                  className="flex min-h-11 cursor-pointer items-center justify-center rounded-lg px-3 text-sm font-medium text-slate-700 hover:bg-slate-100 has-checked:bg-blue-700 has-checked:text-white has-checked:hover:bg-blue-700 has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-blue-600 lg:min-h-9 dark:text-slate-300 dark:hover:bg-slate-800 dark:has-checked:bg-blue-600"
-                >
-                  <input type="radio" name={`${ids}-status`} value={s} checked={status === s} onChange={() => update({ status: s })} className="sr-only" />
-                  {k(`status.${s}`)}
-                </label>
-              ))}
+      <div className="space-y-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1">
+              <IconButton label={k(view === "week" ? "prevWeek" : "prevMonth")} onClick={() => step(-1)} path="m15 6-6 6 6 6" />
+              {/* aria-disabled, not disabled: it stays focusable and in the tab order next to the arrows. */}
+              <Button
+                variant="secondary"
+                aria-disabled={atToday}
+                onClick={() => !atToday && (view === "week" ? update({ week: null }) : update({ month: null }))}
+                aria-label={k("todayLabel")}
+                className="aria-disabled:cursor-default aria-disabled:opacity-60"
+              >
+                {k("today")}
+              </Button>
+              <IconButton label={k(view === "week" ? "nextWeek" : "nextMonth")} onClick={() => step(1)} path="m9 6 6 6-6 6" />
             </div>
-          </fieldset>
+            <h2 className="px-1 text-lg font-semibold tabular-nums sm:text-xl">{rangeLabel}</h2>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <ViewSwitch value={view} onChange={switchView} />
+            <fieldset>
+              <legend className="mb-1.5 block text-sm font-medium">{k("statusLabel")}</legend>
+              <div className="grid grid-cols-3 rounded-xl border border-slate-300 bg-white p-1 dark:border-slate-600 dark:bg-slate-900">
+                {STATUSES.map((s) => (
+                  <label
+                    key={s}
+                    className="flex min-h-11 cursor-pointer items-center justify-center rounded-lg px-3 text-sm font-medium text-slate-700 hover:bg-slate-100 has-checked:bg-blue-700 has-checked:text-white has-checked:hover:bg-blue-700 has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-blue-600 lg:min-h-9 dark:text-slate-300 dark:hover:bg-slate-800 dark:has-checked:bg-blue-600"
+                  >
+                    <input type="radio" name={`${ids}-status`} value={s} checked={status === s} onChange={() => update({ status: s })} className="sr-only" />
+                    {k(`status.${s}`)}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          </div>
         </div>
+        <TechChips
+          staff={technicians}
+          value={staffId}
+          meId={meId}
+          colorOf={colorOf}
+          unknownName={techName}
+          onChange={(id) => update({ tech: id === null ? "" : String(id) })}
+        />
       </div>
 
       <div className="flex min-h-6 items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
@@ -300,15 +324,30 @@ export default function CalendarPage() {
               </Button>
             </Notice>
           )}
-          {/* The grid needs the width: tablets and phones get the day-by-day agenda. */}
-          <div className="hidden lg:block">
-            <WeekGrid days={days} tz={calTz} today={today} now={now} staffId={staffId} techName={techName} meId={meId} linkState={back} onShowDay={showDay} />
-            {shownDay && <DayPanel day={shownDay} tz={calTz} today={today} staffId={staffId} techName={techName} meId={meId} linkState={back} focusOnOpen={dayOpened} onClose={() => update({ day: null })} />}
-          </div>
-          <div className="lg:hidden">
-            <Agenda days={days} tz={calTz} today={today} staffId={staffId} techName={techName} meId={meId} linkState={back} />
-          </div>
-          <Legend filtered={staffId !== null} holds={showHolds} />
+          {view === "month" ? (
+            <>
+              <MonthGrid days={days} month={month} tz={calTz} today={today} selected={dayParam ?? phoneDefault?.date ?? null} linkState={back} onShowDay={showDay} onOpenWeek={openWeek} {...who} />
+              {shownDay && <DayPanel day={shownDay} tz={calTz} today={today} staffId={staffId} linkState={back} focusOnOpen={dayOpened} onClose={() => update({ day: null })} {...who} />}
+              {/* Phones: with no day chosen, today's list sits under the compact month (desktop cells already list it). */}
+              {!shownDay && phoneDefault && (
+                <div className="lg:hidden">
+                  <DayPanel day={phoneDefault} tz={calTz} today={today} staffId={staffId} linkState={back} focusOnOpen={0} {...who} />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {/* The grid needs the width: tablets and phones get the day-by-day agenda. */}
+              <div className="hidden lg:block">
+                <WeekGrid days={days} tz={calTz} today={today} now={now} staffId={staffId} linkState={back} onShowDay={showDay} {...who} />
+                {shownDay && <DayPanel day={shownDay} tz={calTz} today={today} staffId={staffId} linkState={back} focusOnOpen={dayOpened} onClose={() => update({ day: null })} {...who} />}
+              </div>
+              <div className="lg:hidden">
+                <Agenda days={days} tz={calTz} today={today} staffId={staffId} linkState={back} {...who} />
+              </div>
+            </>
+          )}
+          <Legend filtered={staffId !== null} holds={showHolds} track={view === "week"} />
         </div>
       )}
     </div>
@@ -331,47 +370,6 @@ function IconButton({ label, onClick, path }: { label: string; onClick: () => vo
   );
 }
 
-const blockTone = {
-  hold: "border border-dashed border-violet-500 bg-violet-50 text-violet-950 hover:bg-violet-100 dark:border-violet-400 dark:bg-violet-950 dark:text-violet-100 dark:hover:bg-violet-900",
-  pending:
-    "border border-dashed border-amber-500 bg-amber-50 text-amber-950 hover:bg-amber-100 dark:border-amber-400 dark:bg-amber-950 dark:text-amber-100 dark:hover:bg-amber-900",
-  confirmed:
-    "border border-l-4 border-green-600 bg-green-50 text-green-950 hover:bg-green-100 dark:border-green-500 dark:bg-green-950 dark:text-green-100 dark:hover:bg-green-900",
-} as const;
-
-/** The signed-in staff member's own bookings say so: "Ada Admin (You)". */
-const nameFor = (id: number, name: string, meId: number | null) => (id === meId ? k("you", { name }) : name);
-
-/** Who has it, as staff should read it: the assigned technician; a pending request is unassigned (or, on one technician's view, provisionally theirs). */
-function whoText(r: CalendarReservationDTO, techName: string | null, meId: number | null): string {
-  if (r.assignedStaff) return nameFor(r.assignedStaff.id, r.assignedStaff.name, meId);
-  if (r.status === "pending" && techName && r.provisionalForFilteredStaff) return k("provisional", { name: techName });
-  return t("web.staff.dashboard.unassigned");
-}
-
-/** A proposal hold's tooltip and the rest of its accessible name. */
-function holdLabel(h: CalendarProposalHoldDTO, tz: string): string {
-  return t("web.staff.lifecycle.calendar.holdLabel", {
-    ref: h.ref,
-    date: fmtShortDate(dateIn(h.startAt, tz)),
-    time: fmtTimeRange(h.startAt, h.endAt, tz),
-    customer: h.customerName,
-    tech: h.staffName,
-  });
-}
-
-/** Tooltip, and (after the visible text) the rest of the link's accessible name. */
-function blockLabel(r: CalendarReservationDTO, tz: string, techName: string | null, meId: number | null): string {
-  return k("blockLabel", {
-    ref: r.ref,
-    status: t(`web.statusShort.${r.status}`),
-    date: fmtShortDate(dateIn(r.startAt, tz)),
-    time: fmtTimeRange(r.startAt, r.endAt, tz),
-    customer: r.customer.name,
-    who: whoText(r, techName, meId),
-  });
-}
-
 /** One hue, darker as it fills, so it never reads as a booking's own colour. */
 const loadTone = (booked: number, capacity: number) =>
   booked === 0
@@ -380,33 +378,15 @@ const loadTone = (booked: number, capacity: number) =>
       ? "bg-indigo-200 text-indigo-950 dark:bg-indigo-400/35 dark:text-indigo-50"
       : "bg-indigo-600 text-white dark:bg-indigo-300 dark:text-indigo-950";
 
-/** Agenda cards are larger than grid blocks: softer fills. */
-const agendaTone = {
-  hold: "border border-dashed border-violet-500 bg-violet-50 text-violet-950 hover:bg-violet-100 dark:border-violet-400/70 dark:bg-violet-400/10 dark:text-violet-100 dark:hover:bg-violet-400/15",
-  pending: "border border-dashed border-amber-500 bg-amber-50 text-amber-950 hover:bg-amber-100 dark:border-amber-400/70 dark:bg-amber-400/10 dark:text-amber-100 dark:hover:bg-amber-400/15",
-  confirmed: "border border-l-4 border-green-600 bg-green-50 text-green-950 hover:bg-green-100 dark:border-green-500/70 dark:bg-green-400/10 dark:text-green-100 dark:hover:bg-green-400/15",
-} as const;
-
-const initialsOf = (name: string) =>
-  name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => [...w][0]!.toUpperCase())
-    .join("");
-
-interface ViewProps {
+interface ViewProps extends WhoProps {
   days: Day[];
   tz: string;
   today: string;
   staffId: number | null;
-  techName: string | null;
-  /** The signed-in staff member, whose bookings are marked "(You)". */
-  meId: number | null;
   linkState: object;
 }
 
-function WeekGrid({ days, tz, today, now, staffId, techName, meId, linkState, onShowDay }: ViewProps & { now: number; onShowDay: (date: string) => void }) {
+function WeekGrid({ days, tz, today, now, staffId, techName, meId, colorOf, linkState, onShowDay }: ViewProps & { now: number; onShowDay: (date: string) => void }) {
   // Hours shown: the earliest start to the latest end of the week's times and bookings, whole hours.
   let lo = Infinity;
   let hi = -Infinity;
@@ -577,13 +557,15 @@ function WeekGrid({ days, tz, today, now, staffId, techName, meId, linkState, on
                     }
                     const res = r.r;
                     const label = blockLabel(res, tz, techName, meId);
+                    const tone = reservationTone(res, colorOf);
                     return (
                       <li key={r.id} className="absolute" style={style}>
                         <Link
                           to={`/staff/r/${encodeURIComponent(res.id)}`}
                           state={linkState}
                           title={label}
-                          className={`@container block h-full overflow-hidden rounded-md px-1 py-0.5 text-xs leading-4 shadow-xs focus-visible:z-10 ${blockTone[res.status === "pending" ? "pending" : "confirmed"]}`}
+                          data-tech-color={tone.color}
+                          className={`@container block h-full overflow-hidden rounded-md px-1 py-0.5 text-xs leading-4 shadow-xs focus-visible:z-10 ${tone.className}`}
                         >
                           {/* The name starts with the visible text; the rest is read after it. Narrow blocks show the
                               technician's initials and a small time instead. */}
@@ -610,7 +592,7 @@ function WeekGrid({ days, tz, today, now, staffId, techName, meId, linkState, on
   );
 }
 
-function Agenda({ days, tz, today, staffId, techName, meId, linkState }: ViewProps) {
+function Agenda({ days, tz, today, staffId, techName, meId, colorOf, linkState }: ViewProps) {
   return (
     <div className="space-y-5">
       {days.map((d) => {
@@ -640,7 +622,7 @@ function Agenda({ days, tz, today, staffId, techName, meId, linkState }: ViewPro
               <ul className="space-y-2">
                 {d.items.map((item) => (
                   <li key={item.id}>
-                    <ItemRow item={item} tz={tz} techName={techName} meId={meId} linkState={linkState} />
+                    <ItemRow item={item} tz={tz} techName={techName} meId={meId} colorOf={colorOf} linkState={linkState} />
                   </li>
                 ))}
               </ul>
@@ -660,10 +642,11 @@ function DayPanel({
   staffId,
   techName,
   meId,
+  colorOf,
   linkState,
   focusOnOpen,
   onClose,
-}: Omit<ViewProps, "days"> & { day: Day; focusOnOpen: number; onClose: () => void }) {
+}: Omit<ViewProps, "days"> & { day: Day; focusOnOpen: number; onClose?: () => void }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     if (focusOnOpen > 0) headingRef.current?.focus();
@@ -679,72 +662,20 @@ function DayPanel({
           </h2>
           <p className="text-sm text-slate-600 dark:text-slate-400">{total === 0 ? k("closed") : open === 0 ? k("fullLong") : k("openLong", { open, total })}</p>
         </div>
-        <Button variant="secondary" onClick={onClose}>
-          {k("closeDay")}
-        </Button>
+        {onClose && (
+          <Button variant="secondary" onClick={onClose}>
+            {k("closeDay")}
+          </Button>
+        )}
       </div>
       <ul className="grid gap-2 sm:grid-cols-2">
         {day.items.map((item) => (
           <li key={item.id}>
-            <ItemRow item={item} tz={tz} techName={techName} meId={meId} linkState={linkState} />
+            <ItemRow item={item} tz={tz} techName={techName} meId={meId} colorOf={colorOf} linkState={linkState} />
           </li>
         ))}
       </ul>
     </Card>
-  );
-}
-
-function ItemRow({ item, ...rest }: { item: CalItem; tz: string; techName: string | null; meId: number | null; linkState: object }) {
-  return item.kind === "hold" ? <HoldRow h={item.h} tz={rest.tz} linkState={rest.linkState} /> : <AgendaRow r={item.r} {...rest} />;
-}
-
-/** A time held for an open proposal, in the agenda / day list: it opens the reservation the proposal belongs to. */
-function HoldRow({ h, tz, linkState }: { h: CalendarProposalHoldDTO; tz: string; linkState: object }) {
-  return (
-    <Link to={`/staff/r/${encodeURIComponent(h.reservationId)}`} state={linkState} className={`flex items-start gap-3 rounded-xl px-4 py-3 ${agendaTone.hold}`}>
-      <p className="w-12 shrink-0 tabular-nums">
-        <span className="block font-semibold">{fmtTime(h.startAt, tz)}</span>
-        <span className="block text-sm opacity-80">{fmtTime(h.endAt, tz)}</span>
-      </p>
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <p className="font-medium break-words">{t("web.staff.lifecycle.calendar.hold", { ref: h.ref })}</p>
-        <p className="text-sm break-words opacity-90">{h.customerName}</p>
-        <p className="text-sm break-words opacity-90">
-          <span className="sr-only">{t("common.technician")}: </span>
-          {h.staffName}
-        </p>
-      </div>
-      <span className="shrink-0 rounded-full bg-violet-100 px-2.5 py-1 text-sm font-medium text-violet-900 ring-1 ring-violet-300 ring-inset dark:bg-violet-400/15 dark:text-violet-200 dark:ring-violet-400/40">
-        {t("web.staff.lifecycle.calendar.holdBadge")}
-      </span>
-    </Link>
-  );
-}
-
-function AgendaRow({ r, tz, techName, meId, linkState }: { r: CalendarReservationDTO; tz: string; techName: string | null; meId: number | null; linkState: object }) {
-  const pending = r.status === "pending";
-  return (
-    <Link
-      to={`/staff/r/${encodeURIComponent(r.id)}`}
-      state={linkState}
-      className={`flex items-start gap-3 rounded-xl px-4 py-3 ${agendaTone[pending ? "pending" : "confirmed"]}`}
-    >
-      <p className="w-12 shrink-0 tabular-nums">
-        <span className="block font-semibold">{fmtTime(r.startAt, tz)}</span>
-        <span className="block text-sm opacity-80">{fmtTime(r.endAt, tz)}</span>
-      </p>
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <p className="font-medium break-words">{r.customer.name}</p>
-        <p className="text-sm break-words opacity-90">
-          <span className="sr-only">{t("common.technician")}: </span>
-          {whoText(r, techName, meId)}
-        </p>
-        <p className="font-mono text-xs opacity-80">{r.ref}</p>
-      </div>
-      <span className="shrink-0">
-        <StatusBadge status={r.status} />
-      </span>
-    </Link>
   );
 }
 
@@ -757,27 +688,40 @@ function Swatch({ className, children }: { className: string; children: ReactNod
   );
 }
 
-function Legend({ filtered, holds }: { filtered: boolean; holds: boolean }) {
+function Legend({ filtered, holds, track }: { filtered: boolean; holds: boolean; track: boolean }) {
   return (
     <div className="space-y-2 text-sm text-slate-600 dark:text-slate-400">
       <h2 className="sr-only">{k("legend")}</h2>
       <ul className="flex flex-wrap gap-x-5 gap-y-2">
         <Swatch className={blockTone.pending}>{k("legendPending")}</Swatch>
-        <Swatch className={blockTone.confirmed}>{k("legendConfirmed")}</Swatch>
-        {holds && <Swatch className={blockTone.hold}>{t("web.staff.lifecycle.calendar.legendHold")}</Swatch>}
-        <li className="hidden items-center gap-2 lg:flex">
-          <span className="inline-grid h-4 w-6 shrink-0 place-items-center rounded border border-green-600 bg-green-50 text-[0.6rem] font-semibold text-green-950 dark:border-green-500 dark:bg-green-950 dark:text-green-100" aria-hidden="true">
-            BT
+        <li className="flex items-center gap-2">
+          <span className="inline-flex h-4 w-6 shrink-0 overflow-hidden rounded border border-slate-300 dark:border-slate-600" aria-hidden="true">
+            {TECH_COLORS.slice(0, 4).map((c) => (
+              <span key={c.dot} className={`h-full flex-1 ${c.dot}`} />
+            ))}
           </span>
-          {k("legendInitials")}
+          {k("legendConfirmed")}
         </li>
+        {holds && <Swatch className={blockTone.hold}>{t("web.staff.lifecycle.calendar.legendHold")}</Swatch>}
+        {track && (
+          <li className="hidden items-center gap-2 lg:flex">
+            <span className="inline-grid h-4 w-6 shrink-0 place-items-center rounded border border-slate-400 bg-white text-[0.6rem] font-semibold text-slate-900 dark:border-slate-500 dark:bg-slate-900 dark:text-slate-100" aria-hidden="true">
+              BT
+            </span>
+            {k("legendInitials")}
+          </li>
+        )}
       </ul>
-      <ul className="hidden flex-wrap gap-x-5 gap-y-2 lg:flex">
-        <Swatch className={loadTone(0, 1)}>{filtered ? k("legendTechFree") : k("legendFree")}</Swatch>
-        {!filtered && <Swatch className={loadTone(1, 2)}>{k("legendPartly")}</Swatch>}
-        <Swatch className={loadTone(1, 1)}>{filtered ? k("legendTechBooked") : k("legendFull")}</Swatch>
-      </ul>
-      <p className="hidden lg:block">{filtered ? k("trackHintTech") : k("trackHint")}</p>
+      {track && (
+        <>
+          <ul className="hidden flex-wrap gap-x-5 gap-y-2 lg:flex">
+            <Swatch className={loadTone(0, 1)}>{filtered ? k("legendTechFree") : k("legendFree")}</Swatch>
+            {!filtered && <Swatch className={loadTone(1, 2)}>{k("legendPartly")}</Swatch>}
+            <Swatch className={loadTone(1, 1)}>{filtered ? k("legendTechBooked") : k("legendFull")}</Swatch>
+          </ul>
+          <p className="hidden lg:block">{filtered ? k("trackHintTech") : k("trackHint")}</p>
+        </>
+      )}
     </div>
   );
 }
