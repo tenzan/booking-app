@@ -11,6 +11,8 @@ const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial
 const BUTTON_STYLE =
   "display:inline-block;padding:14px 24px;border-radius:8px;font-size:16px;font-weight:600;background:#1d4ed8;color:#fff;text-decoration:none";
 const SECONDARY_STYLE = "display:inline-block;padding:14px 8px;font-size:16px;color:#1d4ed8;text-decoration:underline";
+const CALENDAR_LINK_STYLE =
+  "display:inline-block;margin:0 6px 8px 0;padding:8px 12px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;color:#1d4ed8;text-decoration:none";
 const BANNER_COLORS = {
   amber: "background:#fef3c7;color:#78350f",
   green: "background:#dcfce7;color:#14532d",
@@ -34,6 +36,8 @@ export interface EmailSpec {
   /** Third-party text shown as an escaped, preformatted block (never rendered as HTML). */
   quote?: string;
   actions?: Array<{ label: string; url: string; primary?: boolean }>;
+  /** "Add to calendar": a row of small links after the actions. The text version lists each URL once. */
+  calendar?: { heading: string; links: Array<{ label: string; url: string }> };
   /** Paragraphs shown after the actions. */
   after?: string[];
   footer: string;
@@ -69,6 +73,12 @@ export function renderEmail(spec: EmailSpec): { html: string; text: string } {
       .join("");
     rows.push(`<tr><td style="padding:8px 24px 16px">${actions}</td></tr>`);
   }
+  if (spec.calendar) {
+    const links = spec.calendar.links.map((l) => `<a href="${escapeHtml(l.url)}" style="${CALENDAR_LINK_STYLE}">${escapeHtml(l.label)}</a>`).join("");
+    rows.push(
+      `<tr><td style="padding:0 24px 16px"><p style="margin:0 0 8px;font-size:14px;font-weight:600;color:#374151">${escapeHtml(spec.calendar.heading)}</p>${links}</td></tr>`,
+    );
+  }
   if (spec.after?.length) rows.push(`<tr><td style="padding:0 24px 8px">${spec.after.map(p).join("")}</td></tr>`);
   rows.push(
     `<tr><td style="padding:16px 24px;border-top:1px solid #e5e7eb;font-size:13px;line-height:1.4;color:#666">${escapeHtml(spec.footer)}</td></tr>`,
@@ -89,10 +99,18 @@ export function renderEmail(spec: EmailSpec): { html: string; text: string } {
     spec.facts?.map(([l, v]) => `${l}: ${v}`).join("\n"),
     spec.quote,
     spec.actions?.map((a) => `${a.label}: ${a.url}`).join("\n"),
+    spec.calendar && calendarText(spec.calendar),
     ...(spec.after ?? []),
     `--\n${spec.footer}`,
   ]
     .filter((s): s is string => !!s)
     .join("\n\n");
   return { html, text };
+}
+
+/** The calendar links as text: links sharing a URL (the .ics file) are listed once, their labels joined. */
+function calendarText(c: NonNullable<EmailSpec["calendar"]>): string {
+  const byUrl = new Map<string, string[]>();
+  for (const l of c.links) byUrl.set(l.url, [...(byUrl.get(l.url) ?? []), l.label]);
+  return [`${c.heading}:`, ...[...byUrl].map(([url, labels]) => `${labels.join(" / ")}: ${url}`)].join("\n");
 }
