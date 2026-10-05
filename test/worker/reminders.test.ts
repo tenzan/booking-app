@@ -121,7 +121,7 @@ describe("sending", () => {
     const view = /(http\S*\/r#t=([A-Za-z0-9_-]+))/.exec(m!.text)!;
     expect(view).toBeTruthy();
     expect(m!.text).toContain(`${view[1]}&action=cancel`);
-    expect(m!.text).toMatch(/Apple Calendar \/ Other calendar \(\.ics\): http\S*\/api\/cal\/[A-Za-z0-9_-]+\.ics/);
+    expect(m!.text).toMatch(/Apple Calendar \/ Calendar file \(\.ics\): http\S*\/api\/cal\/[A-Za-z0-9_-]+\.ics/);
     // Not a login or technician mail: no technician name, nothing but the customer's own links.
     expect(m!.text).not.toContain("/staff/");
     expect((await reminders("sent")).length).toBe(1);

@@ -65,12 +65,12 @@ const expectCalendar = (m: { text: string; html: string }) => {
   expect(m.text).toContain("Add to calendar");
   const file = CAL_LINK.exec(m.text)![0];
   // In the text version the file link is listed once, for Apple Calendar and other calendars alike.
-  expect(m.text).toContain(`Apple Calendar / Other calendar (.ics): ${file}`);
+  expect(m.text).toContain(`Apple Calendar / Calendar file (.ics): ${file}`);
   expect(m.text).toMatch(/Google Calendar: https:\/\/calendar\.google\.com\/calendar\/render\?\S+/);
-  expect(m.text).toMatch(/Outlook\.com: https:\/\/outlook\.live\.com\/calendar\/0\/action\/compose\?\S+/);
-  expect(m.text).toMatch(/Microsoft 365: https:\/\/outlook\.office\.com\/calendar\/0\/action\/compose\?\S+/);
+  expect(m.text).toMatch(/Outlook\.com \(personal\): https:\/\/outlook\.live\.com\/calendar\/0\/action\/compose\?\S+/);
+  expect(m.text).toMatch(/Outlook \(work or school\): https:\/\/outlook\.office\.com\/calendar\/0\/action\/compose\?\S+/);
   // In the HTML all five are shown, the file link twice (Apple, Other).
-  for (const label of ["Apple Calendar", "Google Calendar", "Outlook.com", "Microsoft 365", "Other calendar (.ics)"]) expect(m.html).toContain(`>${label}</a>`);
+  for (const label of ["Apple Calendar", "Google Calendar", "Outlook.com (personal)", "Outlook (work or school)", "Calendar file (.ics)"]) expect(m.html).toContain(`>${label}</a>`);
   expect(m.html.split(`href="${file}"`).length - 1).toBe(2);
   return file;
 };

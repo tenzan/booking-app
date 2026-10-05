@@ -259,7 +259,7 @@ export function ErrorText({ e }: { e: unknown }) {
 
 /**
  * "Add to calendar" for a confirmed appointment (see AddToCalendar). `prompt` (the `#…&action=ics` link of earlier
- * emails) opens the choices with a line saying what they are for; nothing is added by itself.
+ * emails) adds a line saying what the button is for; nothing is added by itself.
  */
 export function CalendarButton({
   r,
@@ -281,7 +281,6 @@ export function CalendarButton({
       load={transport.calendar}
       note={t("web.customer.calendar.note")}
       prompt={prompt ? t("web.customer.calendar.prompt") : undefined}
-      initiallyOpen={prompt}
       onPicked={onDone}
       errorContent={(e) => <ErrorText e={e} />}
     />

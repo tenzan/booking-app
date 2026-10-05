@@ -241,9 +241,9 @@ export const en = {
     heading: "Add to calendar",
     apple: "Apple Calendar",
     google: "Google Calendar",
-    outlook: "Outlook.com",
-    office365: "Microsoft 365",
-    other: "Other calendar (.ics)",
+    outlook: "Outlook.com (personal)",
+    office365: "Outlook (work or school)",
+    other: "Calendar file (.ics)",
   },
   /** Staff calendar subscriptions (feeds): calendar names, event titles and the plain-text page for a dead link. */
   calendarFeed: {
@@ -261,9 +261,26 @@ export const en = {
   web: {
     /** The "Add to calendar" choices (customer and staff pages). */
     calendar: {
-      loading: "Loading calendar choices…",
+      loading: "Getting your calendar links…",
       notConfirmed: "Calendar links are available once the appointment is confirmed.",
       newTab: "(opens in a new tab)",
+      more: "More calendars",
+      /** The one-click button, for the chosen calendar. */
+      add: {
+        apple: "Add to Apple Calendar",
+        google: "Add to Google Calendar",
+        office365: "Add to Outlook",
+        outlook: "Add to Outlook.com",
+        other: "Download calendar file",
+      },
+      /** What each choice does, under its name in the menu. */
+      hint: {
+        apple: "Opens in Calendar on iPhone, iPad and Mac",
+        google: "Opens Google Calendar to save it",
+        office365: "Opens Outlook on the web to save it",
+        outlook: "Opens Outlook.com to save it",
+        other: "Downloads a file for Outlook desktop and other apps",
+      },
     },
     common: {
       loading: "Loading…",
@@ -744,23 +761,24 @@ export const en = {
         refreshFailed: "We couldn't refresh the calendar; it may be out of date.",
         provisional: "Provisionally {name}",
         subscribe: {
+          button: "Subscribe",
           heading: "Subscribe in your calendar app",
           lead: "Two calendars that keep themselves up to date: your own appointments, and the rest of the team's. Confirmed appointments only.",
           mine: "My appointments",
           team: "Team (everyone else)",
-          google: "Add to Google Calendar",
-          webcal: "Open in Apple Calendar / Outlook",
+          google: "Add to Google",
+          webcal: "Add to Apple / Outlook",
           copy: "Copy link",
           copied: "Link copied.",
           copyFailed: "Couldn't copy. Select the link and copy it yourself:",
           note: "Google Calendar refreshes subscriptions on its own schedule, which can take several hours; Apple Calendar and Outlook usually update within an hour. The app and emails are always current. Once subscribed, you no longer need the per-appointment \"Add to calendar\" downloads.",
           privacy: "The links include customer contact details: keep them to yourself.",
           reset: "Reset links",
-          resetTitle: "Reset your subscription links?",
           resetBody: "Your current links stop working. Calendars subscribed with them stop updating; subscribe again with the new links.",
-          resetConfirm: "Reset links",
-          cancel: "Cancel",
+          resetConfirm: "Yes, reset links",
           resetDone: "New links are ready. Subscribe again with them.",
+          cancel: "Cancel",
+          close: "Close",
           loading: "Getting your links…",
         },
         onlyMe: "Only me ({name})",
@@ -1839,7 +1857,7 @@ export const en = {
         },
         ics: {
           addCancelled: "Update my calendar (cancelled)",
-          note: "Adds the appointment as it is now. If it changes later, the team is emailed — add it again then.",
+          note: "Adds it as it is now. Subscribed on the Calendar page? It's already there and stays up to date.",
           noteCancelled: "Downloads the cancelled event (.ics): opening it removes the appointment from calendars that imported the file. Remove it by hand from Google or Outlook on the web.",
         },
         waiting: {
