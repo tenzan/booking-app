@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildIcs, foldLine, escapeText, formatUtc } from "../../src/domain/ics";
+import { buildCalendar, buildIcs, foldLine, escapeText, formatUtc } from "../../src/domain/ics";
 
 const base = {
   uid: "R-ABCD-EFGH@booking.example.com",
@@ -116,5 +116,37 @@ describe("buildIcs", () => {
   it("cannot be injected into through text values", () => {
     const out = buildIcs({ ...base, description: "x\r\nEND:VEVENT\r\nBEGIN:VEVENT" });
     expect(lines(out).filter((x) => x === "END:VEVENT")).toHaveLength(1);
+  });
+});
+
+describe("buildCalendar", () => {
+  const second = { ...base, uid: "R-WXYZ-1234@booking.example.com", startAt: Date.parse("2026-10-06T01:30:00Z"), endAt: Date.parse("2026-10-06T02:00:00Z") };
+
+  it("wraps several events in one VCALENDAR with the calendar name and refresh hints", () => {
+    const ics = buildCalendar({ name: "Acme, Support — team", events: [base, second] });
+    const l = lines(unfold(ics));
+    expect(l[0]).toBe("BEGIN:VCALENDAR");
+    expect(l).toContain("METHOD:PUBLISH");
+    expect(l).toContain("NAME:Acme\\, Support — team");
+    expect(l).toContain("X-WR-CALNAME:Acme\\, Support — team");
+    expect(l).toContain("REFRESH-INTERVAL;VALUE=DURATION:PT1H");
+    expect(l).toContain("X-PUBLISHED-TTL:PT1H");
+    expect(l.filter((x) => x === "BEGIN:VEVENT")).toHaveLength(2);
+    expect(l).toContain("UID:R-WXYZ-1234@booking.example.com");
+    expect(ics.endsWith("END:VCALENDAR\r\n")).toBe(true);
+    for (const line of ics.split("\r\n")) expect(new TextEncoder().encode(line).length).toBeLessThanOrEqual(75);
+  });
+
+  it("is a well-formed calendar with no events", () => {
+    const ics = buildCalendar({ name: "Mine", events: [] });
+    expect(ics).toBe(
+      ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Remote Support Booking//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "NAME:Mine", "X-WR-CALNAME:Mine", "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H", "END:VCALENDAR", ""].join("\r\n"),
+    );
+  });
+
+  it("leaves the single-event buildIcs output unchanged", () => {
+    const one = buildIcs(base);
+    expect(one).not.toContain("X-WR-CALNAME");
+    expect(lines(one).slice(0, 6)).toEqual(["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Remote Support Booking//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "BEGIN:VEVENT"]);
   });
 });

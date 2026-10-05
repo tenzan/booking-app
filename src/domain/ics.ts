@@ -59,14 +59,10 @@ export function foldLine(line: string): string {
   return out.join("\r\n ");
 }
 
-/** A VCALENDAR with one VEVENT. CRLF-terminated; no alarms. */
-export function buildIcs(e: IcsEvent): string {
-  const content = [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    `PRODID:${PRODID}`,
-    "CALSCALE:GREGORIAN",
-    `METHOD:${e.method}`,
+const header = (method: string) => ["BEGIN:VCALENDAR", "VERSION:2.0", `PRODID:${PRODID}`, "CALSCALE:GREGORIAN", `METHOD:${method}`];
+
+function veventLines(e: IcsEvent): string[] {
+  return [
     "BEGIN:VEVENT",
     `UID:${escapeText(e.uid)}`,
     `DTSTAMP:${formatUtc(e.stamp)}`,
@@ -80,7 +76,28 @@ export function buildIcs(e: IcsEvent): string {
     // URI value: no TEXT escaping, but never let a line break through.
     `URL:${e.url.replace(/[\r\n]/g, "")}`,
     "END:VEVENT",
-    "END:VCALENDAR",
   ];
-  return content.map(foldLine).join("\r\n") + "\r\n";
+}
+
+const serialize = (content: string[]) => content.map(foldLine).join("\r\n") + "\r\n";
+
+/** A VCALENDAR with one VEVENT. CRLF-terminated; no alarms. */
+export function buildIcs(e: IcsEvent): string {
+  return serialize([...header(e.method), ...veventLines(e), "END:VCALENDAR"]);
+}
+
+/**
+ * A subscribable calendar: any number of events (none is fine), a display name (RFC 7986 NAME and the widely read
+ * X-WR-CALNAME) and hints to poll hourly. Clients that ignore the hints (Google) refresh on their own schedule.
+ */
+export function buildCalendar(c: { name: string; events: IcsEvent[] }): string {
+  return serialize([
+    ...header("PUBLISH"),
+    `NAME:${escapeText(c.name)}`,
+    `X-WR-CALNAME:${escapeText(c.name)}`,
+    "REFRESH-INTERVAL;VALUE=DURATION:PT1H",
+    "X-PUBLISHED-TTL:PT1H",
+    ...c.events.flatMap(veventLines),
+    "END:VCALENDAR",
+  ]);
 }
